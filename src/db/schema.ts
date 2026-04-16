@@ -1,0 +1,75 @@
+import { pgTable, text, integer, real, boolean, timestamp } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+
+export const barbershops = pgTable('barbershops', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  slug: text('slug').notNull().unique(),
+  address: text('address'),
+  phone: text('phone'),
+  instagram: text('instagram'),
+  mapsUrl: text('maps_url'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const users = pgTable('users', {
+  id: text('id').primaryKey(),
+  barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  role: text('role').notNull().default('admin'), // admin, barber
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const barbers = pgTable('barbers', {
+  id: text('id').primaryKey(),
+  barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
+  userId: text('user_id').references(() => users.id), // Optional link to user account
+  name: text('name').notNull(),
+  active: boolean('active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const services = pgTable('services', {
+  id: text('id').primaryKey(),
+  barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
+  name: text('name').notNull(),
+  durationMinutes: integer('duration_minutes').notNull(),
+  price: real('price').notNull(),
+  active: boolean('active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const clients = pgTable('clients', {
+  id: text('id').primaryKey(),
+  barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
+  name: text('name').notNull(),
+  phone: text('phone').notNull(),
+  lastVisit: timestamp('last_visit', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const appointments = pgTable('appointments', {
+  id: text('id').primaryKey(),
+  barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
+  barberId: text('barber_id').references(() => barbers.id).notNull(),
+  serviceId: text('service_id').references(() => services.id).notNull(),
+  clientId: text('client_id').references(() => clients.id).notNull(),
+  date: text('date').notNull(), // YYYY-MM-DD
+  startTime: text('start_time').notNull(), // HH:MM
+  endTime: text('end_time').notNull(), // HH:MM
+  status: text('status').notNull().default('scheduled'), // scheduled, completed, cancelled
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const notifications = pgTable('notifications', {
+  id: text('id').primaryKey(),
+  barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
+  type: text('type').notNull(), // new_appointment, inactive_client
+  title: text('title').notNull(),
+  message: text('message').notNull(),
+  read: boolean('read').notNull().default(false),
+  actionUrl: text('action_url'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
