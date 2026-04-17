@@ -181,7 +181,7 @@ export default function Home() {
               <label className="block text-sm text-white/50 mb-2 uppercase tracking-wider">Data</label>
               <input 
                 type="date" 
-                min={new Date().toISOString().split('T')[0]}
+                min={new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0]}
                 value={formData.date}
                 onChange={e => setFormData({ ...formData, date: e.target.value, time: '' })}
                 className="w-full bg-black/50 border border-white/10 rounded-xl p-4 text-white focus:border-[#D4AF37] outline-none"

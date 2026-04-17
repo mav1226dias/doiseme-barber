@@ -135,12 +135,25 @@ async function startServer() {
     if (!date || !barberId) return res.status(400).json({ error: 'Data e profissional são obrigatórios' });
     
     try {
+      // Calculate Brazil time to avoid UTC mismatch
+      const spTime = new Date().toLocaleString("en-US", {timeZone: "America/Sao_Paulo"});
+      const spDate = new Date(spTime);
+      const todayStr = `${spDate.getFullYear()}-${String(spDate.getMonth() + 1).padStart(2, '0')}-${String(spDate.getDate()).padStart(2, '0')}`;
+      
+      // If date is completely in the past, return NO availability.
+      if ((date as string) < todayStr) {
+        return res.json([]);
+      }
+
+      const currentHour = spDate.getHours();
+      const currentMinute = spDate.getMinutes();
+
       const { data: existing, error } = await supabase
         .from('appointments')
         .select('*')
         .eq('barber_id', barberId)
         .eq('date', date)
-        .eq('status', 'scheduled');
+        .in('status', ['scheduled', 'blocked']);
         
       if (error) throw error;
       
@@ -149,12 +162,22 @@ async function startServer() {
         const time = `${i.toString().padStart(2, '0')}:00`;
         const time30 = `${i.toString().padStart(2, '0')}:30`;
         
-        if (!existing?.find(a => a.start_time === time)) slots.push(time);
-        if (!existing?.find(a => a.start_time === time30)) slots.push(time30);
+        let isTimePast = false;
+        let isTime30Past = false;
+        
+        // Block times that have already passed today
+        if (date === todayStr) {
+          if (i < currentHour || (i === currentHour && currentMinute >= 0)) isTimePast = true;
+          if (i < currentHour || (i === currentHour && currentMinute >= 30)) isTime30Past = true;
+        }
+        
+        if (!isTimePast && !existing?.find(a => a.start_time === time)) slots.push(time);
+        if (!isTime30Past && !existing?.find(a => a.start_time === time30)) slots.push(time30);
       }
       
       res.json(slots);
     } catch (error) {
+      console.error(error);
       res.status(500).json({ error: 'Erro ao buscar disponibilidade' });
     }
   });
@@ -635,6 +658,170 @@ async function startServer() {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Erro ao buscar clientes inativos' });
+    }
+  });
+
+  // --- CLIENTS ---
+  api.get('/admin/clients', authenticateToken, async (req: any, res) => {
+    try {
+      const { data: clientsList, error } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('barbershop_id', req.user.barbershopId)
+        .order('name');
+      if (error) throw error;
+      res.json(clientsList || []);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao buscar clientes' });
+    }
+  });
+
+  api.post('/admin/clients', authenticateToken, async (req: any, res) => {
+    const { name, phone } = req.body;
+    try {
+      // Basic check for existing client
+      const { data: existing } = await supabase.from('clients')
+        .select('*')
+        .eq('barbershop_id', req.user.barbershopId)
+        .eq('phone', phone)
+        .single();
+        
+      if (existing) {
+        return res.status(409).json({ error: 'Telefone já cadastrado' });
+      }
+
+      const id = crypto.randomUUID();
+      const { error } = await supabase.from('clients').insert({
+        id,
+        barbershop_id: req.user.barbershopId,
+        name,
+        phone
+      });
+      if (error) throw error;
+      res.json({ success: true, id });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao cadastrar cliente' });
+    }
+  });
+
+  api.post('/admin/clients/batch', authenticateToken, async (req: any, res) => {
+    const { clients } = req.body; // Array of { name, phone }
+    try {
+      // First get existing to avoid duplicates easily.
+      const { data: existingClients } = await supabase.from('clients')
+        .select('phone')
+        .eq('barbershop_id', req.user.barbershopId);
+        
+      const existingPhones = new Set((existingClients || []).map(c => c.phone));
+      const inserts = [];
+      const addedPhones = new Set(existingPhones);
+
+      for (const client of clients) {
+        let cleanPhone = client.phone.replace(/\D/g, '');
+        if (!cleanPhone || cleanPhone.length < 8) continue; 
+        
+        if (!addedPhones.has(cleanPhone)) {
+          addedPhones.add(cleanPhone);
+          inserts.push({
+            id: crypto.randomUUID(),
+            barbershop_id: req.user.barbershopId,
+            name: client.name || 'Sem Nome',
+            phone: cleanPhone
+          });
+        }
+      }
+
+      if (inserts.length > 0) {
+        // Supabase bulk insert limit is typically 1000, we'll assume it's under for now.
+        const { error } = await supabase.from('clients').insert(inserts);
+        if (error) throw error;
+      }
+      
+      res.json({ success: true, count: inserts.length });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao importar clientes' });
+    }
+  });
+
+  // --- CAMPAIGNS ---
+  api.post('/admin/campaigns', authenticateToken, async (req: any, res) => {
+    const { name, messageTemplate, daysActive } = req.body;
+    try {
+      const expirationDate = new Date();
+      expirationDate.setDate(expirationDate.getDate() + Number(daysActive || 7));
+      
+      const id = crypto.randomUUID();
+      const { error } = await supabase.from('notifications').insert({
+        id,
+        barbershop_id: req.user.barbershopId,
+        type: 'campaign',
+        title: name,
+        message: JSON.stringify({
+          template: messageTemplate,
+          expiresAt: expirationDate.toISOString()
+        })
+      });
+      if (error) throw error;
+      res.json({ success: true, id });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao criar campanha' });
+    }
+  });
+
+  api.get('/admin/campaigns', authenticateToken, async (req: any, res) => {
+    try {
+      const { data: campaignRows, error } = await supabase
+        .from('notifications')
+        .select('*')
+        .eq('barbershop_id', req.user.barbershopId)
+        .eq('type', 'campaign')
+        .order('created_at', { ascending: false });
+        
+      if (error) throw error;
+
+      const nowStr = new Date().toISOString();
+      const activeCampaigns = [];
+      const expiredIds = [];
+
+      for (const row of (campaignRows || [])) {
+        try {
+          const data = JSON.parse(row.message);
+          if (data.expiresAt < nowStr) {
+            expiredIds.push(row.id);
+          } else {
+            activeCampaigns.push(row);
+          }
+        } catch(e) { }
+      }
+
+      // Cleanup expired campaigns (auto-delete after 7 days logic)
+      if (expiredIds.length > 0) {
+        await supabase.from('notifications').delete().in('id', expiredIds);
+      }
+
+      res.json(activeCampaigns);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao carregar campanhas' });
+    }
+  });
+
+  api.delete('/admin/campaigns/:id', authenticateToken, async (req: any, res) => {
+    try {
+      const { error } = await supabase
+        .from('notifications')
+        .delete()
+        .eq('id', req.params.id)
+        .eq('barbershop_id', req.user.barbershopId);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao excluir campanha' });
     }
   });
 

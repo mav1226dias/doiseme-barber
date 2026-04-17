@@ -34,6 +34,8 @@ export default function AdminLayout() {
     { path: '/admin/agenda', icon: Calendar, label: 'Agenda' },
     { path: '/admin/barbers', icon: Users, label: 'Profissionais' },
     { path: '/admin/services', icon: Scissors, label: 'Serviços' },
+    { path: '/admin/clients', icon: Users, label: 'Clientes' },
+    { path: '/admin/campaigns', icon: Bell, label: 'Campanhas' },
     { path: '/admin/notifications', icon: Bell, label: 'Notificações' },
   ];
 

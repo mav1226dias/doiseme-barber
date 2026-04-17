@@ -14,6 +14,8 @@ import Barbers from './pages/admin/Barbers';
 import Services from './pages/admin/Services';
 import Agenda from './pages/admin/Agenda';
 import Notifications from './pages/admin/Notifications';
+import Clients from './pages/admin/Clients';
+import Campaigns from './pages/admin/Campaigns';
 import ErrorBoundary from './components/ErrorBoundary';
 
 export default function App() {
@@ -36,6 +38,8 @@ export default function App() {
               <Route path="services" element={<Services />} />
               <Route path="agenda" element={<Agenda />} />
               <Route path="notifications" element={<Notifications />} />
+              <Route path="clients" element={<Clients />} />
+              <Route path="campaigns" element={<Campaigns />} />
             </Route>
           </Routes>
         </BrowserRouter>
