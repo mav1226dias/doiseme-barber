@@ -17,7 +17,7 @@ export default function PublicLayout() {
         <Outlet />
       </main>
       <footer className="border-t border-white/10 py-8 text-center text-white/40 text-sm mt-20">
-        <p>&copy; {new Date().getFullYear()} Doiseme Barber Shop. Todos os direitos reservados.</p>
+        <p>&copy; 2024 Doiseme Barber Shop. Todos os direitos reservados.</p>
       </footer>
     </div>
   );

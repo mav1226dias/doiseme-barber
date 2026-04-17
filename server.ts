@@ -4,6 +4,8 @@ import path from 'path';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import { supabase } from './src/db/supabase';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-for-doiseme';
@@ -12,11 +14,40 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  // Security Headers
+  app.use(helmet({ contentSecurityPolicy: false })); // Disabled CSP to avoid breaking React dev server inline scripts
+  app.disable('x-powered-by');
+
   app.use(cors());
   app.use(express.json());
 
+  // SEO Text endpoints
+  app.get('/robots.txt', (req, res) => {
+    res.type('text/plain');
+    res.send("User-agent: *\nAllow: /\nSitemap: https://doiseme-barber.onrender.com/sitemap.xml");
+  });
+
+  app.get('/sitemap.xml', (req, res) => {
+    res.type('application/xml');
+    res.send(`<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://doiseme-barber.onrender.com/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>`);
+  });
+
   // API Routes
   const api = express.Router();
+
+  // Basic rate limiting for login
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 mins
+    max: 10,
+    message: { error: 'Muitas tentativas de login. Tente novamente mais tarde.' }
+  });
 
   // Auth Middleware
   const authenticateToken = (req: any, res: any, next: any) => {
@@ -169,6 +200,18 @@ async function startServer() {
       const endMins = totalMinutes % 60;
       const endTime = `${endHours.toString().padStart(2, '0')}:${endMins.toString().padStart(2, '0')}`;
 
+      // 2.5 Check Conflict
+      const { data: conflict } = await supabase.from('appointments').select('*')
+        .eq('barber_id', barberId)
+        .eq('date', date)
+        .eq('start_time', startTime)
+        .eq('status', 'scheduled')
+        .single();
+        
+      if (conflict) {
+        return res.status(409).json({ error: 'Horário já preenchido. Por favor, escolha outro.' });
+      }
+
       // 3. Create appointment
       const appointmentId = crypto.randomUUID();
       const { error: apptErr } = await supabase.from('appointments').insert({
@@ -186,12 +229,23 @@ async function startServer() {
 
       // 4. Create notification
       const { data: barber } = await supabase.from('barbers').select('*').eq('id', barberId).single();
+      
+      // We store the data as serialized JSON in the message so we can extract it in the frontend
+      // If table supports `phone` column natively, this will fallback or could be added, but we encode it into message just in case
       await supabase.from('notifications').insert({
         id: crypto.randomUUID(),
         barbershop_id: barbershopId,
         type: 'new_appointment',
         title: 'Novo Agendamento',
-        message: `${clientName} agendou com ${barber?.name || 'Profissional'} para ${date} às ${startTime}`,
+        // Instead of plain text, we pass data via JSON in message
+        message: JSON.stringify({
+          text: `${clientName} agendou com ${barber?.name || 'Profissional'} para ${date} às ${startTime}`,
+          clientName: clientName,
+          clientPhone: clientPhone,
+          barberName: barber?.name,
+          date: date,
+          time: startTime
+        })
       });
 
       res.json({ success: true, appointmentId });
@@ -202,7 +256,7 @@ async function startServer() {
   });
 
   // --- ADMIN AUTH ---
-  api.post('/auth/login', async (req, res) => {
+  api.post('/auth/login', loginLimiter, async (req, res) => {
     const { email, password } = req.body;
     console.log(`[LOGIN ATTEMPT] Email: ${email}`);
     try {
@@ -342,6 +396,38 @@ async function startServer() {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Erro ao atualizar status' });
+    }
+  });
+
+  api.post('/admin/appointments/block', authenticateToken, async (req: any, res) => {
+    const { date, startTime, barberId } = req.body;
+    try {
+      // Create a dummy client if none for blocks? Or just insert without client if DB permits?
+      // Supabase usually requires client_id constraint, let's check
+      // For a 'block' we may use a specific status. If client is required, we can grab a dummy user or just make it nullable.
+      // Assuming `client_id` is required, let's find/create a 'SISTEMA' client.
+      let { data: client } = await supabase.from('clients').select('*').eq('phone', '00000000000').single();
+      if (!client) {
+        const { data: newC } = await supabase.from('clients').insert({ id: crypto.randomUUID(), name: 'BLOQUEIO SISTEMA', phone: '00000000000', barbershop_id: req.user.barbershopId }).select().single();
+        client = newC;
+      }
+      
+      const { error } = await supabase.from('appointments').insert({
+        id: crypto.randomUUID(),
+        barbershop_id: req.user.barbershopId,
+        barber_id: barberId,
+        service_id: null,
+        client_id: client.id,
+        date,
+        start_time: startTime,
+        end_time: startTime,
+        status: 'blocked'
+      });
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao bloquear horário' });
     }
   });
 
@@ -497,6 +583,61 @@ async function startServer() {
     }
   });
 
+  // Inactive Clients (no appointments in last 20 days)
+  api.get('/admin/inactive-clients', authenticateToken, async (req: any, res) => {
+    try {
+      const barbershopId = req.user.barbershopId;
+      const twentyDaysAgo = new Date();
+      twentyDaysAgo.setDate(twentyDaysAgo.getDate() - 20);
+      const isoThreshold = twentyDaysAgo.toISOString().split('T')[0];
+
+      // Get all appointments
+      const { data: allAppointments, error: apptErr } = await supabase
+        .from('appointments')
+        .select(`
+          date, 
+          status, 
+          clients (id, name, phone),
+          barbers (name)
+        `)
+        .eq('barbershop_id', barbershopId)
+        .order('date', { ascending: false });
+
+      if (apptErr) throw apptErr;
+
+      // Group by client and find the latest appointment
+      const clientMap = new Map();
+      
+      allAppointments?.forEach(apt => {
+        if (!apt.clients) return;
+        const c = apt.clients as any;
+        if (!clientMap.has(c.id)) {
+          clientMap.set(c.id, {
+            id: c.id,
+            name: c.name,
+            phone: c.phone,
+            lastDate: apt.date,
+            lastBarberName: (apt.barbers as any)?.name || 'Profissional'
+          });
+        } else {
+          const existing = clientMap.get(c.id);
+          if (apt.date > existing.lastDate) {
+            existing.lastDate = apt.date;
+            existing.lastBarberName = (apt.barbers as any)?.name || 'Profissional';
+          }
+        }
+      });
+
+      // Filter those whose last date is older than 20 days
+      const inactive = Array.from(clientMap.values()).filter(c => c.lastDate < isoThreshold);
+      
+      res.json(inactive);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao buscar clientes inativos' });
+    }
+  });
+
   // Seed endpoint
   api.post('/seed', async (req, res) => {
     try {
@@ -555,7 +696,7 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, { maxAge: '1d' }));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

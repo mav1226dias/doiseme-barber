@@ -4,6 +4,7 @@
  */
 
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { ThemeProvider } from 'next-themes';
 import PublicLayout from './layouts/PublicLayout';
 import AdminLayout from './layouts/AdminLayout';
 import Home from './pages/public/Home';
@@ -17,25 +18,28 @@ import ErrorBoundary from './components/ErrorBoundary';
 
 export default function App() {
   return (
-    <ErrorBoundary>
-      <BrowserRouter>
-        <Routes>
-          {/* Public Routes */}
-          <Route path="/" element={<PublicLayout />}>
-            <Route index element={<Home />} />
-          </Route>
+    // @ts-ignore
+    <ThemeProvider attribute="class" defaultTheme="light">
+      <ErrorBoundary>
+        <BrowserRouter>
+          <Routes>
+            {/* Public Routes */}
+            <Route path="/" element={<PublicLayout />}>
+              <Route index element={<Home />} />
+            </Route>
 
-          {/* Admin Routes */}
-          <Route path="/admin/login" element={<Login />} />
-          <Route path="/admin" element={<AdminLayout />}>
-            <Route index element={<Dashboard />} />
-            <Route path="barbers" element={<Barbers />} />
-            <Route path="services" element={<Services />} />
-            <Route path="agenda" element={<Agenda />} />
-            <Route path="notifications" element={<Notifications />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </ErrorBoundary>
+            {/* Admin Routes */}
+            <Route path="/admin/login" element={<Login />} />
+            <Route path="/admin" element={<AdminLayout />}>
+              <Route index element={<Dashboard />} />
+              <Route path="barbers" element={<Barbers />} />
+              <Route path="services" element={<Services />} />
+              <Route path="agenda" element={<Agenda />} />
+              <Route path="notifications" element={<Notifications />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </ErrorBoundary>
+    </ThemeProvider>
   );
 }

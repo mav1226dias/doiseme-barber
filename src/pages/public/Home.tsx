@@ -79,7 +79,7 @@ export default function Home() {
   if (success) {
     const barber = barbers.find(b => b.id.toString() === formData.barber_id);
     const message = `Fala ${barber?.name}, agendei meu horário para o dia ${formData.date.split('-').reverse().join('/')} às ${formData.time}.`;
-    const whatsappUrl = `https://wa.me/5511999999999?text=${encodeURIComponent(message)}`;
+    const whatsappUrl = `https://wa.me/5553981536614?text=${encodeURIComponent(message)}`;
 
     return (
       <div className="max-w-md mx-auto mt-20 px-4 text-center">
@@ -277,15 +277,15 @@ export default function Home() {
 
       {/* Integrations */}
       <div className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-4">
-        <a href="https://wa.me/5511999999999" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
+        <a href="https://wa.me/5553981536614" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
           <MessageCircle className="w-5 h-5 text-[#25D366]" />
           <span className="font-medium">WhatsApp</span>
         </a>
-        <a href="https://instagram.com" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
+        <a href="https://instagram.com/2m_estrategia" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
           <Instagram className="w-5 h-5 text-[#E1306C]" />
-          <span className="font-medium">Instagram</span>
+          <span className="font-medium">@2m_estrategia</span>
         </a>
-        <a href="https://maps.google.com" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
+        <a href="https://share.google/8uU6J5tSzE7CapjRu" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
           <MapPin className="w-5 h-5 text-[#4285F4]" />
           <span className="font-medium">Como chegar</span>
         </a>
