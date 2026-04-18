@@ -19,7 +19,8 @@ async function startServer() {
   app.disable('x-powered-by');
 
   app.use(cors());
-  app.use(express.json());
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   // SEO Text endpoints
   app.get('/robots.txt', (req, res) => {
@@ -734,9 +735,13 @@ async function startServer() {
       }
 
       if (inserts.length > 0) {
-        // Supabase bulk insert limit is typically 1000, we'll assume it's under for now.
-        const { error } = await supabase.from('clients').insert(inserts);
-        if (error) throw error;
+        // Supabase bulk insert limit is typically 1000, so we chunk it to be safe
+        const chunkSize = 500;
+        for (let i = 0; i < inserts.length; i += chunkSize) {
+          const chunk = inserts.slice(i, i + chunkSize);
+          const { error } = await supabase.from('clients').insert(chunk);
+          if (error) throw error;
+        }
       }
       
       res.json({ success: true, count: inserts.length });

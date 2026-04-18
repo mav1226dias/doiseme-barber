@@ -82,7 +82,19 @@ export default function Clients() {
           },
           body: JSON.stringify({ clients: validClients })
         })
-          .then(res => res.json())
+          .then(async res => {
+            if (!res.ok) {
+              let msg = 'Erro no servidor.';
+              try {
+                const errData = await res.json();
+                msg = errData.error || msg;
+              } catch(e) {
+                msg = `Erro do servidor (Status ${res.status})`;
+              }
+              throw new Error(msg);
+            }
+            return res.json();
+          })
           .then(data => {
             if (data.success) {
               alert(`${data.count} clientes importados com sucesso!`);
@@ -93,7 +105,7 @@ export default function Clients() {
           })
           .catch(err => {
             console.error(err);
-            alert('Erro de rede na importação.');
+            alert(`Falha na importação: ${err.message}`);
           })
           .finally(() => {
             setLoading(false);
