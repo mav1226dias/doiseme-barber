@@ -751,6 +751,35 @@ async function startServer() {
     }
   });
 
+  api.delete('/admin/clients', authenticateToken, async (req: any, res) => {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Nenhum cliente selecionado' });
+    }
+    
+    try {
+      // First delete associated appointments to clear Foreign Key constraints before deleting clients
+      await supabase
+        .from('appointments')
+        .delete()
+        .in('client_id', ids)
+        .eq('barbershop_id', req.user.barbershopId);
+
+      const { error } = await supabase
+        .from('clients')
+        .delete()
+        .in('id', ids)
+        .eq('barbershop_id', req.user.barbershopId);
+        
+      if (error) throw error;
+      
+      res.json({ success: true, count: ids.length });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao excluir clientes' });
+    }
+  });
+
   // --- CAMPAIGNS ---
   api.post('/admin/campaigns', authenticateToken, async (req: any, res) => {
     const { name, messageTemplate, daysActive } = req.body;

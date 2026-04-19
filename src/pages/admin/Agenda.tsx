@@ -4,6 +4,7 @@ import { Calendar as CalendarIcon, Clock, User, Scissors, Check, X, ShieldAlert 
 export default function Agenda() {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [appointments, setAppointments] = useState<any[]>([]);
+  const [filterStatus, setFilterStatus] = useState('all');
 
   const fetchAppointments = () => {
     const token = localStorage.getItem('token');
@@ -50,9 +51,14 @@ export default function Agenda() {
     fetchAppointments();
   };
 
-  // Group by barber
+  // Generate map using filtered appointments
   const barbersMap = new Map();
-  appointments.forEach(apt => {
+  const filteredAppointments = appointments.filter(apt => {
+    if (filterStatus === 'all') return true;
+    return apt.status === filterStatus;
+  });
+
+  filteredAppointments.forEach(apt => {
     const bName = apt.barberName || 'Barbeiro';
     if (!barbersMap.has(bName)) barbersMap.set(bName, { name: bName, id: apt.barberId, apts: [] });
     barbersMap.get(bName).apts.push(apt);
@@ -67,12 +73,25 @@ export default function Agenda() {
           <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Agenda Diária</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">Gerencie e visualize horários</p>
         </div>
-        <input 
-          type="date" 
-          value={date}
-          onChange={e => setDate(e.target.value)}
-          className="border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-gray-900 dark:text-white rounded-xl p-3 outline-none focus:border-black font-medium"
-        />
+        <div className="flex flex-wrap items-center gap-3">
+          <select 
+            value={filterStatus}
+            onChange={(e) => setFilterStatus(e.target.value)}
+            className="border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-gray-900 dark:text-white rounded-xl p-3 outline-none focus:border-black dark:focus:border-white font-medium"
+          >
+            <option value="all">Todos os Status</option>
+            <option value="scheduled">Agendados</option>
+            <option value="completed">Concluídos</option>
+            <option value="cancelled">Cancelados</option>
+            <option value="blocked">Bloqueados</option>
+          </select>
+          <input 
+            type="date" 
+            value={date}
+            onChange={e => setDate(e.target.value)}
+            className="border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 text-gray-900 dark:text-white rounded-xl p-3 outline-none focus:border-black font-medium"
+          />
+        </div>
       </div>
 
       <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm overflow-x-auto">

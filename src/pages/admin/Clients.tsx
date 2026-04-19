@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Upload, Users, UserPlus } from 'lucide-react';
+import { Search, Plus, Upload, Users, UserPlus, Trash2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 
@@ -8,6 +8,7 @@ export default function Clients() {
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // New Client Form
@@ -27,6 +28,40 @@ export default function Clients() {
   useEffect(() => {
     fetchClients();
   }, []);
+
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [searchTerm]);
+
+  const handleDelete = async (ids: string[]) => {
+    if (!window.confirm(`Tem certeza que deseja excluir ${ids.length} cliente(s)? Esta ação excluirá os contatos e seus históricos de agendamentos.`)) return;
+    
+    setLoading(true);
+    const token = localStorage.getItem('token');
+    
+    try {
+      const res = await fetch('/api/admin/clients', {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ ids })
+      });
+      
+      if (res.ok) {
+        setSelectedIds([]);
+        fetchClients();
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Erro ao excluir clientes.');
+      }
+    } catch (e) {
+      alert('Erro de rede ao excluir.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleManualAdd = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -210,6 +245,24 @@ export default function Clients() {
     c.phone?.includes(searchTerm)
   );
 
+  const allSelected = filteredClients.length > 0 && selectedIds.length === filteredClients.length;
+
+  const handleSelectAll = () => {
+    if (allSelected) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(filteredClients.map(c => c.id));
+    }
+  };
+
+  const handleSelectOne = (id: string) => {
+    if (selectedIds.includes(id)) {
+      setSelectedIds(selectedIds.filter(i => i !== id));
+    } else {
+      setSelectedIds([...selectedIds, id]);
+    }
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -260,23 +313,66 @@ export default function Clients() {
         </div>
 
         {filteredClients.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-gray-50 dark:bg-zinc-800/80 border-b border-gray-200 dark:border-zinc-800 text-sm font-medium text-gray-500 dark:text-gray-400">
-                  <th className="p-4">Nome</th>
-                  <th className="p-4">Telefone</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-zinc-800">
-                {filteredClients.map(c => (
-                  <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-zinc-800/50 transition-colors">
-                    <td className="p-4 font-medium text-gray-900 dark:text-gray-100">{c.name || 'Sem nome'}</td>
-                    <td className="p-4 text-gray-600 dark:text-gray-300 font-mono">{c.phone}</td>
+          <div className="flex flex-col">
+            {selectedIds.length > 0 && (
+              <div className="bg-[#D4AF37]/10 dark:bg-[#D4AF37]/5 border-b border-[#D4AF37]/20 px-4 py-3 flex items-center justify-between">
+                <span className="text-sm font-medium text-[#D4AF37]">
+                  {selectedIds.length} cliente(s) selecionado(s)
+                </span>
+                <button 
+                  disabled={loading}
+                  onClick={() => handleDelete(selectedIds)}
+                  className="flex items-center gap-2 text-sm bg-red-500 text-white px-3 py-1.5 rounded-lg hover:bg-red-600 transition-colors disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" /> Excluir Selecionados
+                </button>
+              </div>
+            )}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-zinc-800/80 border-b border-gray-200 dark:border-zinc-800 text-sm font-medium text-gray-500 dark:text-gray-400">
+                    <th className="p-4 w-12 text-center">
+                      <input 
+                        type="checkbox" 
+                        checked={allSelected}
+                        onChange={handleSelectAll}
+                        className="rounded w-4 h-4 text-[#D4AF37] focus:ring-[#D4AF37] cursor-pointer"
+                      />
+                    </th>
+                    <th className="p-4">Nome</th>
+                    <th className="p-4">Telefone</th>
+                    <th className="p-4 text-right">Ações</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-zinc-800">
+                  {filteredClients.map(c => (
+                    <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-zinc-800/50 transition-colors">
+                      <td className="p-4 text-center">
+                        <input 
+                          type="checkbox" 
+                          checked={selectedIds.includes(c.id)}
+                          onChange={() => handleSelectOne(c.id)}
+                          className="rounded w-4 h-4 text-[#D4AF37] focus:ring-[#D4AF37] cursor-pointer"
+                        />
+                      </td>
+                      <td className="p-4 font-medium text-gray-900 dark:text-gray-100">{c.name || 'Sem nome'}</td>
+                      <td className="p-4 text-gray-600 dark:text-gray-300 font-mono">{c.phone}</td>
+                      <td className="p-4 text-right">
+                        <button 
+                          disabled={loading}
+                          onClick={() => handleDelete([c.id])}
+                          className="text-gray-400 hover:text-red-500 transition-colors p-2 disabled:opacity-50 shrink-0"
+                          title="Excluir Cliente"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : (
           <div className="text-center py-16 text-gray-500 dark:text-gray-400">
