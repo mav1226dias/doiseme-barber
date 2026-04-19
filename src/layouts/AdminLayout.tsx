@@ -1,3 +1,4 @@
+// watch triggered
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { LayoutDashboard, Users, Scissors, Calendar, Bell, LogOut, Menu, X, Sun, Moon } from 'lucide-react';
 import { useEffect, useState } from 'react';
