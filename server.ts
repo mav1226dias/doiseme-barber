@@ -22,6 +22,23 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+  // Global settings map (in-memory for demo/pitch purposes)
+  const shopSettings = new Map();
+
+  const getShopSettings = (shopId: string) => {
+    if (shopSettings.has(shopId)) return shopSettings.get(shopId);
+    // Default config
+    return {
+      monday: { isClosed: true, open: '09:00', close: '18:00' },
+      tuesday: { isClosed: false, open: '09:00', close: '18:00' },
+      wednesday: { isClosed: false, open: '09:00', close: '18:00' },
+      thursday: { isClosed: false, open: '09:00', close: '18:00' },
+      friday: { isClosed: false, open: '09:00', close: '18:00' },
+      saturday: { isClosed: false, open: '09:00', close: '18:00' },
+      sunday: { isClosed: true, open: '09:00', close: '18:00' }
+    };
+  };
+
   // SEO Text endpoints
   app.get('/robots.txt', (req, res) => {
     res.type('text/plain');
@@ -136,15 +153,21 @@ async function startServer() {
     if (!date || !barberId) return res.status(400).json({ error: 'Data e profissional são obrigatórios' });
     
     try {
-      // Calculate Brazil time to avoid UTC mismatch
       const spTime = new Date().toLocaleString("en-US", {timeZone: "America/Sao_Paulo"});
       const spDate = new Date(spTime);
       const todayStr = `${spDate.getFullYear()}-${String(spDate.getMonth() + 1).padStart(2, '0')}-${String(spDate.getDate()).padStart(2, '0')}`;
       
-      // If date is completely in the past, return NO availability.
-      if ((date as string) < todayStr) {
-        return res.json([]);
-      }
+      if ((date as string) < todayStr) return res.json([]);
+
+      // Get settings for the day
+      const targetDate = new Date(`${date}T12:00:00Z`);
+      const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+      const dayName = days[targetDate.getDay()];
+      
+      const config = getShopSettings(req.params.id);
+      const dayConfig = config[dayName];
+      
+      if (dayConfig.isClosed) return res.json([]); // Barbershop is closed this day
 
       const currentHour = spDate.getHours();
       const currentMinute = spDate.getMinutes();
@@ -159,9 +182,15 @@ async function startServer() {
       if (error) throw error;
       
       const slots = [];
-      for (let i = 9; i <= 18; i++) {
+      const startH = parseInt(dayConfig.open.split(':')[0]);
+      const endH = parseInt(dayConfig.close.split(':')[0]);
+
+      for (let i = startH; i <= endH; i++) {
         const time = `${i.toString().padStart(2, '0')}:00`;
         const time30 = `${i.toString().padStart(2, '0')}:30`;
+        
+        // Prevent booking exactly at closing hour if duration is going to exceed it (We don't know duration yet so we block exact close time)
+        if (i === endH) continue;
         
         let isTimePast = false;
         let isTime30Past = false;
@@ -280,6 +309,15 @@ async function startServer() {
   });
 
   // --- ADMIN AUTH ---
+  api.get('/admin/settings', authenticateToken, (req: any, res) => {
+    res.json(getShopSettings(req.user.barbershopId));
+  });
+
+  api.post('/admin/settings', authenticateToken, (req: any, res) => {
+    shopSettings.set(req.user.barbershopId, req.body);
+    res.json({ success: true });
+  });
+
   api.post('/auth/login', loginLimiter, async (req, res) => {
     const { email, password } = req.body;
     console.log(`[LOGIN ATTEMPT] Email: ${email}`);
@@ -329,8 +367,15 @@ async function startServer() {
   // Dashboard stats
   api.get('/admin/dashboard', authenticateToken, async (req: any, res) => {
     const { barbershopId } = req.user;
+    const { start, end } = req.query;
     try {
-      const { data: allAppointments, error: appErr } = await supabase.from('appointments').select('*').eq('barbershop_id', barbershopId);
+      let appointmentsQuery = supabase.from('appointments').select('*').eq('barbershop_id', barbershopId);
+      
+      if (start && end) {
+        appointmentsQuery = appointmentsQuery.gte('date', start).lte('date', end);
+      }
+
+      const { data: allAppointments, error: appErr } = await appointmentsQuery;
       const { data: allServices, error: svcErr } = await supabase.from('services').select('*').eq('barbershop_id', barbershopId);
       const { data: allBarbers, error: brbErr } = await supabase.from('barbers').select('*').eq('barbershop_id', barbershopId);
       

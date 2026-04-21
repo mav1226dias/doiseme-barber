@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Users, DollarSign, Calendar as CalendarIcon } from 'lucide-react';
+import { Users, DollarSign, Calendar as CalendarIcon, Filter } from 'lucide-react';
 
 export default function Dashboard() {
   const [stats, setStats] = useState({
@@ -8,9 +8,14 @@ export default function Dashboard() {
     appointmentsByBarber: [] as any[]
   });
 
-  useEffect(() => {
+  const [dateRange, setDateRange] = useState({
+    start: new Date(new Date().setDate(new Date().getDate() - 30)).toISOString().split('T')[0], // Last 30 days
+    end: new Date().toISOString().split('T')[0]
+  });
+
+  const fetchDashboard = () => {
     const token = localStorage.getItem('token');
-    fetch('/api/admin/dashboard', {
+    fetch(`/api/admin/dashboard?start=${dateRange.start}&end=${dateRange.end}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(res => res.json())
@@ -19,13 +24,35 @@ export default function Dashboard() {
         else setStats(data);
       })
       .catch(console.error);
-  }, []);
+  };
+
+  useEffect(() => {
+    fetchDashboard();
+  }, [dateRange]);
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Dashboard</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1">Visão geral do seu negócio</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Dashboard</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">Visão geral do seu negócio</p>
+        </div>
+        <div className="flex items-center gap-3 bg-white dark:bg-zinc-900 p-2 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-sm">
+          <Filter className="w-5 h-5 text-gray-400 ml-2" />
+          <input 
+            type="date" 
+            value={dateRange.start}
+            onChange={e => setDateRange({...dateRange, start: e.target.value})}
+            className="bg-transparent border-none outline-none text-gray-900 dark:text-gray-100 text-sm font-medium"
+          />
+          <span className="text-gray-400">até</span>
+          <input 
+            type="date" 
+            value={dateRange.end}
+            onChange={e => setDateRange({...dateRange, end: e.target.value})}
+            className="bg-transparent border-none outline-none text-gray-900 dark:text-gray-100 text-sm font-medium mr-2"
+          />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 sm:gap-6">
