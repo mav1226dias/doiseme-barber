@@ -43,7 +43,7 @@ export default function Services() {
     fetchServices();
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     if (!confirm('Tem certeza que deseja excluir este serviço?')) return;
     const token = localStorage.getItem('token');
     await fetch(`/api/admin/services/${id}`, {

@@ -423,30 +423,115 @@ async function startServer() {
     }
   });
 
-  api.post('/admin/appointments/block', authenticateToken, async (req: any, res) => {
-    const { date, startTime, barberId } = req.body;
+  api.post('/admin/appointments', authenticateToken, async (req: any, res) => {
+    const { barberId, serviceId, clientName, clientPhone, date, startTime } = req.body;
+    const barbershopId = req.user.barbershopId;
+    
     try {
-      // Create a dummy client if none for blocks? Or just insert without client if DB permits?
-      // Supabase usually requires client_id constraint, let's check
-      // For a 'block' we may use a specific status. If client is required, we can grab a dummy user or just make it nullable.
-      // Assuming `client_id` is required, let's find/create a 'SISTEMA' client.
+      let { data: client } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('barbershop_id', barbershopId)
+        .eq('phone', clientPhone.replace(/\D/g, ''))
+        .single();
+        
+      if (!client) {
+        const clientId = crypto.randomUUID();
+        const { data: newClient, error: clientErr } = await supabase.from('clients').insert({
+          id: clientId,
+          barbershop_id: barbershopId,
+          name: clientName,
+          phone: clientPhone.replace(/\D/g, ''),
+        }).select().single();
+        if (clientErr) throw clientErr;
+        client = newClient;
+      }
+
+      const { data: service, error: svcErr } = await supabase
+        .from('services')
+        .select('*')
+        .eq('id', serviceId)
+        .single();
+        
+      if (svcErr || !service) return res.status(404).json({ error: 'Serviço não encontrado' });
+
+      const [hours, minutes] = startTime.split(':').map(Number);
+      const totalMinutes = hours * 60 + minutes + service.duration_minutes;
+      const endHours = Math.floor(totalMinutes / 60);
+      const endMins = totalMinutes % 60;
+      const endTime = `${endHours.toString().padStart(2, '0')}:${endMins.toString().padStart(2, '0')}`;
+
+      const { data: conflict } = await supabase.from('appointments').select('*')
+        .eq('barber_id', barberId)
+        .eq('date', date)
+        .eq('start_time', startTime)
+        .eq('status', 'scheduled')
+        .single();
+        
+      if (conflict) {
+        return res.status(409).json({ error: 'Horário já preenchido.' });
+      }
+
+      const appointmentId = crypto.randomUUID();
+      const { error: apptErr } = await supabase.from('appointments').insert({
+        id: appointmentId,
+        barbershop_id: barbershopId,
+        barber_id: barberId,
+        service_id: serviceId,
+        client_id: client.id,
+        date,
+        start_time: startTime,
+        end_time: endTime,
+        status: 'scheduled'
+      });
+      if (apptErr) throw apptErr;
+
+      res.json({ success: true, appointmentId });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao criar agendamento' });
+    }
+  });
+
+  api.post('/admin/appointments/block', authenticateToken, async (req: any, res) => {
+    const { date, startTime, endTime, barberId } = req.body; // endTime is optional
+    try {
       let { data: client } = await supabase.from('clients').select('*').eq('phone', '00000000000').single();
       if (!client) {
         const { data: newC } = await supabase.from('clients').insert({ id: crypto.randomUUID(), name: 'BLOQUEIO SISTEMA', phone: '00000000000', barbershop_id: req.user.barbershopId }).select().single();
         client = newC;
       }
-      
-      const { error } = await supabase.from('appointments').insert({
+
+      // Generate times to block
+      const times = [];
+      if (endTime && endTime > startTime) {
+        let [sh, sm] = startTime.split(':').map(Number);
+        const [eh, em] = endTime.split(':').map(Number);
+        while (sh < eh || (sh === eh && sm < em)) {
+          times.push(`${String(sh).padStart(2, '0')}:${String(sm).padStart(2, '0')}`);
+          sm += 30;
+          if (sm >= 60) {
+            sh += 1;
+            sm = 0;
+          }
+        }
+      } else {
+        times.push(startTime);
+      }
+
+      const inserts = times.map(t => ({
         id: crypto.randomUUID(),
         barbershop_id: req.user.barbershopId,
         barber_id: barberId,
         service_id: null,
         client_id: client.id,
         date,
-        start_time: startTime,
-        end_time: startTime,
+        start_time: t,
+        end_time: t,
         status: 'blocked'
-      });
+      }));
+
+      const { error } = await supabase.from('appointments').insert(inserts);
       if (error) throw error;
       res.json({ success: true });
     } catch (error) {
