@@ -73,3 +73,10 @@ export const notifications = pgTable('notifications', {
   actionUrl: text('action_url'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
+
+export const shopSettings = pgTable('shop_settings', {
+  id: text('id').primaryKey(),
+  barbershopId: text('barbershop_id').references(() => barbershops.id).notNull().unique(),
+  config: text('config').notNull(), // JSON string
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
+});

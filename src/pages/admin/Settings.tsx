@@ -22,12 +22,18 @@ export default function Settings() {
     fetch('/api/admin/settings', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : null;
+      })
       .then(data => {
-        setHours(data);
+        if (data) setHours(data);
         setLoading(false);
       })
-      .catch(console.error);
+      .catch(err => {
+        console.error(err);
+        setLoading(false);
+      });
 
     // Mock holiday check
     const currentMonth = new Date().getMonth();

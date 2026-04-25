@@ -21,7 +21,10 @@ export default function Clients() {
     fetch(`/api/admin/clients`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => setClients(data || []))
       .catch(console.error);
   };

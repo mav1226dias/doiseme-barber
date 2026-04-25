@@ -18,10 +18,13 @@ export default function Dashboard() {
     fetch(`/api/admin/dashboard?start=${dateRange.start}&end=${dateRange.end}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : {};
+      })
       .then(data => {
         if (data.error) console.error('Dashboard error:', data.error);
-        else setStats(data);
+        else setStats(prev => ({ ...prev, ...data }));
       })
       .catch(console.error);
   };

@@ -11,7 +11,10 @@ export default function Notifications() {
     fetch('/api/admin/notifications', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => {
         if (Array.isArray(data)) setNotifications(data);
         else console.error('Expected array for notifications, got:', data);
@@ -23,7 +26,10 @@ export default function Notifications() {
     fetch('/api/admin/inactive-clients', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => {
         if (Array.isArray(data)) setInactiveClients(data);
       })

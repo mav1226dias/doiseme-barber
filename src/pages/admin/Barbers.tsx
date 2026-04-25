@@ -10,7 +10,10 @@ export default function Barbers() {
     fetch('/api/admin/barbers', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => {
         if (Array.isArray(data)) setBarbers(data);
         else console.error('Expected array for barbers, got:', data);

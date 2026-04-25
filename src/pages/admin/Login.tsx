@@ -28,7 +28,14 @@ export default function Login() {
       clearTimeout(id);
       
       console.log('Response status:', res.status);
-      const data = await res.json();
+      const text = await res.text();
+      let data;
+      try {
+        data = text ? JSON.parse(text) : {};
+      } catch (e) {
+        data = { error: 'O servidor retornou uma resposta inválida.' };
+      }
+      
       console.log('Response data:', data);
       
       if (res.ok) {

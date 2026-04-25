@@ -10,7 +10,10 @@ export default function Services() {
     fetch('/api/admin/services', {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => {
         if (Array.isArray(data)) setServices(data);
         else console.error('Expected array for services, got:', data);

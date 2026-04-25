@@ -36,7 +36,10 @@ export default function Agenda() {
     fetch(`/api/admin/appointments?date=${date}`, {
       headers: { 'Authorization': `Bearer ${token}` }
     })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => {
         if (Array.isArray(data)) setAppointments(data);
       })
@@ -46,11 +49,19 @@ export default function Agenda() {
   const loadOptions = () => {
     const token = localStorage.getItem('token');
     fetch('/api/admin/barbers', { headers: { 'Authorization': `Bearer ${token}` } })
-      .then(res => res.json())
-      .then(data => setBarbersListOptions(data || []));
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
+      .then(data => setBarbersListOptions(data || []))
+      .catch(console.error);
     fetch('/api/admin/services', { headers: { 'Authorization': `Bearer ${token}` } })
-      .then(res => res.json())
-      .then(data => setServicesListOptions(data || []));
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
+      .then(data => setServicesListOptions(data || []))
+      .catch(console.error);
   };
 
   useEffect(() => {

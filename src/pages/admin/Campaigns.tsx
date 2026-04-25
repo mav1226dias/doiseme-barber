@@ -21,13 +21,19 @@ export default function Campaigns() {
     
     // Fetch Campaigns
     fetch(`/api/admin/campaigns`, { headers: { 'Authorization': `Bearer ${token}` } })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => setCampaigns(Array.isArray(data) ? data : []))
       .catch(console.error);
 
     // Fetch Clients for the lists
     fetch(`/api/admin/clients`, { headers: { 'Authorization': `Bearer ${token}` } })
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => setClients(Array.isArray(data) ? data : []))
       .catch(console.error);
   };

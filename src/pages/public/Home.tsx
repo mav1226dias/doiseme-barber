@@ -21,7 +21,10 @@ export default function Home() {
 
   useEffect(() => {
     fetch('/api/barbershops/shop-1/services')
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => {
         if (Array.isArray(data)) setServices(data);
         else console.error('Expected array for services, got:', data);
@@ -29,7 +32,10 @@ export default function Home() {
       .catch(console.error);
       
     fetch('/api/barbershops/shop-1/barbers')
-      .then(res => res.json())
+      .then(async res => {
+        const text = await res.text();
+        return text ? JSON.parse(text) : [];
+      })
       .then(data => {
         if (Array.isArray(data)) setBarbers(data);
         else console.error('Expected array for barbers, got:', data);
@@ -40,8 +46,12 @@ export default function Home() {
   useEffect(() => {
     if (formData.date && formData.barber_id) {
       fetch(`/api/barbershops/shop-1/availability?date=${formData.date}&barberId=${formData.barber_id}`)
-        .then(res => res.json())
-        .then(setAvailableSlots);
+        .then(async res => {
+          const text = await res.text();
+          return text ? JSON.parse(text) : [];
+        })
+        .then(setAvailableSlots)
+        .catch(console.error);
     }
   }, [formData.date, formData.barber_id]);
 

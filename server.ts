@@ -23,21 +23,40 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Global settings map (in-memory for demo/pitch purposes)
-  const shopSettings = new Map();
+  // Default config helper
+  const DEFAULT_SETTINGS = {
+    monday: { isClosed: true, open: '09:00', close: '18:00' },
+    tuesday: { isClosed: false, open: '09:00', close: '18:00' },
+    wednesday: { isClosed: false, open: '09:00', close: '18:00' },
+    thursday: { isClosed: false, open: '09:00', close: '18:00' },
+    friday: { isClosed: false, open: '09:00', close: '18:00' },
+    saturday: { isClosed: false, open: '09:00', close: '18:00' },
+    sunday: { isClosed: true, open: '09:00', close: '18:00' }
+  };
 
-  const getShopSettings = (shopId: string) => {
-    if (shopSettings.has(shopId)) return shopSettings.get(shopId);
-    // Default config
-    return {
-      monday: { isClosed: true, open: '09:00', close: '18:00' },
-      tuesday: { isClosed: false, open: '09:00', close: '18:00' },
-      wednesday: { isClosed: false, open: '09:00', close: '18:00' },
-      thursday: { isClosed: false, open: '09:00', close: '18:00' },
-      friday: { isClosed: false, open: '09:00', close: '18:00' },
-      saturday: { isClosed: false, open: '09:00', close: '18:00' },
-      sunday: { isClosed: true, open: '09:00', close: '18:00' }
-    };
+  const getShopSettings = async (shopId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('shop_settings')
+        .select('config')
+        .eq('barbershop_id', shopId)
+        .maybeSingle(); // Better than .single() as it won't throw 406 error if not found
+      
+      if (error || !data) return DEFAULT_SETTINGS;
+
+      if (typeof data.config === 'string') {
+        try {
+          return JSON.parse(data.config);
+        } catch (e) {
+          console.error("Failed to parse settings JSON:", e);
+          return DEFAULT_SETTINGS;
+        }
+      }
+      return data.config || DEFAULT_SETTINGS;
+    } catch (e) {
+      console.error("Error fetching settings:", e);
+      return DEFAULT_SETTINGS;
+    }
   };
 
   // SEO Text endpoints
@@ -165,8 +184,8 @@ async function startServer() {
       const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
       const dayName = days[targetDate.getDay()];
       
-      const config = getShopSettings(req.params.id);
-      const dayConfig = config[dayName];
+      const config = await getShopSettings(req.params.id);
+      const dayConfig = (config as any)[dayName];
       
       if (dayConfig.isClosed) return res.json([]); // Barbershop is closed this day
 
@@ -310,22 +329,31 @@ async function startServer() {
   });
 
   // --- ADMIN AUTH ---
-  api.get('/admin/settings', authenticateToken, (req: any, res) => {
-    res.json(getShopSettings(req.user.barbershopId));
+  api.get('/admin/settings', authenticateToken, async (req: any, res) => {
+    const settings = await getShopSettings(req.user.barbershopId);
+    res.json(settings);
   });
 
-  api.post('/admin/settings', authenticateToken, (req: any, res) => {
-    shopSettings.set(req.user.barbershopId, req.body);
-    res.json({ success: true });
-  });
-
-  api.get('/admin/settings', authenticateToken, (req: any, res) => {
-    res.json(getShopSettings(req.user.barbershopId));
-  });
-
-  api.post('/admin/settings', authenticateToken, (req: any, res) => {
-    shopSettings.set(req.user.barbershopId, req.body);
-    res.json({ success: true });
+  api.post('/admin/settings', authenticateToken, async (req: any, res) => {
+    const shopId = req.user.barbershopId;
+    const config = req.body;
+    
+    try {
+      const { error } = await supabase
+        .from('shop_settings')
+        .upsert({
+          id: crypto.randomUUID(), // This is technically wrong for upsert without constraint but Supabase upsert works on unique columns
+          barbershop_id: shopId,
+          config: JSON.stringify(config),
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'barbershop_id' });
+        
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao salvar configurações' });
+    }
   });
 
   api.post('/auth/login', loginLimiter, async (req, res) => {
@@ -475,76 +503,6 @@ async function startServer() {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Erro ao atualizar status' });
-    }
-  });
-
-  api.post('/admin/appointments', authenticateToken, async (req: any, res) => {
-    const { barberId, serviceId, clientName, clientPhone, date, startTime } = req.body;
-    const barbershopId = req.user.barbershopId;
-    
-    try {
-      let { data: client } = await supabase
-        .from('clients')
-        .select('*')
-        .eq('barbershop_id', barbershopId)
-        .eq('phone', clientPhone.replace(/\D/g, ''))
-        .single();
-        
-      if (!client) {
-        const clientId = crypto.randomUUID();
-        const { data: newClient, error: clientErr } = await supabase.from('clients').insert({
-          id: clientId,
-          barbershop_id: barbershopId,
-          name: clientName,
-          phone: clientPhone.replace(/\D/g, ''),
-        }).select().single();
-        if (clientErr) throw clientErr;
-        client = newClient;
-      }
-
-      const { data: service, error: svcErr } = await supabase
-        .from('services')
-        .select('*')
-        .eq('id', serviceId)
-        .single();
-        
-      if (svcErr || !service) return res.status(404).json({ error: 'Serviço não encontrado' });
-
-      const [hours, minutes] = startTime.split(':').map(Number);
-      const totalMinutes = hours * 60 + minutes + service.duration_minutes;
-      const endHours = Math.floor(totalMinutes / 60);
-      const endMins = totalMinutes % 60;
-      const endTime = `${endHours.toString().padStart(2, '0')}:${endMins.toString().padStart(2, '0')}`;
-
-      const { data: conflict } = await supabase.from('appointments').select('*')
-        .eq('barber_id', barberId)
-        .eq('date', date)
-        .eq('start_time', startTime)
-        .eq('status', 'scheduled')
-        .single();
-        
-      if (conflict) {
-        return res.status(409).json({ error: 'Horário já preenchido.' });
-      }
-
-      const appointmentId = crypto.randomUUID();
-      const { error: apptErr } = await supabase.from('appointments').insert({
-        id: appointmentId,
-        barbershop_id: barbershopId,
-        barber_id: barberId,
-        service_id: serviceId,
-        client_id: client.id,
-        date,
-        start_time: startTime,
-        end_time: endTime,
-        status: 'scheduled'
-      });
-      if (apptErr) throw apptErr;
-
-      res.json({ success: true, appointmentId });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Erro ao criar agendamento' });
     }
   });
 
@@ -1105,6 +1063,13 @@ async function startServer() {
           { id: 'srv-2', barbershop_id: shopId, name: 'Barba Terapia', duration_minutes: 30, price: 35.00, active: true },
           { id: 'srv-3', barbershop_id: shopId, name: 'Combo (Corte + Barba)', duration_minutes: 60, price: 70.00, active: true }
         ]);
+
+        await supabase.from('shop_settings').insert({
+          id: crypto.randomUUID(),
+          barbershop_id: shopId,
+          config: JSON.stringify(DEFAULT_SETTINGS),
+          updated_at: new Date().toISOString()
+        });
         
         res.json({ success: true, message: 'Database seeded! Login: admin@doiseme.com / admin123' });
       } else {
