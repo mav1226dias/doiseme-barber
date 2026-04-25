@@ -10,8 +10,9 @@ import { supabase } from './src/db/supabase';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-for-doiseme';
 
+const app = express();
+
 async function startServer() {
-  const app = express();
   const PORT = 3000;
 
   // Security Headers
@@ -318,6 +319,15 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  api.get('/admin/settings', authenticateToken, (req: any, res) => {
+    res.json(getShopSettings(req.user.barbershopId));
+  });
+
+  api.post('/admin/settings', authenticateToken, (req: any, res) => {
+    shopSettings.set(req.user.barbershopId, req.body);
+    res.json({ success: true });
+  });
+
   api.post('/auth/login', loginLimiter, async (req, res) => {
     const { email, password } = req.body;
     console.log(`[LOGIN ATTEMPT] Email: ${email}`);
@@ -465,6 +475,76 @@ async function startServer() {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Erro ao atualizar status' });
+    }
+  });
+
+  api.post('/admin/appointments', authenticateToken, async (req: any, res) => {
+    const { barberId, serviceId, clientName, clientPhone, date, startTime } = req.body;
+    const barbershopId = req.user.barbershopId;
+    
+    try {
+      let { data: client } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('barbershop_id', barbershopId)
+        .eq('phone', clientPhone.replace(/\D/g, ''))
+        .single();
+        
+      if (!client) {
+        const clientId = crypto.randomUUID();
+        const { data: newClient, error: clientErr } = await supabase.from('clients').insert({
+          id: clientId,
+          barbershop_id: barbershopId,
+          name: clientName,
+          phone: clientPhone.replace(/\D/g, ''),
+        }).select().single();
+        if (clientErr) throw clientErr;
+        client = newClient;
+      }
+
+      const { data: service, error: svcErr } = await supabase
+        .from('services')
+        .select('*')
+        .eq('id', serviceId)
+        .single();
+        
+      if (svcErr || !service) return res.status(404).json({ error: 'Serviço não encontrado' });
+
+      const [hours, minutes] = startTime.split(':').map(Number);
+      const totalMinutes = hours * 60 + minutes + service.duration_minutes;
+      const endHours = Math.floor(totalMinutes / 60);
+      const endMins = totalMinutes % 60;
+      const endTime = `${endHours.toString().padStart(2, '0')}:${endMins.toString().padStart(2, '0')}`;
+
+      const { data: conflict } = await supabase.from('appointments').select('*')
+        .eq('barber_id', barberId)
+        .eq('date', date)
+        .eq('start_time', startTime)
+        .eq('status', 'scheduled')
+        .single();
+        
+      if (conflict) {
+        return res.status(409).json({ error: 'Horário já preenchido.' });
+      }
+
+      const appointmentId = crypto.randomUUID();
+      const { error: apptErr } = await supabase.from('appointments').insert({
+        id: appointmentId,
+        barbershop_id: barbershopId,
+        barber_id: barberId,
+        service_id: serviceId,
+        client_id: client.id,
+        date,
+        start_time: startTime,
+        end_time: endTime,
+        status: 'scheduled'
+      });
+      if (apptErr) throw apptErr;
+
+      res.json({ success: true, appointmentId });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao criar agendamento' });
     }
   });
 
@@ -1053,10 +1133,14 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  if (process.env.VERCEL !== '1') {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
 startServer();
+
+export default app;
 // end
