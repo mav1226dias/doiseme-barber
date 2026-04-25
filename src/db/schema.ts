@@ -27,6 +27,7 @@ export const barbers = pgTable('barbers', {
   barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
   userId: text('user_id').references(() => users.id), // Optional link to user account
   name: text('name').notNull(),
+  commissionPercentage: real('commission_percentage').notNull().default(50), // Percentage for the barber
   active: boolean('active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
@@ -60,6 +61,18 @@ export const appointments = pgTable('appointments', {
   startTime: text('start_time').notNull(), // HH:MM
   endTime: text('end_time').notNull(), // HH:MM
   status: text('status').notNull().default('scheduled'), // scheduled, completed, cancelled
+  priceAtBooking: real('price_at_booking'), 
+  commissionPercentageAtBooking: real('commission_percentage_at_booking'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const expenses = pgTable('expenses', {
+  id: text('id').primaryKey(),
+  barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
+  description: text('description').notNull(),
+  amount: real('amount').notNull(),
+  category: text('category').notNull(), // rent, supplies, utilities, marketing, other
+  date: text('date').notNull(), // YYYY-MM-DD
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 

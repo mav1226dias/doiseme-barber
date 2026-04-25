@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
-import { Users, DollarSign, Calendar as CalendarIcon, Filter } from 'lucide-react';
+import { Users, DollarSign, Calendar as CalendarIcon, Filter, TrendingDown, Wallet } from 'lucide-react';
 
 export default function Dashboard() {
   const [stats, setStats] = useState({
     totalAppointments: 0,
     totalRevenue: 0,
+    totalCommissions: 0,
+    totalExpenses: 0,
+    netProfit: 0,
     appointmentsByBarber: [] as any[]
   });
 
@@ -58,10 +61,22 @@ export default function Dashboard() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 sm:gap-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
         <div className="bg-white dark:bg-zinc-900 p-4 sm:p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm flex flex-col justify-between">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm sm:text-base text-gray-500 dark:text-gray-400 font-medium">Total de Agendamentos</h3>
+            <h3 className="text-sm sm:text-base text-gray-500 dark:text-gray-400 font-medium">Faturamento Bruto</h3>
+            <div className="w-10 h-10 bg-green-50 dark:bg-green-900/30 rounded-full flex items-center justify-center shrink-0 ml-2">
+              <DollarSign className="w-5 h-5 text-green-600 dark:text-green-400" />
+            </div>
+          </div>
+          <div className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
+            R$ {stats.totalRevenue.toFixed(2)}
+          </div>
+        </div>
+
+        <div className="bg-white dark:bg-zinc-900 p-4 sm:p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm flex flex-col justify-between">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm sm:text-base text-gray-500 dark:text-gray-400 font-medium">Agendamentos</h3>
             <div className="w-10 h-10 bg-blue-50 dark:bg-blue-900/30 rounded-full flex items-center justify-center shrink-0 ml-2">
               <CalendarIcon className="w-5 h-5 text-blue-600 dark:text-blue-400" />
             </div>
@@ -71,13 +86,25 @@ export default function Dashboard() {
 
         <div className="bg-white dark:bg-zinc-900 p-4 sm:p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm flex flex-col justify-between">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm sm:text-base text-gray-500 dark:text-gray-400 font-medium">Faturamento Total</h3>
-            <div className="w-10 h-10 bg-green-50 dark:bg-green-900/30 rounded-full flex items-center justify-center shrink-0 ml-2">
-              <DollarSign className="w-5 h-5 text-green-600 dark:text-green-400" />
+            <h3 className="text-sm sm:text-base text-gray-500 dark:text-gray-400 font-medium">Despesas/Comissões</h3>
+            <div className="w-10 h-10 bg-red-50 dark:bg-red-900/30 rounded-full flex items-center justify-center shrink-0 ml-2">
+              <TrendingDown className="w-5 h-5 text-red-600 dark:text-red-400" />
             </div>
           </div>
-          <div className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">
-            R$ {stats.totalRevenue.toFixed(2)}
+          <div className="text-2xl sm:text-3xl font-bold text-red-600 dark:text-red-400">
+            R$ {(stats.totalExpenses + stats.totalCommissions).toFixed(2)}
+          </div>
+        </div>
+
+        <div className="bg-black dark:bg-[#D4AF37] p-4 sm:p-6 rounded-2xl shadow-lg flex flex-col justify-between">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm sm:text-base text-white/70 dark:text-black/70 font-medium">Lucro Líquido</h3>
+            <div className="w-10 h-10 bg-white/20 dark:bg-black/20 rounded-full flex items-center justify-center shrink-0 ml-2">
+              <Wallet className="w-5 h-5 text-white dark:text-black" />
+            </div>
+          </div>
+          <div className="text-2xl sm:text-3xl font-bold text-white dark:text-black">
+            R$ {stats.netProfit.toFixed(2)}
           </div>
         </div>
       </div>
@@ -93,7 +120,10 @@ export default function Dashboard() {
                 </div>
                 <span className="font-medium text-gray-900 dark:text-gray-100">{barber.name}</span>
               </div>
-              <div className="font-bold text-gray-900 dark:text-gray-100">{barber.count} agendamentos</div>
+              <div className="flex flex-col items-end">
+                <div className="font-bold text-gray-900 dark:text-gray-100">{barber.count} agendamentos</div>
+                <div className="text-xs text-green-600 dark:text-green-400">R$ {barber.revenue?.toFixed(2)}</div>
+              </div>
             </div>
           ))}
           {(!stats.appointmentsByBarber || stats.appointmentsByBarber.length === 0) && (

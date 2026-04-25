@@ -1,6 +1,6 @@
 // watch triggered
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Scissors, Calendar, Bell, LogOut, Menu, X, Sun, Moon, Settings } from 'lucide-react';
+import { LayoutDashboard, Users, Scissors, Calendar, Bell, LogOut, Menu, X, Sun, Moon, Settings, Wallet } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 
@@ -36,6 +36,7 @@ export default function AdminLayout() {
     { path: '/admin/barbers', icon: Users, label: 'Profissionais' },
     { path: '/admin/services', icon: Scissors, label: 'Serviços' },
     { path: '/admin/clients', icon: Users, label: 'Clientes' },
+    { path: '/admin/finances', icon: Wallet, label: 'Contabilidade' },
     { path: '/admin/campaigns', icon: Bell, label: 'Campanhas' },
     { path: '/admin/notifications', icon: Bell, label: 'Notificações' },
     { path: '/admin/settings', icon: Settings, label: 'Configurações' },

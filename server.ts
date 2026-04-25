@@ -421,28 +421,100 @@ async function startServer() {
 
       const totalAppointments = allAppointments?.length || 0;
       
-      // Calculate revenue
+      // Calculate revenue and commissions
       let totalRevenue = 0;
+      let totalCommissions = 0;
       (allAppointments || []).forEach(app => {
-        if (app.status !== 'cancelled') {
+        if (app.status === 'completed' || app.status === 'scheduled') {
           const service = (allServices || []).find(s => s.id === app.service_id);
-          if (service) totalRevenue += service.price;
+          const barber = (allBarbers || []).find(b => b.id === app.barber_id);
+          if (service) {
+            totalRevenue += service.price;
+            const rate = barber?.commission_percentage || 50;
+            totalCommissions += (service.price * rate) / 100;
+          }
         }
       });
+
+      // Get expenses
+      const { data: allExpenses } = await supabase
+        .from('expenses')
+        .select('*')
+        .eq('barbershop_id', barbershopId)
+        .gte('date', start || '2000-01-01')
+        .lte('date', end || '2100-01-01');
+
+      const totalExpenses = (allExpenses || []).reduce((acc, curr) => acc + curr.amount, 0);
 
       // Calculate appointments by barber
       const appointmentsByBarber = (allBarbers || []).map(barber => {
         const count = (allAppointments || []).filter(app => app.barber_id === barber.id).length;
-        return { name: barber.name, count };
+        const revenue = (allAppointments || []).filter(app => app.barber_id === barber.id).reduce((acc, app) => {
+          const service = (allServices || []).find(s => s.id === app.service_id);
+          return acc + (service?.price || 0);
+        }, 0);
+        return { name: barber.name, count, revenue };
       }).sort((a, b) => b.count - a.count);
 
       res.json({
         totalAppointments,
         totalRevenue,
+        totalCommissions,
+        totalExpenses,
+        netProfit: totalRevenue - totalCommissions - totalExpenses,
         appointmentsByBarber
       });
     } catch (error) {
+      console.error(error);
       res.status(500).json({ error: 'Erro ao carregar dashboard' });
+    }
+  });
+
+  // Finances / Expenses
+  api.get('/admin/expenses', authenticateToken, async (req: any, res) => {
+    try {
+      const { data: expensesList, error } = await supabase
+        .from('expenses')
+        .select('*')
+        .eq('barbershop_id', req.user.barbershopId)
+        .order('date', { ascending: false });
+      if (error) throw error;
+      res.json(expensesList || []);
+    } catch (error) {
+      res.status(500).json({ error: 'Erro ao buscar despesas' });
+    }
+  });
+
+  api.post('/admin/expenses', authenticateToken, async (req: any, res) => {
+    const { description, amount, category, date } = req.body;
+    try {
+      const id = crypto.randomUUID();
+      const { error } = await supabase.from('expenses').insert({
+        id,
+        barbershop_id: req.user.barbershopId,
+        description,
+        amount: Number(amount),
+        category,
+        date
+      });
+      if (error) throw error;
+      res.json({ success: true, id });
+    } catch (error) {
+      res.status(500).json({ error: 'Erro ao criar despesa' });
+    }
+  });
+
+  api.delete('/admin/expenses/:id', authenticateToken, async (req: any, res) => {
+    try {
+      const { error } = await supabase
+        .from('expenses')
+        .delete()
+        .eq('id', req.params.id)
+        .eq('barbershop_id', req.user.barbershopId);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Erro ao excluir despesa' });
     }
   });
 
