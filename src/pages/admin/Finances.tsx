@@ -29,15 +29,32 @@ export default function Finances() {
     
     // Fetch summary stats from dashboard API
     fetch('/api/admin/dashboard', { headers: { 'Authorization': `Bearer ${token}` } })
-      .then(res => res.json())
-      .then(data => setStats(data))
+      .then(async res => {
+        const text = await res.text();
+        try {
+           const data = text ? JSON.parse(text) : {};
+           if (data && !data.error) setStats(data);
+        } catch (e) { console.error("Parse error dashboard", e); }
+      })
       .catch(console.error);
 
     // Fetch expenses
     fetch('/api/admin/expenses', { headers: { 'Authorization': `Bearer ${token}` } })
-      .then(res => res.json())
-      .then(data => setExpenses(data))
-      .catch(console.error);
+      .then(async res => {
+        const text = await res.text();
+        try {
+          const data = text ? JSON.parse(text) : [];
+          if (Array.isArray(data)) setExpenses(data);
+          else setExpenses([]);
+        } catch (e) {
+          console.error("Parse error expenses", e);
+          setExpenses([]);
+        }
+      })
+      .catch(err => {
+        console.error(err);
+        setExpenses([]);
+      });
   };
 
   useEffect(() => {
@@ -134,6 +151,29 @@ export default function Finances() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Commissions Summary */}
+        <div className="lg:col-span-3">
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm overflow-hidden">
+            <div className="p-6 border-b border-gray-100 dark:border-zinc-800">
+              <h2 className="text-xl font-bold text-gray-900 dark:text-gray-100">Comissões por Profissional</h2>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 p-6 bg-gray-50/50 dark:bg-zinc-800/30">
+              {(stats.appointmentsByBarber || []).map((barber: any, idx) => {
+                const commission = (barber.revenue * (barber.commission_percentage || 50)) / 100;
+                return (
+                  <div key={idx} className="bg-white dark:bg-zinc-900 p-4 rounded-xl border border-gray-100 dark:border-zinc-800">
+                    <div className="text-sm text-gray-500 mb-1">{barber.name}</div>
+                    <div className="flex justify-between items-end">
+                      <div className="text-xs text-gray-400">Receita: R$ {barber.revenue.toFixed(2)}</div>
+                      <div className="text-lg font-bold text-blue-600">R$ {commission.toFixed(2)}</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
         {/* New Expense Form */}
         <div className="lg:col-span-1">
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm sticky top-8">
@@ -201,7 +241,7 @@ export default function Finances() {
               <Calendar className="w-5 h-5 text-gray-400" />
             </div>
             <div className="divide-y divide-gray-100 dark:divide-zinc-800">
-              {expenses.map(expense => (
+              {Array.isArray(expenses) && expenses.map(expense => (
                 <div key={expense.id} className="p-6 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors">
                   <div className="flex gap-4">
                     <div className="w-10 h-10 bg-gray-100 dark:bg-zinc-800 rounded-lg flex items-center justify-center shrink-0">

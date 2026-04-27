@@ -453,7 +453,12 @@ async function startServer() {
           const service = (allServices || []).find(s => s.id === app.service_id);
           return acc + (service?.price || 0);
         }, 0);
-        return { name: barber.name, count, revenue };
+        return { 
+          name: barber.name, 
+          count, 
+          revenue,
+          commission_percentage: barber.commission_percentage || 50
+        };
       }).sort((a, b) => b.count - a.count);
 
       res.json({
