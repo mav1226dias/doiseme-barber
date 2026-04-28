@@ -22,6 +22,7 @@ import Finances from './pages/admin/Finances';
 import Packages from './pages/admin/Packages';
 import VisualIdentity from './pages/admin/VisualIdentity';
 import BookingSite from './pages/admin/BookingSite';
+import MasterAdmin from './pages/admin/MasterAdmin';
 import ErrorBoundary from './components/ErrorBoundary';
 
 export default function App() {
@@ -51,6 +52,7 @@ export default function App() {
               <Route path="campaigns" element={<Campaigns />} />
               <Route path="notifications" element={<Notifications />} />
               <Route path="booking-site" element={<BookingSite />} />
+              <Route path="master" element={<MasterAdmin />} />
               <Route path="settings" element={<Settings />} />
             </Route>
           </Routes>

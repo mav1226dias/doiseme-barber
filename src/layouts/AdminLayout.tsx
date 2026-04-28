@@ -1,6 +1,6 @@
 // watch triggered
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Scissors, Calendar, Bell, LogOut, Menu, X, Sun, Moon, Settings, Wallet, Package, Palette, Globe, Megaphone } from 'lucide-react';
+import { LayoutDashboard, Users, Scissors, Calendar, Bell, LogOut, Menu, X, Sun, Moon, Settings, Wallet, Package, Palette, Globe, Megaphone, Shield } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 
@@ -11,12 +11,24 @@ export default function AdminLayout() {
   const { theme, setTheme } = useTheme();
   // Avoid hydration mismatch
   const [mounted, setMounted] = useState(false);
+  const [isMaster, setIsMaster] = useState(false);
 
   useEffect(() => {
     setMounted(true);
     const token = localStorage.getItem('token');
     if (!token) {
       navigate('/admin/login');
+    } else {
+      // Simple JWT decode to check role/email
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        const masterEmails = ['admin@doiseme.com', 'marcusdoiseme@doiseme.com'];
+        if (payload.role === 'master' || masterEmails.includes(payload.email)) {
+          setIsMaster(true);
+        }
+      } catch (e) {
+        console.error("Failed to decode token", e);
+      }
     }
   }, [navigate]);
 
@@ -44,6 +56,10 @@ export default function AdminLayout() {
     { path: '/admin/booking-site', icon: Globe, label: 'Site de Agendamento' },
     { path: '/admin/settings', icon: Settings, label: 'Configurações' },
   ];
+
+  if (isMaster) {
+    navItems.push({ path: '/admin/master', icon: Shield, label: 'Painel Master' });
+  }
 
   return (
     <div className="min-h-screen bg-[#f5f5f5] dark:bg-zinc-950 text-gray-900 dark:text-gray-100 flex flex-col md:flex-row transition-colors">

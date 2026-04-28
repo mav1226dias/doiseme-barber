@@ -161,15 +161,39 @@ export default function Booking() {
   }
 
   return (
-    <div className="max-w-xl mx-auto mt-12 px-4 pb-20">
-      <div className="text-center mb-12">
-        {shop.logo_url ? (
-          <img src={shop.logo_url} alt={shop.name} className="h-24 mx-auto mb-6 object-contain" />
-        ) : (
-          <Scissors className="w-16 h-16 mx-auto mb-6 opacity-20" />
-        )}
-        <h1 className="text-4xl font-bold mb-4 font-serif tracking-tight">{shop.name}</h1>
-        <p className="text-white/50 uppercase tracking-widest text-[10px] font-semibold">Agendamento Online</p>
+    <div className="max-w-xl mx-auto mt-8 px-4 pb-20">
+      <div className="text-center mb-10">
+        <div className="relative inline-block mb-6">
+          {shop.logo_url ? (
+            <img src={shop.logo_url} alt={shop.name} className="h-28 w-28 mx-auto object-contain rounded-2xl bg-white/5 p-2" />
+          ) : (
+            <div className="h-28 w-28 mx-auto bg-white/5 rounded-2xl flex items-center justify-center">
+              <Scissors className="w-12 h-12 opacity-20" />
+            </div>
+          )}
+        </div>
+        
+        <h1 className="text-4xl font-bold mb-2 font-serif tracking-tight">{shop.name}</h1>
+        
+        <div className="flex items-center justify-center gap-3 mb-6">
+          {shop.phone && (
+            <a href={`https://wa.me/55${shop.phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="w-8 h-8 flex items-center justify-center rounded-full bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366] hover:text-white transition-colors" title="WhatsApp">
+              <MessageCircle className="w-4 h-4" />
+            </a>
+          )}
+          {shop.instagram && (
+            <a href={`https://instagram.com/${shop.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="w-8 h-8 flex items-center justify-center rounded-full bg-[#E1306C]/10 text-[#E1306C] hover:bg-[#E1306C] hover:text-white transition-colors" title="Instagram">
+              <Instagram className="w-4 h-4" />
+            </a>
+          )}
+          {shop.maps_url && (
+            <a href={shop.maps_url} target="_blank" rel="noreferrer" className="w-8 h-8 flex items-center justify-center rounded-full bg-[#4285F4]/10 text-[#4285F4] hover:bg-[#4285F4] hover:text-white transition-colors" title="Como chegar">
+              <MapPin className="w-4 h-4" />
+            </a>
+          )}
+        </div>
+        
+        <p className="text-white/40 uppercase tracking-[0.2em] text-[9px] font-bold">Agendamento Online</p>
       </div>
 
       <div className={`shadow-2xl transition-all ${

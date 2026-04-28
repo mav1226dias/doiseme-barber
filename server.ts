@@ -11,6 +11,7 @@ import { supabase } from './src/db/supabase';
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-for-doiseme';
 
 const app = express();
+app.set('trust proxy', 1);
 
 async function startServer() {
   const PORT = 3000;
@@ -23,7 +24,14 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Default config helper
+  // API Routes
+  const api = express.Router();
+  
+  // LOG ALL API REQUESTS FOR DEBUGGING
+  api.use((req, res, next) => {
+    console.log(`[API_REQ] ${req.method} ${req.path}`);
+    next();
+  });
   const DEFAULT_SETTINGS = {
     monday: { isClosed: true, open: '09:00', close: '18:00' },
     tuesday: { isClosed: false, open: '09:00', close: '18:00' },
@@ -77,14 +85,14 @@ async function startServer() {
 </urlset>`);
   });
 
-  // API Routes
-  const api = express.Router();
-
-  // Basic rate limiting for login
+  // Rate limiting for login - simplified to respect trust proxy
   const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 mins
     max: 10,
-    message: { error: 'Muitas tentativas de login. Tente novamente mais tarde.' }
+    message: { error: 'Muitas tentativas de login. Tente novamente mais tarde.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    // When trust proxy is true, req.ip will be the client IP
   });
 
   // Auth Middleware
@@ -100,6 +108,29 @@ async function startServer() {
       next();
     });
   };
+
+  // Super Admin Check Middleware
+  const requireMaster = (req: any, res: any, next: any) => {
+    // Only users with 'master' role OR specific emails can access
+    const masterEmails = ['admin@doiseme.com', 'marcusdoiseme@doiseme.com'];
+    if (req.user.role === 'master' || masterEmails.includes(req.user.email)) {
+      next();
+    } else {
+      res.status(403).json({ error: 'Acesso restrito ao Administrador Geral' });
+    }
+  };
+
+  api.get('/health', async (req, res) => {
+    try {
+      const { data, error } = await supabase.from('barbershops').select('id').limit(1);
+      if (error) {
+        return res.status(500).json({ status: 'error', database: 'failed', error });
+      }
+      res.json({ status: 'ok', database: 'connected', timestamp: new Date().toISOString() });
+    } catch (e: any) {
+      res.status(500).json({ status: 'error', message: e.message });
+    }
+  });
 
   // --- PUBLIC ROUTES ---
   
@@ -431,31 +462,46 @@ async function startServer() {
   api.post('/auth/login', loginLimiter, async (req, res) => {
     const { email, password } = req.body;
     console.log(`[LOGIN ATTEMPT] Email: ${email}`);
+    
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email e senha são obrigatórios' });
+    }
+
     try {
       const { data: user, error } = await supabase
         .from('users')
         .select('*')
         .eq('email', email)
-        .single();
+        .maybeSingle(); // Better than .single() to avoid 406 on no rows
         
       if (error) {
-        console.error(`[LOGIN ERROR] Supabase error:`, error);
-        return res.status(401).json({ error: 'Credenciais inválidas' });
+        console.error(`[LOGIN ERROR] Supabase query failed:`, JSON.stringify(error, null, 2));
+        return res.status(500).json({ 
+          error: 'Erro na conexão com o banco de dados',
+          details: error.message,
+          code: error.code
+        });
       }
       
       if (!user) {
-        console.warn(`[LOGIN WARN] User not found`);
-        return res.status(401).json({ error: 'Credenciais inválidas' });
+        console.warn(`[LOGIN WARN] User not found: ${email}`);
+        return res.status(401).json({ error: 'Usuário não encontrado ou credenciais inválidas' });
       }
 
       const valid = await bcrypt.compare(password, user.password_hash);
       if (!valid) {
         console.warn(`[LOGIN WARN] Invalid password for ${email}`);
-        return res.status(401).json({ error: 'Credenciais inválidas' });
+        return res.status(401).json({ error: 'Senha incorreta' });
       }
 
-      console.log(`[LOGIN SUCCESS] User authenticated: ${email}`);
-      const token = jwt.sign({ id: user.id, barbershopId: user.barbershop_id, role: user.role }, JWT_SECRET, { expiresIn: '1d' });
+      console.log(`[LOGIN SUCCESS] User authenticated: ${email} (Role: ${user.role})`);
+      const token = jwt.sign({ 
+        id: user.id, 
+        barbershopId: user.barbershop_id, 
+        role: user.role,
+        email: user.email 
+      }, JWT_SECRET, { expiresIn: '1d' });
+      
       res.json({ 
         token, 
         user: { 
@@ -466,9 +512,9 @@ async function startServer() {
           barbershopId: user.barbershop_id 
         } 
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error(`[LOGIN FATAL ERROR]`, error);
-      res.status(500).json({ error: 'Erro no login' });
+      res.status(500).json({ error: 'Erro interno ao processar login', details: error.message });
     }
   });
 
@@ -1305,11 +1351,107 @@ async function startServer() {
   });
 
   // Seed endpoint
+  // --- MASTER ADMIN ROUTES ---
+
+  // Create new shop + master user
+  api.post('/admin/master/shops', authenticateToken, requireMaster, async (req, res) => {
+    const { name, slug, email, password } = req.body;
+    
+    if (!name || !slug || !email || !password) {
+      return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
+    }
+
+    try {
+      const cleanSlug = standardizeSlug(slug);
+      
+      // Check if slug taken
+      const { data: existingShop } = await supabase
+        .from('barbershops')
+        .select('id')
+        .eq('slug', cleanSlug)
+        .maybeSingle();
+
+      if (existingShop) {
+        return res.status(400).json({ error: 'Este link (slug) já está em uso.' });
+      }
+
+      // Check if email taken
+      const { data: existingUser } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', email)
+        .maybeSingle();
+
+      if (existingUser) {
+        return res.status(400).json({ error: 'Este email já está cadastrado.' });
+      }
+
+      // Create shop
+      const shopId = crypto.randomUUID();
+      const { error: shopErr } = await supabase
+        .from('barbershops')
+        .insert({
+          id: shopId,
+          name,
+          slug: cleanSlug,
+        });
+
+      if (shopErr) throw shopErr;
+
+      // Create Admin User
+      const userId = crypto.randomUUID();
+      const passwordHash = await bcrypt.hash(password, 10);
+      const { error: userErr } = await supabase
+        .from('users')
+        .insert({
+          id: userId,
+          barbershop_id: shopId,
+          name: `${name} Admin`,
+          email,
+          password_hash: passwordHash,
+          role: 'admin'
+        });
+
+      if (userErr) throw userErr;
+
+      res.json({ 
+        success: true, 
+        message: 'Barbearia e administrador criados com sucesso!', 
+        shop: { id: shopId, name, slug: cleanSlug },
+        admin: { email }
+      });
+    } catch (e: any) {
+      console.error('[MASTER_CREATE_SHOP_ERROR]', e);
+      res.status(500).json({ error: 'Erro ao criar barbearia', details: e.message });
+    }
+  });
+
+  // List all shops (Master only)
+  api.get('/admin/master/shops', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from('barbershops')
+        .select('*')
+        .order('name');
+      
+      if (error) throw error;
+      res.json(data);
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao buscar lojas', details: e.message });
+    }
+  });
+
+  // --- END MASTER ADMIN ROUTES ---
+
   api.post('/seed', async (req, res) => {
     try {
+      console.log('[SEED] Starting database sync...');
       const shopId = 'shop-1';
-      const { data: existingShop } = await supabase.from('barbershops').select('*').eq('id', shopId).single();
+      const { data: existingShop } = await supabase.from('barbershops').select('*').eq('id', shopId).maybeSingle();
       
+      const hashDefault = await bcrypt.hash('admin123', 10);
+      const hashMarcus = await bcrypt.hash('Luna2025', 10);
+
       if (!existingShop) {
         await supabase.from('barbershops').insert({
           id: shopId,
@@ -1319,43 +1461,81 @@ async function startServer() {
           phone: '11999999999',
           instagram: '@doiseme.barber'
         });
+      }
 
-        const hash = await bcrypt.hash('admin123', 10);
-        await supabase.from('users').insert({
-          id: 'user-1',
+      const usersToSeed = [
+        {
+          id: 'user-admin',
           barbershop_id: shopId,
           name: 'Admin Doiseme',
           email: 'admin@doiseme.com',
-          password_hash: hash,
-          role: 'admin'
-        });
+          password_hash: hashDefault,
+          role: 'master'
+        },
+        {
+          id: 'user-marcus',
+          barbershop_id: shopId,
+          name: 'Marcus Doiseme',
+          email: 'marcusdoiseme@doiseme.com',
+          password_hash: hashMarcus,
+          role: 'master'
+        }
+      ];
 
+      for (const u of usersToSeed) {
+        const { data: ext } = await supabase.from('users').select('id').eq('email', u.email).maybeSingle();
+        if (!ext) {
+          await supabase.from('users').insert(u);
+        } else {
+          await supabase.from('users').update({ role: 'master' }).eq('email', u.email);
+        }
+      }
+
+      // Barbers ensure
+      const { count: bCount } = await supabase.from('barbers').select('*', { count: 'exact', head: true });
+      if (!bCount) {
         await supabase.from('barbers').insert([
           { id: 'barber-1', barbershop_id: shopId, name: 'João Silva', active: true },
           { id: 'barber-2', barbershop_id: shopId, name: 'Carlos Santos', active: true }
         ]);
+      }
 
+      // Services ensure
+      const { count: sCount } = await supabase.from('services').select('*', { count: 'exact', head: true });
+      if (!sCount) {
         await supabase.from('services').insert([
           { id: 'srv-1', barbershop_id: shopId, name: 'Corte Clássico', duration_minutes: 30, price: 45.00, active: true },
-          { id: 'srv-2', barbershop_id: shopId, name: 'Barba Terapia', duration_minutes: 30, price: 35.00, active: true },
-          { id: 'srv-3', barbershop_id: shopId, name: 'Combo (Corte + Barba)', duration_minutes: 60, price: 70.00, active: true }
+          { id: 'srv-2', barbershop_id: shopId, name: 'Barba Terapia', duration_minutes: 30, price: 35.00, active: true }
         ]);
-
-        await supabase.from('shop_settings').insert({
-          id: crypto.randomUUID(),
-          barbershop_id: shopId,
-          config: JSON.stringify(DEFAULT_SETTINGS),
-          updated_at: new Date().toISOString()
-        });
-        
-        res.json({ success: true, message: 'Database seeded! Login: admin@doiseme.com / admin123' });
-      } else {
-        res.json({ success: true, message: 'Database already seeded.' });
       }
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Seed failed' });
+
+      res.json({ 
+        success: true, 
+        message: 'Sistema sincronizado com sucesso!',
+        logins: 'Marcus: marcusdoiseme@doiseme.com (Luna2025) | Admin: admin@doiseme.com (admin123)' 
+      });
+    } catch (error: any) {
+      console.error('[SEED_ERROR]', error);
+      res.status(500).json({ error: 'Seed failed', details: error.message });
     }
+  });
+
+  // API 404 Handler - Prevent falling through to SPA HTML
+  api.use((req, res) => {
+    console.warn(`[API_404] ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ 
+      error: 'Rota da API não encontrada',
+      path: req.originalUrl 
+    });
+  });
+
+  // API Global Error Handler
+  api.use((err: any, req: any, res: any, next: any) => {
+    console.error(`[API_ERROR] ${req.method} ${req.originalUrl}:`, err);
+    res.status(500).json({ 
+      error: 'Erro interno na API',
+      message: err.message 
+    });
   });
 
   app.use('/api', api);
@@ -1375,9 +1555,43 @@ async function startServer() {
     });
   }
 
+  // Final server setup
   if (process.env.VERCEL !== '1') {
-    app.listen(PORT, '0.0.0.0', () => {
+    app.listen(PORT, '0.0.0.0', async () => {
       console.log(`Server running on http://localhost:${PORT}`);
+      
+      // ENSURE MASTER USERS ON STARTUP
+      try {
+        console.log('[STARTUP] Syncing Master users...');
+        const masterUsers = [
+          { email: 'marcusdoiseme@doiseme.com', name: 'Marcus Doiseme', pass: 'Luna2025' },
+          { email: 'admin@doiseme.com', name: 'Admin Doiseme', pass: 'admin123' },
+          { email: 'marcusdias2014mv@gmail.com', name: 'Marcus Dias', pass: 'admin123' }
+        ];
+
+        for (const u of masterUsers) {
+          const { data: existingUser } = await supabase.from('users').select('id').eq('email', u.email).maybeSingle();
+          
+          if (existingUser) {
+            const { error } = await supabase.from('users').update({ role: 'master' }).eq('email', u.email);
+            if (!error) console.log(`[STARTUP] Updated ${u.email} to master.`);
+          } else {
+            console.log(`[STARTUP] Creating master user: ${u.email}`);
+            const passwordHash = await bcrypt.hash(u.pass, 10);
+            const { error } = await supabase.from('users').insert({
+              id: crypto.randomUUID(),
+              barbershop_id: 'shop-1', // Ensure shop-1 exists as well
+              name: u.name,
+              email: u.email,
+              password_hash: passwordHash,
+              role: 'master'
+            });
+            if (error) console.error(`[STARTUP] Failed to create ${u.email}:`, error);
+          }
+        }
+      } catch (e) {
+        console.error('[STARTUP_SYNC_FAILED]', e);
+      }
     });
   }
 }

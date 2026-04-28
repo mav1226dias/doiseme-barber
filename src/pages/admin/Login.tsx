@@ -27,13 +27,15 @@ export default function Login() {
       });
       clearTimeout(id);
       
-      console.log('Response status:', res.status);
-      const text = await res.text();
+      const contentType = res.headers.get('content-type');
       let data;
-      try {
-        data = text ? JSON.parse(text) : {};
-      } catch (e) {
-        data = { error: 'O servidor retornou uma resposta inválida.' };
+      
+      if (contentType && contentType.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        console.error('Non-JSON response:', text.substring(0, 500));
+        data = { error: 'O servidor retornou uma resposta inválida (HTML). Verifique se a API está funcionando.' };
       }
       
       console.log('Response data:', data);

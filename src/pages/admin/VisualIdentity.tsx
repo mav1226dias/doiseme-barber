@@ -58,7 +58,7 @@ export default function VisualIdentity() {
     img.src = imageUrl;
     img.onload = async () => {
       try {
-        const palette = await getPalette(img, 5);
+        const palette = await (getPalette as any)(img, 8);
         if (!palette || !Array.isArray(palette)) throw new Error('Invalid palette');
         
         const hexColors = palette.map((rgb: any) => {
@@ -66,14 +66,37 @@ export default function VisualIdentity() {
           return '#' + rgb.map(x => Math.round(x).toString(16).padStart(2, '0')).join('');
         });
         
-        // Generate a few palette combinations
+        // Remove duplicates and white/black if needed
+        const uniqueColors = Array.from(new Set(hexColors)).filter(c => c !== '#ffffff' && c !== '#000000');
+        
         const suggestions = [
-          { name: 'Identidade Pura', primary: hexColors[0], secondary: '#000000' },
-          { name: 'Elegante', primary: hexColors[1] || hexColors[0], secondary: '#1a1a1a' },
-          { name: 'Contraste', primary: hexColors[2] || hexColors[0], secondary: '#0f0f0f' }
+          { 
+            name: 'Padrão Profissional', 
+            primary: uniqueColors[0] || hexColors[0], 
+            secondary: '#111111' 
+          },
+          { 
+            name: 'Contraste Alto', 
+            primary: uniqueColors[1] || hexColors[1] || '#D4AF37', 
+            secondary: uniqueColors[0] || hexColors[0] 
+          },
+          { 
+            name: 'Suave / Pastel', 
+            primary: uniqueColors[2] || hexColors[2] || '#f4f4f5', 
+            secondary: '#27272a' 
+          },
+          { 
+            name: 'Dark Mode Gold', 
+            primary: '#c5a02b', 
+            secondary: '#000000' 
+          }
         ];
+        
         setSuggestedPalettes(suggestions);
-        setPrimaryColor(hexColors[0]);
+        // Don't auto-set black as primary if possible
+        const bestDefault = uniqueColors[0] || hexColors[0];
+        setPrimaryColor(bestDefault);
+        setSecondaryColor(suggestions[0].secondary);
       } catch (e) {
         console.error('Failed to extract colors:', e);
       }
@@ -136,7 +159,7 @@ export default function VisualIdentity() {
 
   return (
     <div className="space-y-8 pb-32">
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Identidade Visual</h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">Configure o visual que seus clientes verão ao agendar</p>
@@ -144,7 +167,7 @@ export default function VisualIdentity() {
         <button 
           onClick={handleSave}
           disabled={saving}
-          className="bg-black dark:bg-[#D4AF37] text-white px-8 py-3 rounded-xl font-bold hover:opacity-90 transition-opacity disabled:opacity-50 shadow-lg"
+          className="w-full sm:w-auto bg-black dark:bg-[#D4AF37] text-white dark:text-black px-8 py-3 rounded-xl font-bold hover:opacity-90 transition-opacity disabled:opacity-50 shadow-lg"
         >
           {saving ? 'SALVANDO...' : 'SALVAR ALTERAÇÕES'}
         </button>
@@ -155,13 +178,13 @@ export default function VisualIdentity() {
         <div className="xl:col-span-12 lg:col-span-1 border-b border-gray-100 dark:border-zinc-800 pb-8">
            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {/* Logo Card */}
-              <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm">
+              <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm flex flex-col h-full">
                 <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
                   <Upload className="w-4 h-4" /> Logotipo
                 </h2>
                 <div 
                   onClick={() => fileInputRef.current?.click()}
-                  className="w-full h-40 border-2 border-dashed border-gray-100 dark:border-zinc-800 rounded-2xl flex items-center justify-center cursor-pointer hover:border-[#D4AF37] transition-colors overflow-hidden bg-gray-50 dark:bg-zinc-950/50"
+                  className="w-full flex-1 min-h-[160px] border-2 border-dashed border-gray-100 dark:border-zinc-800 rounded-2xl flex items-center justify-center cursor-pointer hover:border-[#D4AF37] transition-colors overflow-hidden bg-gray-50 dark:bg-zinc-950/50"
                 >
                   {logo ? (
                     <img src={logo} alt="Logo Preview" className="max-w-[80%] max-h-[80%] object-contain" />
@@ -170,7 +193,7 @@ export default function VisualIdentity() {
                       <div className="w-12 h-12 bg-gray-100 dark:bg-zinc-800 rounded-full flex items-center justify-center mx-auto mb-2 text-gray-400">
                          <Upload className="w-5 h-5" />
                       </div>
-                      <span className="text-xs text-gray-400">Upload do logo</span>
+                      <span className="text-xs text-gray-400">Clique para enviar</span>
                     </div>
                   )}
                 </div>
@@ -178,29 +201,33 @@ export default function VisualIdentity() {
               </div>
 
               {/* Palette Card */}
-              <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm">
+              <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm flex flex-col h-full">
                 <h2 className="text-sm font-bold text-gray-400 uppercase tracking-widest mb-4 flex items-center gap-2">
                   <Wand2 className="w-4 h-4" /> Sugestões de Paleta
                 </h2>
-                {suggestedPalettes.length > 0 ? (
-                  <div className="space-y-3">
-                    {suggestedPalettes.map((p, i) => (
-                      <button
-                        key={i}
-                        onClick={() => { setPrimaryColor(p.primary); setSecondaryColor(p.secondary); }}
-                        className="w-full flex items-center justify-between p-3 rounded-xl border border-gray-100 dark:border-zinc-800 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors group"
-                      >
-                        <span className="text-xs font-bold text-gray-600 dark:text-gray-400">{p.name}</span>
-                        <div className="flex gap-1">
-                          <div className="w-6 h-6 rounded-md border border-black/5" style={{ backgroundColor: p.primary }} />
-                          <div className="w-6 h-6 rounded-md border border-black/5" style={{ backgroundColor: p.secondary }} />
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-xs text-gray-400 italic">Suba seu logo para ver sugestões automáticas baseadas nas suas cores.</p>
-                )}
+                <div className="flex-1">
+                  {suggestedPalettes.length > 0 ? (
+                    <div className="grid grid-cols-1 gap-3">
+                      {suggestedPalettes.map((p, i) => (
+                        <button
+                          key={i}
+                          onClick={() => { setPrimaryColor(p.primary); setSecondaryColor(p.secondary); }}
+                          className="w-full flex items-center justify-between p-3 rounded-xl border border-gray-100 dark:border-zinc-800 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors group"
+                        >
+                          <span className="text-xs font-bold text-gray-600 dark:text-gray-400">{p.name}</span>
+                          <div className="flex gap-1">
+                            <div className="w-6 h-6 rounded-md border border-black/5" style={{ backgroundColor: p.primary }} />
+                            <div className="w-6 h-6 rounded-md border border-black/5" style={{ backgroundColor: p.secondary }} />
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="h-full flex items-center justify-center text-center p-4">
+                      <p className="text-xs text-gray-400 italic">Suba seu logo para ver sugestões automáticas baseadas nas suas cores.</p>
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Manual Colors & Layout */}
@@ -209,13 +236,23 @@ export default function VisualIdentity() {
                   <Palette className="w-4 h-4" /> Personalização
                 </h2>
                 <div className="space-y-4">
-                  <div>
-                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Cor Principal</label>
-                    <div className="flex gap-2">
-                      <input type="color" value={primaryColor} onChange={e => setPrimaryColor(e.target.value)} className="w-10 h-10 border-0 cursor-pointer rounded-lg overflow-hidden" />
-                      <input type="text" value={primaryColor} onChange={e => setPrimaryColor(e.target.value)} className="flex-1 bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 text-xs font-mono" />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Primária</label>
+                      <div className="flex gap-2">
+                        <input type="color" value={primaryColor} onChange={e => setPrimaryColor(e.target.value)} className="w-8 h-8 border-0 cursor-pointer rounded-lg overflow-hidden" />
+                        <input type="text" value={primaryColor} onChange={e => setPrimaryColor(e.target.value)} className="flex-1 min-w-0 bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-2 text-[10px] font-mono" />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Secundária</label>
+                      <div className="flex gap-2">
+                        <input type="color" value={secondaryColor} onChange={e => setSecondaryColor(e.target.value)} className="w-8 h-8 border-0 cursor-pointer rounded-lg overflow-hidden" />
+                        <input type="text" value={secondaryColor} onChange={e => setSecondaryColor(e.target.value)} className="flex-1 min-w-0 bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-2 text-[10px] font-mono" />
+                      </div>
                     </div>
                   </div>
+                  
                   <div>
                     <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Nome do Link (Ex: minha-barbearia)</label>
                     <div className="flex items-center gap-2">
@@ -229,26 +266,30 @@ export default function VisualIdentity() {
                       />
                     </div>
                   </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">WhatsApp</label>
-                    <input 
-                      type="text" 
-                      value={phone} 
-                      onChange={e => setPhone(e.target.value)} 
-                      placeholder="(53) 99999-9999"
-                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-xs" 
-                    />
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">WhatsApp</label>
+                      <input 
+                        type="text" 
+                        value={phone} 
+                        onChange={e => setPhone(e.target.value)} 
+                        placeholder="(53) 9999-9999"
+                        className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-[10px]" 
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Instagram (@)</label>
+                      <input 
+                        type="text" 
+                        value={instagram} 
+                        onChange={e => setInstagram(e.target.value)} 
+                        placeholder="@barber"
+                        className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-[10px]" 
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Instagram (@)</label>
-                    <input 
-                      type="text" 
-                      value={instagram} 
-                      onChange={e => setInstagram(e.target.value)} 
-                      placeholder="@barbearia"
-                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-xs" 
-                    />
-                  </div>
+
                   <div>
                     <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Link Google Maps</label>
                     <input 
@@ -256,11 +297,11 @@ export default function VisualIdentity() {
                       value={mapsUrl} 
                       onChange={e => setMapsUrl(e.target.value)} 
                       placeholder="https://goo.gl/maps/..."
-                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-xs" 
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-[10px]" 
                     />
                   </div>
+                  
                   <div>
-                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-2 block text-center">Sugestão: Use 3 cores para contraste perfeito</label>
                     <label className="text-[10px] font-bold text-gray-400 uppercase mb-2 block">Layout da Página</label>
                     <div className="grid grid-cols-3 gap-2">
                       {[
