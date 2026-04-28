@@ -1,8 +1,13 @@
 import React, { useState, useEffect } from 'react';
-import { Shield, Users, Server, Database, Activity, Lock, Plus, Globe, Mail, Key, Trash2 } from 'lucide-react';
+import { 
+  Shield, Users, Server, Database, Activity, Lock, Plus, Globe, Mail, Key, Trash2,
+  ShieldCheck, ShieldAlert, Calendar, ExternalLink, Unlock, CheckCircle2, XCircle
+} from 'lucide-react';
 import { toast } from 'sonner';
+import { useNavigate } from 'react-router-dom';
 
 export default function MasterAdmin() {
+  const navigate = useNavigate();
   const [stats, setStats] = useState({
     totalShops: 0,
     totalUsers: 0,
@@ -53,6 +58,87 @@ export default function MasterAdmin() {
     setStats(prev => ({ ...prev, systemStatus: 'Online', dbSize: '4.8 MB' }));
   }, []);
 
+  const handleToggleBlock = async (shopId: string, currentStatus: boolean) => {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`/api/admin/master/shops/${shopId}/toggle-block`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ is_blocked: !currentStatus })
+      });
+      
+      if (res.ok) {
+        toast.success(!currentStatus ? 'Barbearia bloqueada' : 'Barbearia desbloqueada');
+        fetchMasterData();
+      }
+    } catch (e) {
+      toast.error('Erro ao alterar status');
+    }
+  };
+
+  const handleUpdateExpiration = async (shopId: string, date: string) => {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`/api/admin/master/shops/${shopId}/expiration`, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ expires_at: date ? new Date(date).toISOString() : null })
+      });
+      
+      if (res.ok) {
+        toast.success('Validade atualizada');
+        fetchMasterData();
+      }
+    } catch (e) {
+      toast.error('Erro ao atualizar validade');
+    }
+  };
+
+  const handleEnterDashboard = async (shopId: string) => {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch(`/api/admin/master/impersonate/${shopId}`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      
+      const contentType = res.headers.get('content-type');
+      let data;
+      if (contentType && contentType.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        console.error('Impersonation failed:', res.status, text.substring(0, 100));
+        data = { error: 'O servidor retornou uma resposta inválida. Verifique o console.' };
+      }
+
+      if (res.ok && data.token) {
+        // Save impersonation token and redirect
+        localStorage.setItem('token', data.token);
+        localStorage.setItem('user', JSON.stringify({
+          ...JSON.parse(localStorage.getItem('user') || '{}'),
+          barbershopId: shopId,
+          isImpersonating: true
+        }));
+        
+        toast.success(`Entrando em ${data.shop.name}...`);
+        setTimeout(() => {
+          window.location.href = '/admin'; // Hard reload to clear states
+        }, 1000);
+      } else {
+        toast.error(data.error || 'Erro ao entrar no dashboard');
+      }
+    } catch (e) {
+      toast.error('Erro de conexão');
+    }
+  };
+
   const handleCreateShop = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
@@ -68,7 +154,15 @@ export default function MasterAdmin() {
         body: JSON.stringify(newShop)
       });
       
-      const data = await res.json();
+      const contentType = res.headers.get('content-type');
+      let data;
+      if (contentType && contentType.includes('application/json')) {
+        data = await res.json();
+      } else {
+        const text = await res.text();
+        console.error('Create shop failed:', res.status, text.substring(0, 100));
+        data = { error: 'Erro ao criar barbearia (Resposta não JSON)' };
+      }
       
       if (res.ok) {
         toast.success('Barbearia criada com sucesso!');
@@ -243,31 +337,86 @@ export default function MasterAdmin() {
             <thead>
               <tr className="bg-gray-50 dark:bg-zinc-800/50 text-xs font-bold uppercase text-gray-500">
                 <th className="p-4">Nome</th>
+                <th className="p-4">Status & Plano</th>
                 <th className="p-4">Link / Slug</th>
-                <th className="p-4">Criado em</th>
+                <th className="p-4">Validade</th>
                 <th className="p-4 text-right">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-zinc-800">
-              {shops.map(shop => (
-                <tr key={shop.id} className="hover:bg-gray-50 dark:hover:bg-zinc-800/20 transition-colors">
-                  <td className="p-4 font-medium">{shop.name}</td>
-                  <td className="p-4">
-                    <span className="text-blue-500 dark:text-blue-400 font-mono text-sm">/b/{shop.slug}</span>
-                  </td>
-                  <td className="p-4 text-gray-500 text-sm">
-                    {shop.created_at ? new Date(shop.created_at).toLocaleDateString() : '-'}
-                  </td>
-                  <td className="p-4 text-right">
-                    <button 
-                      className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-                      title="Excluir (Desativado)"
-                    >
-                      <Trash2 className="w-5 h-5" />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {shops.map(shop => {
+                const isExpired = shop.expires_at && new Date(shop.expires_at) < new Date();
+                
+                return (
+                  <tr key={shop.id} className="hover:bg-gray-50 dark:hover:bg-zinc-800/20 transition-colors">
+                    <td className="p-4">
+                      <div className="font-bold text-gray-900 dark:text-gray-100">{shop.name}</div>
+                      <div className="text-[10px] text-gray-400 font-mono uppercase tracking-widest">{shop.id}</div>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex flex-col gap-1">
+                        {shop.is_blocked ? (
+                          <span className="inline-flex items-center gap-1 w-fit px-2 py-0.5 bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 rounded-full text-[10px] font-bold uppercase">
+                            <Lock className="w-3 h-3" /> Bloqueado
+                          </span>
+                        ) : isExpired ? (
+                          <span className="inline-flex items-center gap-1 w-fit px-2 py-0.5 bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400 rounded-full text-[10px] font-bold uppercase">
+                            <Activity className="w-3 h-3" /> Expirado
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 w-fit px-2 py-0.5 bg-green-100 text-green-600 dark:bg-green-900/30 dark:text-green-400 rounded-full text-[10px] font-bold uppercase">
+                            <ShieldCheck className="w-3 h-3" /> Ativo
+                          </span>
+                        )}
+                        <span className="text-[10px] text-gray-400">Criado: {new Date(shop.created_at).toLocaleDateString()}</span>
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <span className="text-blue-500 dark:text-blue-400 font-mono text-sm">/b/{shop.slug}</span>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex items-center gap-2 group">
+                        <input 
+                          type="date" 
+                          value={shop.expires_at ? new Date(shop.expires_at).toISOString().split('T')[0] : ''}
+                          onChange={(e) => handleUpdateExpiration(shop.id, e.target.value)}
+                          className="bg-transparent border-none text-sm text-gray-600 dark:text-gray-300 focus:ring-0 cursor-pointer"
+                        />
+                        <Calendar className="w-4 h-4 text-gray-300 group-hover:text-[#D4AF37] transition-colors" />
+                      </div>
+                    </td>
+                    <td className="p-4">
+                      <div className="flex items-center justify-end gap-2">
+                        <button 
+                          onClick={() => handleEnterDashboard(shop.id)}
+                          className="p-2 bg-black dark:bg-[#D4AF37] text-white rounded-lg hover:opacity-80 transition-opacity"
+                          title="Entrar no Dashboard"
+                        >
+                          <ExternalLink className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={() => handleToggleBlock(shop.id, !!shop.is_blocked)}
+                          className={`p-2 rounded-lg transition-colors ${
+                            shop.is_blocked 
+                              ? 'bg-green-100 text-green-600 hover:bg-green-200' 
+                              : 'bg-red-100 text-red-600 hover:bg-red-200'
+                          }`}
+                          title={shop.is_blocked ? "Desbloquear" : "Bloquear"}
+                        >
+                          {shop.is_blocked ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
+                        </button>
+                        <button 
+                          className="p-2 text-gray-400 hover:text-red-500 transition-colors"
+                          title="Excluir"
+                          onClick={() => toast.error('Exclusão desativada por segurança.')}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
               {shops.length === 0 && (
                 <tr>
                   <td colSpan={4} className="p-8 text-center text-gray-500 italic">

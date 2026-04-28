@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS barbershops (
   banner_url TEXT,
   primary_color TEXT DEFAULT '#000000',
   secondary_color TEXT DEFAULT '#ffffff',
+  is_blocked BOOLEAN DEFAULT FALSE,
+  expires_at TIMESTAMP WITH TIME ZONE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

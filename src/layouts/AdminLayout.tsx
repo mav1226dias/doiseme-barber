@@ -12,6 +12,7 @@ export default function AdminLayout() {
   // Avoid hydration mismatch
   const [mounted, setMounted] = useState(false);
   const [isMaster, setIsMaster] = useState(false);
+  const [isImpersonating, setIsImpersonating] = useState(false);
 
   useEffect(() => {
     setMounted(true);
@@ -22,9 +23,12 @@ export default function AdminLayout() {
       // Simple JWT decode to check role/email
       try {
         const payload = JSON.parse(atob(token.split('.')[1]));
-        const masterEmails = ['admin@doiseme.com', 'marcusdoiseme@doiseme.com'];
+        const masterEmails = ['admin@doiseme.com', 'marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com'];
         if (payload.role === 'master' || masterEmails.includes(payload.email)) {
           setIsMaster(true);
+        }
+        if (payload.isImpersonating) {
+          setIsImpersonating(true);
         }
       } catch (e) {
         console.error("Failed to decode token", e);
@@ -39,6 +43,15 @@ export default function AdminLayout() {
 
   const handleLogout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    navigate('/admin/login');
+  };
+
+  const handleStopImpersonation = () => {
+    // When impersonating, we just log out or we could try to restore the original token 
+    // if we had saved it. Simplifying: just logout to avoid complex state sync.
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
     navigate('/admin/login');
   };
 
@@ -152,6 +165,17 @@ export default function AdminLayout() {
 
       {/* Main Content */}
       <main className="flex-1 overflow-x-hidden overflow-y-auto w-full bg-[#f5f5f5] dark:bg-zinc-950">
+        {isImpersonating && (
+          <div className="bg-red-600 text-white p-2 text-center text-xs font-bold flex items-center justify-center gap-4 sticky top-0 md:relative z-50">
+            <span>VOCÊ ESTÁ ACESSANDO COMO ADMINISTRADOR MASTER (MODO VISUALIZAÇÃO)</span>
+            <button 
+              onClick={handleStopImpersonation}
+              className="bg-white text-red-600 px-3 py-1 rounded-md hover:bg-gray-100 transition-colors uppercase"
+            >
+              Parar Acesso Rapído
+            </button>
+          </div>
+        )}
         <div className="p-4 sm:p-6 md:p-8 max-w-6xl mx-auto w-full">
           <Outlet />
         </div>

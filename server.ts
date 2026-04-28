@@ -112,10 +112,13 @@ async function startServer() {
   // Super Admin Check Middleware
   const requireMaster = (req: any, res: any, next: any) => {
     // Only users with 'master' role OR specific emails can access
-    const masterEmails = ['admin@doiseme.com', 'marcusdoiseme@doiseme.com'];
-    if (req.user.role === 'master' || masterEmails.includes(req.user.email)) {
+    const masterEmails = ['admin@doiseme.com', 'marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com'];
+    const userEmail = req.user.email?.toLowerCase();
+    
+    if (req.user.role === 'master' || (userEmail && masterEmails.includes(userEmail))) {
       next();
     } else {
+      console.warn(`[AUTH_BLOCKED] Non-master attempt: ${req.user.email} (Role: ${req.user.role})`);
       res.status(403).json({ error: 'Acesso restrito ao Administrador Geral' });
     }
   };
@@ -165,6 +168,21 @@ async function startServer() {
 
       if (shopBySlug) {
         console.log(`[PUBLIC_SHOP_FOUND] Match by slug: ${identifier} -> ID: ${shopBySlug.id}`);
+        
+        // Block/Expiry check
+        if (shopBySlug.is_blocked) {
+          return res.status(403).json({ 
+            error: 'Barbearia Temporariamente Indisponível', 
+            details: 'Esta barbearia está bloqueada pelo administrador do sistema.' 
+          });
+        }
+        if (shopBySlug.expires_at && new Date(shopBySlug.expires_at) < new Date()) {
+          return res.status(403).json({ 
+            error: 'Acesso Expirado', 
+            details: 'O prazo de utilização desta barbearia expirou.' 
+          });
+        }
+
         return res.json(shopBySlug);
       }
 
@@ -179,6 +197,21 @@ async function startServer() {
 
         if (shopById) {
           console.log(`[PUBLIC_SHOP_FOUND] Match by ID: ${identifier}`);
+
+          // Block/Expiry check
+          if (shopById.is_blocked) {
+            return res.status(403).json({ 
+              error: 'Barbearia Temporariamente Indisponível', 
+              details: 'Esta barbearia está bloqueada pelo administrador do sistema.' 
+            });
+          }
+          if (shopById.expires_at && new Date(shopById.expires_at) < new Date()) {
+            return res.status(403).json({ 
+              error: 'Acesso Expirado', 
+              details: 'O prazo de utilização desta barbearia expirou.' 
+            });
+          }
+
           return res.json(shopById);
         }
       }
@@ -340,6 +373,13 @@ async function startServer() {
     const { barbershopId, barberId, serviceId, clientName, clientPhone, date, startTime } = req.body;
     
     try {
+      // Check if shop is active
+      const { data: shop } = await supabase.from('barbershops').select('is_blocked, expires_at').eq('id', barbershopId).maybeSingle();
+      if (shop) {
+        if (shop.is_blocked || (shop.expires_at && new Date(shop.expires_at) < new Date())) {
+          return res.status(403).json({ error: 'Os agendamentos para esta barbearia estão suspensos temporariamente.' });
+        }
+      }
       // 1. Find or create client
       let { data: client } = await supabase
         .from('clients')
@@ -486,6 +526,27 @@ async function startServer() {
       if (!user) {
         console.warn(`[LOGIN WARN] User not found: ${email}`);
         return res.status(401).json({ error: 'Usuário não encontrado ou credenciais inválidas' });
+      }
+
+      // Check shop status if NOT a master user
+      if (user.role !== 'master') {
+        const { data: shop } = await supabase
+          .from('barbershops')
+          .select('is_blocked, expires_at')
+          .eq('id', user.barbershop_id)
+          .maybeSingle();
+
+        if (shop) {
+          if (shop.is_blocked) {
+            return res.status(403).json({ error: 'Esta barbearia está bloqueada. Entre em contato com o administrador.' });
+          }
+          if (shop.expires_at) {
+            const expiryDate = new Date(shop.expires_at);
+            if (expiryDate < new Date()) {
+              return res.status(403).json({ error: 'O prazo de utilização desta barbearia expirou.' });
+            }
+          }
+        }
       }
 
       const valid = await bcrypt.compare(password, user.password_hash);
@@ -1432,12 +1493,77 @@ async function startServer() {
       const { data, error } = await supabase
         .from('barbershops')
         .select('*')
-        .order('name');
+        .order('created_at', { ascending: false });
       
       if (error) throw error;
       res.json(data);
     } catch (e: any) {
       res.status(500).json({ error: 'Erro ao buscar lojas', details: e.message });
+    }
+  });
+
+  // Toggle block status
+  api.post('/admin/master/shops/:id/toggle-block', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { is_blocked } = req.body;
+      
+      const { error } = await supabase
+        .from('barbershops')
+        .update({ is_blocked })
+        .eq('id', id);
+      
+      if (error) throw error;
+      res.json({ success: true, is_blocked });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao alterar status de bloqueio' });
+    }
+  });
+
+  // Update expiration date
+  api.post('/admin/master/shops/:id/expiration', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { expires_at } = req.body;
+      
+      const { error } = await supabase
+        .from('barbershops')
+        .update({ expires_at })
+        .eq('id', id);
+      
+      if (error) throw error;
+      res.json({ success: true, expires_at });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao alterar data de expiração' });
+    }
+  });
+
+  // Impersonate a shop (Master only)
+  api.post('/admin/master/impersonate/:shopId', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { shopId } = req.params;
+      
+      // Get the shop details to confirm it exists
+      const { data: shop, error: shopError } = await supabase
+        .from('barbershops')
+        .select('*')
+        .eq('id', shopId)
+        .maybeSingle();
+      
+      if (shopError || !shop) throw new Error('Barbearia não encontrada');
+
+      // Create a master-elevated token for this specific shop
+      const token = jwt.sign({ 
+        id: req.user.id, 
+        barbershopId: shopId, 
+        role: 'master', // Keep master role so they can still access master tools if needed
+        email: req.user.email,
+        isImpersonating: true
+      }, JWT_SECRET, { expiresIn: '2h' }); // Short-lived token for impersonation
+      
+      res.json({ success: true, token, shop });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao entrar no dashboard', details: e.message });
     }
   });
 
