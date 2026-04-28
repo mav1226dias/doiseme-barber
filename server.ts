@@ -103,14 +103,54 @@ async function startServer() {
 
   // --- PUBLIC ROUTES ---
   
-  // Get barbershop info by slug
+  // Get barbershop info by slug (Public)
+  api.get('/public/shop/:identifier', async (req, res) => {
+    try {
+      const identifier = req.params.identifier.toLowerCase().trim();
+      console.log('Fetching public shop with identifier:', identifier);
+
+      // 1. Try slug exact match
+      const { data: shopBySlug, error: slugError } = await supabase
+        .from('barbershops')
+        .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
+        .eq('slug', identifier)
+        .maybeSingle();
+
+      if (shopBySlug) {
+        console.log('Shop found by slug:', identifier);
+        return res.json(shopBySlug);
+      }
+
+      // 2. Try ID if slug didn't match (fallback)
+      if (identifier.length > 5) { // IDs are usually longer
+        const { data: shopById, error: idError } = await supabase
+          .from('barbershops')
+          .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
+          .eq('id', identifier)
+          .maybeSingle();
+
+        if (shopById) {
+          console.log('Shop found by ID:', identifier);
+          return res.json(shopById);
+        }
+      }
+
+      console.warn('Shop not found for identifier:', identifier);
+      res.status(404).json({ error: 'Barbearia não encontrada' });
+    } catch (e: any) {
+      console.error('Error in /public/shop/:identifier:', e);
+      res.status(500).json({ error: 'Erro interno ao buscar barbearia' });
+    }
+  });
+
+  // Keep this for compatibility if anything else uses it, but point to the same logic or similar
   api.get('/barbershops/:slug', async (req, res) => {
     try {
       const { data: shop, error } = await supabase
         .from('barbershops')
         .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
-        .eq('slug', req.params.slug)
-        .single();
+        .eq('slug', req.params.slug.toLowerCase())
+        .maybeSingle();
         
       if (error || !shop) return res.status(404).json({ error: 'Barbearia não encontrada' });
       res.json(shop);
@@ -129,26 +169,6 @@ async function startServer() {
       if (error) throw error;
       res.json(data);
     } catch (e) { res.status(500).json({ error: 'Erro ao buscar dados da barbearia' }); }
-  });
-
-  api.get('/public/shop/:slug', async (req, res) => {
-    try {
-      const slug = req.params.slug.toLowerCase().trim();
-      console.log('Fetching public shop with slug:', slug);
-      const { data, error } = await supabase
-        .from('barbershops')
-        .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
-        .ilike('slug', slug)
-        .single();
-      if (error) {
-        console.error('Supabase error fetching shop:', error);
-        throw error;
-      }
-      res.json(data);
-    } catch (e: any) { 
-      console.error('Error in /public/shop/:slug:', e);
-      res.status(404).json({ error: 'Barbearia não encontrada' }); 
-    }
   });
 
   // Get active barbers for a shop
@@ -438,6 +458,20 @@ async function startServer() {
   api.patch('/admin/shop', authenticateToken, async (req: any, res) => {
     const { logoUrl, primaryColor, secondaryColor, bookingLayout, slug, phone, instagram, mapsUrl } = req.body;
     try {
+      const cleanSlug = slug ? slug.toLowerCase().trim().replace(/[^a-z0-9\-]/g, '').replace(/-+/g, '-') : null;
+      
+      if (cleanSlug) {
+        const { data: existing } = await supabase
+          .from('barbershops')
+          .select('id')
+          .eq('slug', cleanSlug)
+          .maybeSingle();
+        
+        if (existing && existing.id !== req.user.barbershopId) {
+          return res.status(409).json({ error: 'Este link já está em uso por outra barbearia.' });
+        }
+      }
+
       const { data, error } = await supabase
         .from('barbershops')
         .update({
@@ -445,7 +479,7 @@ async function startServer() {
           primary_color: primaryColor,
           secondary_color: secondaryColor,
           booking_layout: bookingLayout,
-          slug: slug,
+          slug: cleanSlug,
           phone: phone,
           instagram: instagram,
           maps_url: mapsUrl

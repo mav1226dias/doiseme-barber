@@ -21,7 +21,7 @@ export default function Booking() {
 
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!slug) return;
@@ -47,7 +47,7 @@ export default function Booking() {
       })
       .catch(err => {
         console.error(err);
-        setError(true);
+        setError(slug || 'URL invalida');
       });
   }, [slug]);
 
@@ -102,7 +102,7 @@ export default function Booking() {
         </div>
         <h2 className="text-3xl font-bold mb-4 font-serif">Página de agendamento não encontrada</h2>
         <p className="text-white/50 max-w-xs mx-auto mb-8">
-          Verifique se o link está correto. Se você é o dono da barbearia, certifique-se de configurar e salvar sua URL no painel administrativo.
+          A barbearia com o link "{error}" não foi encontrada. Verifique se o link está correto no painel administrativo.
         </p>
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <a href="/admin" className="bg-white text-black font-bold py-3 px-8 rounded-xl hover:bg-gray-200 transition-colors">

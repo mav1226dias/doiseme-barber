@@ -57,8 +57,13 @@ export default function VisualIdentity() {
     img.src = imageUrl;
     img.onload = async () => {
       try {
-        const palette = await getPalette(img, { colorCount: 5 });
-        const hexColors = (palette || []).map((color: any) => color.hex());
+        const palette = await getPalette(img, 5);
+        if (!palette || !Array.isArray(palette)) throw new Error('Invalid palette');
+        
+        const hexColors = palette.map((rgb: any) => {
+          if (!Array.isArray(rgb)) return '#000000';
+          return '#' + rgb.map(x => Math.round(x).toString(16).padStart(2, '0')).join('');
+        });
         
         // Generate a few palette combinations
         const suggestions = [
@@ -97,6 +102,20 @@ export default function VisualIdentity() {
       });
       if (res.ok) {
         alert('Identidade visual salva com sucesso!');
+        // Re-fetch to sync
+        const infoRes = await fetch('/api/admin/shop-info', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (infoRes.ok) {
+          const info = await infoRes.json();
+          setShop(info);
+          setSlug(info.slug || '');
+        }
+      } else if (res.status === 409) {
+        const err = await res.json();
+        alert(err.error);
+      } else {
+        alert('Erro ao salvar.');
       }
     } catch (e) {
       console.error(e);
@@ -194,6 +213,19 @@ export default function VisualIdentity() {
                     <div className="flex gap-2">
                       <input type="color" value={primaryColor} onChange={e => setPrimaryColor(e.target.value)} className="w-10 h-10 border-0 cursor-pointer rounded-lg overflow-hidden" />
                       <input type="text" value={primaryColor} onChange={e => setPrimaryColor(e.target.value)} className="flex-1 bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 text-xs font-mono" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Nome do Link (Ex: minha-barbearia)</label>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-400">.../b/</span>
+                      <input 
+                        type="text" 
+                        value={slug} 
+                        onChange={e => setSlug(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^\w-]/g, ''))} 
+                        placeholder="slug-unico"
+                        className="flex-1 bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono" 
+                      />
                     </div>
                   </div>
                   <div>
@@ -331,19 +363,37 @@ export default function VisualIdentity() {
                  </div>
               </div>
 
-              {/* URL Input Bottom (Shareable Link Preview) */}
-              <div className="absolute bottom-6 left-6 right-6">
-                <div className="bg-zinc-800/80 backdrop-blur-md p-4 rounded-3xl border border-white/10 space-y-3">
-                   <div className="text-[10px] text-gray-400 break-all font-mono">.../b/{slug}</div>
-                   <button 
-                    onClick={copyToClipboard}
-                    className="w-full flex items-center justify-center gap-2 bg-white text-black py-2 rounded-xl text-xs font-bold transition-all active:scale-95"
-                   >
-                     {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                     {copied ? 'Copiado!' : 'Copiar Link'}
-                   </button>
-                </div>
-              </div>
+               {/* URL Input Bottom (Shareable Link Preview) */}
+               <div className="absolute bottom-6 left-6 right-6">
+                 <div className="bg-zinc-800/80 backdrop-blur-md p-4 rounded-3xl border border-white/10 space-y-3 shadow-2xl">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Seu Link de Agendamento</span>
+                      {!slug && <span className="text-[8px] text-red-400 font-bold animate-pulse">DEFINA UM SLUG ACIMA</span>}
+                    </div>
+                    <div className="text-[10px] text-white/90 break-all font-mono bg-black/40 p-2 rounded-lg border border-white/5 truncate max-w-full">
+                       {window.location.origin}/b/{slug || '...'}
+                    </div>
+                    <div className="flex gap-2">
+                      <button 
+                       onClick={copyToClipboard}
+                       disabled={!slug}
+                       className="flex-1 flex items-center justify-center gap-2 bg-[#D4AF37] text-white py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 disabled:opacity-50 disabled:grayscale shadow-lg"
+                      >
+                        {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                        {copied ? 'Copiado!' : 'Copiar'}
+                      </button>
+                      <a 
+                        href={bookingUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={`flex-1 flex items-center justify-center gap-2 bg-white text-black py-2.5 rounded-xl text-xs font-bold transition-all active:scale-95 shadow-lg ${!slug ? 'opacity-50 pointer-events-none' : ''}`}
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                        Acessar
+                      </a>
+                    </div>
+                 </div>
+               </div>
            </div>
         </div>
       </div>
