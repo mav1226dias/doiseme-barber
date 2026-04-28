@@ -23,16 +23,28 @@ export default function Booking() {
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [apiError, setApiError] = useState<string | null>(null);
+  const [errorDetails, setErrorDetails] = useState<string | null>(null);
+
   useEffect(() => {
     if (!slug) return;
     
     fetch(`/api/public/shop/${slug}`)
-      .then(res => {
-        if (!res.ok) throw new Error('Shop not found');
+      .then(async res => {
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          const errorMsg = errData.error || 'Shop not found';
+          const detailsMsg = errData.details || 'Verifique se o link está correto.';
+          setApiError(errorMsg);
+          setErrorDetails(detailsMsg);
+          throw new Error(errorMsg);
+        }
         return res.json();
       })
       .then(data => {
         setShop(data);
+        setApiError(null);
+        setErrorDetails(null);
         
         // Fetch services & barbers for this specific shop
         fetch(`/api/barbershops/${data.id}/services`)
@@ -94,15 +106,15 @@ export default function Booking() {
     }
   };
 
-  if (error) {
+  if (apiError || error) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex flex-col items-center justify-center p-4 text-center">
         <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mb-6">
           <Scissors className="w-10 h-10 text-white/20" />
         </div>
-        <h2 className="text-3xl font-bold mb-4 font-serif">Página de agendamento não encontrada</h2>
+        <h2 className="text-3xl font-bold mb-4 font-serif">{apiError || 'Página não encontrada'}</h2>
         <p className="text-white/50 max-w-xs mx-auto mb-8">
-          A barbearia com o link "{error}" não foi encontrada. Verifique se o link está correto no painel administrativo.
+          {errorDetails || `A barbearia com o link "${slug}" não foi encontrada. Verifique se o link está correto.`}
         </p>
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <a href="/admin" className="bg-white text-black font-bold py-3 px-8 rounded-xl hover:bg-gray-200 transition-colors">

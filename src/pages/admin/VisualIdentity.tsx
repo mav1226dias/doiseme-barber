@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Palette, Upload, Check, Copy, ExternalLink, Layout as LayoutIcon, Wand2, Scissors, User, Calendar, MessageCircle, Instagram, MapPin } from 'lucide-react';
 import { getPalette } from 'colorthief';
+import { slugify } from '../../lib/slugify';
 
 export default function VisualIdentity() {
   const [shop, setShop] = useState<any>(null);
@@ -222,7 +223,7 @@ export default function VisualIdentity() {
                       <input 
                         type="text" 
                         value={slug} 
-                        onChange={e => setSlug(e.target.value.toLowerCase().replace(/\s+/g, '-').replace(/[^\w-]/g, ''))} 
+                        onChange={e => setSlug(slugify(e.target.value))} 
                         placeholder="slug-unico"
                         className="flex-1 bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono" 
                       />

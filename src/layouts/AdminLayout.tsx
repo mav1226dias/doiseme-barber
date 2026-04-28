@@ -1,6 +1,6 @@
 // watch triggered
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Scissors, Calendar, Bell, LogOut, Menu, X, Sun, Moon, Settings, Wallet, Package, Palette } from 'lucide-react';
+import { LayoutDashboard, Users, Scissors, Calendar, Bell, LogOut, Menu, X, Sun, Moon, Settings, Wallet, Package, Palette, Globe, Megaphone } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 
@@ -36,11 +36,12 @@ export default function AdminLayout() {
     { path: '/admin/barbers', icon: Users, label: 'Profissionais' },
     { path: '/admin/services', icon: Scissors, label: 'Serviços' },
     { path: '/admin/clients', icon: Users, label: 'Clientes' },
-    { path: '/admin/finances', icon: Wallet, label: 'Contabilidade' },
+    { path: '/admin/finances', icon: Wallet, label: 'Financeiro' },
     { path: '/admin/packages', icon: Package, label: 'Pacotes' },
     { path: '/admin/visual', icon: Palette, label: 'Identidade Visual' },
-    { path: '/admin/campaigns', icon: Bell, label: 'Campanhas' },
+    { path: '/admin/campaigns', icon: Megaphone, label: 'Campanhas' },
     { path: '/admin/notifications', icon: Bell, label: 'Notificações' },
+    { path: '/admin/booking-site', icon: Globe, label: 'Site de Agendamento' },
     { path: '/admin/settings', icon: Settings, label: 'Configurações' },
   ];
 

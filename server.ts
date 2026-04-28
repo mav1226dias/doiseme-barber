@@ -103,40 +103,60 @@ async function startServer() {
 
   // --- PUBLIC ROUTES ---
   
+  // Helper to standardize slugs (mirroring frontend src/lib/slugify.ts)
+  const standardizeSlug = (text: string) => {
+    if (!text) return null;
+    return text
+      .toString()
+      .toLowerCase()
+      .trim()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9 -]/g, '')
+      .replace(/\s+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-+/, '')
+      .replace(/-+$/, '');
+  };
+
   // Get barbershop info by slug (Public)
   api.get('/public/shop/:identifier', async (req, res) => {
     try {
       const identifier = req.params.identifier.toLowerCase().trim();
-      console.log('Fetching public shop with identifier:', identifier);
+      console.log(`[PUBLIC_SHOP_LOOKUP] Identifier: "${identifier}"`);
 
       // 1. Try slug exact match
       const { data: shopBySlug, error: slugError } = await supabase
         .from('barbershops')
-        .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
+        .select('*')
         .eq('slug', identifier)
         .maybeSingle();
 
       if (shopBySlug) {
-        console.log('Shop found by slug:', identifier);
+        console.log(`[PUBLIC_SHOP_FOUND] Match by slug: ${identifier} -> ID: ${shopBySlug.id}`);
         return res.json(shopBySlug);
       }
 
       // 2. Try ID if slug didn't match (fallback)
-      if (identifier.length > 5) { // IDs are usually longer
+      // IDs are UUIDs or at least longer than standard slugs usually
+      if (identifier.length >= 20) { 
         const { data: shopById, error: idError } = await supabase
           .from('barbershops')
-          .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
+          .select('*')
           .eq('id', identifier)
           .maybeSingle();
 
         if (shopById) {
-          console.log('Shop found by ID:', identifier);
+          console.log(`[PUBLIC_SHOP_FOUND] Match by ID: ${identifier}`);
           return res.json(shopById);
         }
       }
 
-      console.warn('Shop not found for identifier:', identifier);
-      res.status(404).json({ error: 'Barbearia não encontrada' });
+      console.warn(`[PUBLIC_SHOP_NOT_FOUND] No shop matches: "${identifier}"`);
+      res.status(404).json({ 
+        error: 'Barbearia não encontrada', 
+        details: `Não localizamos nenhuma barbearia com o link "${identifier}". Verifique se o endereço está correto.`
+      });
     } catch (e: any) {
       console.error('Error in /public/shop/:identifier:', e);
       res.status(500).json({ error: 'Erro interno ao buscar barbearia' });
@@ -458,7 +478,7 @@ async function startServer() {
   api.patch('/admin/shop', authenticateToken, async (req: any, res) => {
     const { logoUrl, primaryColor, secondaryColor, bookingLayout, slug, phone, instagram, mapsUrl } = req.body;
     try {
-      const cleanSlug = slug ? slug.toLowerCase().trim().replace(/[^a-z0-9\-]/g, '').replace(/-+/g, '-') : null;
+      const cleanSlug = standardizeSlug(slug);
       
       if (cleanSlug) {
         const { data: existing } = await supabase

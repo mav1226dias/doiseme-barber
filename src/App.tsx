@@ -21,6 +21,7 @@ import Settings from './pages/admin/Settings';
 import Finances from './pages/admin/Finances';
 import Packages from './pages/admin/Packages';
 import VisualIdentity from './pages/admin/VisualIdentity';
+import BookingSite from './pages/admin/BookingSite';
 import ErrorBoundary from './components/ErrorBoundary';
 
 export default function App() {
@@ -40,15 +41,16 @@ export default function App() {
             <Route path="/admin/login" element={<Login />} />
             <Route path="/admin" element={<AdminLayout />}>
               <Route index element={<Dashboard />} />
+              <Route path="agenda" element={<Agenda />} />
               <Route path="barbers" element={<Barbers />} />
               <Route path="services" element={<Services />} />
-              <Route path="agenda" element={<Agenda />} />
-              <Route path="notifications" element={<Notifications />} />
               <Route path="clients" element={<Clients />} />
-              <Route path="campaigns" element={<Campaigns />} />
               <Route path="finances" element={<Finances />} />
               <Route path="packages" element={<Packages />} />
               <Route path="visual" element={<VisualIdentity />} />
+              <Route path="campaigns" element={<Campaigns />} />
+              <Route path="notifications" element={<Notifications />} />
+              <Route path="booking-site" element={<BookingSite />} />
               <Route path="settings" element={<Settings />} />
             </Route>
           </Routes>
