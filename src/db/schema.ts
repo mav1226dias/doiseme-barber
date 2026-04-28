@@ -9,6 +9,10 @@ export const barbershops = pgTable('barbershops', {
   phone: text('phone'),
   instagram: text('instagram'),
   mapsUrl: text('maps_url'),
+  logoUrl: text('logo_url'),
+  primaryColor: text('primary_color').default('#000000'),
+  secondaryColor: text('secondary_color').default('#ffffff'),
+  bookingLayout: text('booking_layout').default('standard'), // standard, classic, modern
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
@@ -71,8 +75,21 @@ export const expenses = pgTable('expenses', {
   barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
   description: text('description').notNull(),
   amount: real('amount').notNull(),
-  category: text('category').notNull(), // rent, supplies, utilities, marketing, other
+  category: text('category').notNull(), // rent, supplies, utilities, marketing, other, draw
+  barberId: text('barber_id').references(() => barbers.id), // Link to barber for draws
   date: text('date').notNull(), // YYYY-MM-DD
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+});
+
+export const clientPackages = pgTable('client_packages', {
+  id: text('id').primaryKey(),
+  barbershopId: text('barbershop_id').references(() => barbershops.id).notNull(),
+  clientName: text('client_name').notNull(),
+  clientWhatsapp: text('client_whatsapp').notNull(),
+  packageName: text('package_name').notNull(),
+  totalQuantity: integer('total_quantity').notNull(),
+  remainingQuantity: integer('remaining_quantity').notNull(),
+  pricePaid: real('price_paid').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 

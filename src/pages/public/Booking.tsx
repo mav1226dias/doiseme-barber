@@ -1,7 +1,10 @@
 import { useState, useEffect } from 'react';
+import { useParams, Link } from 'react-router-dom';
 import { Calendar, Clock, User, Scissors, Check, MapPin, Instagram, MessageCircle } from 'lucide-react';
 
-export default function Home() {
+export default function Booking() {
+  const { slug } = useParams();
+  const [shop, setShop] = useState<any>(null);
   const [step, setStep] = useState(1);
   const [barbers, setBarbers] = useState<any[]>([]);
   const [services, setServices] = useState<any[]>([]);
@@ -18,34 +21,39 @@ export default function Home() {
 
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [error, setError] = useState(false);
 
   useEffect(() => {
-    fetch('/api/barbershops/shop-1/services')
-      .then(async res => {
-        const text = await res.text();
-        return text ? JSON.parse(text) : [];
+    if (!slug) return;
+    
+    fetch(`/api/public/shop/${slug}`)
+      .then(res => {
+        if (!res.ok) throw new Error('Shop not found');
+        return res.json();
       })
       .then(data => {
-        if (Array.isArray(data)) setServices(data);
-        else console.error('Expected array for services, got:', data);
+        setShop(data);
+        
+        // Fetch services & barbers for this specific shop
+        fetch(`/api/barbershops/${data.id}/services`)
+          .then(res => res.json())
+          .then(setServices)
+          .catch(console.error);
+          
+        fetch(`/api/barbershops/${data.id}/barbers`)
+          .then(res => res.json())
+          .then(setBarbers)
+          .catch(console.error);
       })
-      .catch(console.error);
-      
-    fetch('/api/barbershops/shop-1/barbers')
-      .then(async res => {
-        const text = await res.text();
-        return text ? JSON.parse(text) : [];
-      })
-      .then(data => {
-        if (Array.isArray(data)) setBarbers(data);
-        else console.error('Expected array for barbers, got:', data);
-      })
-      .catch(console.error);
-  }, []);
+      .catch(err => {
+        console.error(err);
+        setError(true);
+      });
+  }, [slug]);
 
   useEffect(() => {
-    if (formData.date && formData.barber_id) {
-      fetch(`/api/barbershops/shop-1/availability?date=${formData.date}&barberId=${formData.barber_id}`)
+    if (formData.date && formData.barber_id && shop) {
+      fetch(`/api/barbershops/${shop.id}/availability?date=${formData.date}&barberId=${formData.barber_id}`)
         .then(async res => {
           const text = await res.text();
           return text ? JSON.parse(text) : [];
@@ -53,7 +61,7 @@ export default function Home() {
         .then(setAvailableSlots)
         .catch(console.error);
     }
-  }, [formData.date, formData.barber_id]);
+  }, [formData.date, formData.barber_id, shop]);
 
   const handleNext = () => setStep(s => s + 1);
   const handlePrev = () => setStep(s => s - 1);
@@ -65,7 +73,7 @@ export default function Home() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          barbershopId: 'shop-1',
+          barbershopId: shop.id,
           barberId: formData.barber_id,
           serviceId: formData.service_id,
           clientName: formData.name,
@@ -86,15 +94,29 @@ export default function Home() {
     }
   };
 
+  if (error) {
+    return (
+      <div className="max-w-md mx-auto mt-32 px-4 text-center">
+        <h2 className="text-2xl font-bold mb-4">Página de agendamento não encontrada</h2>
+        <p className="text-gray-500">Verifique o link ou entre em contato com a barbearia.</p>
+      </div>
+    );
+  }
+
+  if (!shop) return <div className="flex items-center justify-center min-h-[60vh] text-white/50">Carregando...</div>;
+
+  const bgStyle = shop.primaryColor ? { borderColor: shop.primaryColor, color: shop.primaryColor } : {};
+  const btnStyle = shop.primaryColor ? { backgroundColor: shop.primaryColor } : { backgroundColor: '#D4AF37' };
+
   if (success) {
     const barber = barbers.find(b => b.id.toString() === formData.barber_id);
     const message = `Fala ${barber?.name}, agendei meu horário para o dia ${formData.date.split('-').reverse().join('/')} às ${formData.time}.`;
-    const whatsappUrl = `https://wa.me/5553981536614?text=${encodeURIComponent(message)}`;
+    const whatsappUrl = `https://wa.me/55${shop.phone?.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`;
 
     return (
       <div className="max-w-md mx-auto mt-20 px-4 text-center">
-        <div className="w-20 h-20 bg-[#D4AF37]/20 rounded-full flex items-center justify-center mx-auto mb-6">
-          <Check className="w-10 h-10 text-[#D4AF37]" />
+        <div className="w-20 h-20 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-6">
+          <Check className="w-10 h-10 text-green-500" />
         </div>
         <h2 className="text-3xl font-bold mb-4 font-serif">Agendado com sucesso!</h2>
         <p className="text-white/60 mb-8">
@@ -116,15 +138,20 @@ export default function Home() {
   return (
     <div className="max-w-xl mx-auto mt-12 px-4 pb-20">
       <div className="text-center mb-12">
-        <h1 className="text-5xl font-bold mb-4 font-serif tracking-tight">Agende seu horário</h1>
-        <p className="text-white/50 uppercase tracking-widest text-xs font-semibold">Rápido, fácil e sem cadastro</p>
+        {shop.logo_url ? (
+          <img src={shop.logo_url} alt={shop.name} className="h-24 mx-auto mb-6 object-contain" />
+        ) : (
+          <Scissors className="w-16 h-16 mx-auto mb-6 opacity-20" />
+        )}
+        <h1 className="text-4xl font-bold mb-4 font-serif tracking-tight">{shop.name}</h1>
+        <p className="text-white/50 uppercase tracking-widest text-[10px] font-semibold">Agendamento Online</p>
       </div>
 
       <div className="bg-[#141414] border border-white/10 rounded-3xl p-6 md:p-8 shadow-2xl">
         {/* Progress */}
         <div className="flex gap-2 mb-8">
           {[1, 2, 3, 4].map(i => (
-            <div key={i} className={`h-1 flex-1 rounded-full ${step >= i ? 'bg-[#D4AF37]' : 'bg-white/10'}`} />
+            <div key={i} className={`h-1 flex-1 rounded-full ${step >= i ? '' : 'bg-white/10'}`} style={step >= i ? btnStyle : {}} />
           ))}
         </div>
 
@@ -132,7 +159,7 @@ export default function Home() {
         {step === 1 && (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
             <h3 className="text-xl font-medium mb-6 flex items-center gap-2">
-              <Scissors className="w-5 h-5 text-[#D4AF37]" /> Escolha o serviço
+              <Scissors className="w-5 h-5" style={bgStyle} /> Escolha o serviço
             </h3>
             {(services || []).map(service => (
               <button
@@ -140,15 +167,16 @@ export default function Home() {
                 onClick={() => { setFormData({ ...formData, service_id: service.id.toString() }); handleNext(); }}
                 className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all ${
                   formData.service_id === service.id.toString() 
-                    ? 'border-[#D4AF37] bg-[#D4AF37]/10' 
+                    ? 'bg-white/5' 
                     : 'border-white/10 hover:border-white/30 bg-black/50'
                 }`}
+                style={formData.service_id === service.id.toString() ? { borderColor: shop.primaryColor } : {}}
               >
                 <div className="text-left">
                   <div className="font-medium text-lg">{service.name}</div>
                   <div className="text-white/50 text-sm">{service.durationMinutes} min</div>
                 </div>
-                <div className="font-bold text-[#D4AF37]">R$ {service.price.toFixed(2)}</div>
+                <div className="font-bold" style={bgStyle}>R$ {service.price.toFixed(2)}</div>
               </button>
             ))}
           </div>
@@ -158,7 +186,7 @@ export default function Home() {
         {step === 2 && (
           <div className="space-y-4 animate-in fade-in slide-in-from-bottom-4">
             <h3 className="text-xl font-medium mb-6 flex items-center gap-2">
-              <User className="w-5 h-5 text-[#D4AF37]" /> Escolha o profissional
+              <User className="w-5 h-5" style={bgStyle} /> Escolha o profissional
             </h3>
             {(barbers || []).map(barber => (
               <button
@@ -166,9 +194,10 @@ export default function Home() {
                 onClick={() => { setFormData({ ...formData, barber_id: barber.id.toString() }); handleNext(); }}
                 className={`w-full flex items-center p-4 rounded-2xl border transition-all ${
                   formData.barber_id === barber.id.toString() 
-                    ? 'border-[#D4AF37] bg-[#D4AF37]/10' 
+                    ? 'bg-white/5' 
                     : 'border-white/10 hover:border-white/30 bg-black/50'
                 }`}
+                style={formData.barber_id === barber.id.toString() ? { borderColor: shop.primaryColor } : {}}
               >
                 <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center mr-4">
                   <User className="w-6 h-6 text-white/50" />
@@ -184,8 +213,8 @@ export default function Home() {
         {step === 3 && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
             <h3 className="text-xl font-medium mb-2 flex items-center gap-2">
-              <Calendar className="w-5 h-5 text-[#D4AF37]" /> Data e Horário
-            </h3>
+              <Calendar className="w-5 h-5" style={bgStyle} /> Data e Horário
+             </h3>
             
             <div>
               <label className="block text-sm text-white/50 mb-2 uppercase tracking-wider">Data</label>
@@ -208,9 +237,10 @@ export default function Home() {
                       onClick={() => setFormData({ ...formData, time: slot })}
                       className={`py-3 rounded-xl border font-mono text-sm transition-all ${
                         formData.time === slot
-                          ? 'border-[#D4AF37] bg-[#D4AF37] text-black font-bold'
+                          ? 'text-black font-bold'
                           : 'border-white/10 hover:border-white/30 bg-black/50'
                       }`}
+                      style={formData.time === slot ? { ...btnStyle, borderColor: shop.primaryColor } : {}}
                     >
                       {slot}
                     </button>
@@ -261,12 +291,12 @@ export default function Home() {
               />
             </div>
 
-            <div className="bg-black/30 p-4 rounded-xl border border-white/5 mt-6">
+            <div className="bg-white/5 p-4 rounded-xl border border-white/5 mt-6">
               <div className="text-sm text-white/50 mb-1">Resumo do Agendamento</div>
               <div className="font-medium">
                 {services.find(s => s.id.toString() === formData.service_id)?.name} com {barbers.find(b => b.id.toString() === formData.barber_id)?.name}
               </div>
-              <div className="text-[#D4AF37] font-mono text-sm mt-1">
+              <div className="font-mono text-sm mt-1" style={bgStyle}>
                 {formData.date.split('-').reverse().join('/')} às {formData.time}
               </div>
             </div>
@@ -276,7 +306,8 @@ export default function Home() {
               <button 
                 onClick={handleSubmit}
                 disabled={!formData.name || !formData.phone || loading}
-                className="bg-[#D4AF37] text-black px-8 py-3 rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 hover:bg-[#e5c158] transition-colors"
+                className="text-black px-8 py-3 rounded-xl font-bold disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-colors"
+                style={btnStyle}
               >
                 {loading ? 'Agendando...' : 'Confirmar'}
               </button>
@@ -285,20 +316,26 @@ export default function Home() {
         )}
       </div>
 
-      {/* Integrations */}
+      {/* Footer Info */}
       <div className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-4">
-        <a href="https://wa.me/5553981536614" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
-          <MessageCircle className="w-5 h-5 text-[#25D366]" />
-          <span className="font-medium">WhatsApp</span>
-        </a>
-        <a href="https://instagram.com/2m_estrategia" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
-          <Instagram className="w-5 h-5 text-[#E1306C]" />
-          <span className="font-medium">@2m_estrategia</span>
-        </a>
-        <a href="https://share.google/8uU6J5tSzE7CapjRu" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
-          <MapPin className="w-5 h-5 text-[#4285F4]" />
-          <span className="font-medium">Como chegar</span>
-        </a>
+        {shop.phone && (
+          <a href={`https://wa.me/55${shop.phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
+            <MessageCircle className="w-5 h-5 text-[#25D366]" />
+            <span className="font-medium">WhatsApp</span>
+          </a>
+        )}
+        {shop.instagram && (
+          <a href={`https://instagram.com/${shop.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
+            <Instagram className="w-5 h-5 text-[#E1306C]" />
+            <span className="font-medium">@{shop.instagram.replace('@', '')}</span>
+          </a>
+        )}
+        {shop.maps_url && (
+          <a href={shop.maps_url} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
+            <MapPin className="w-5 h-5 text-[#4285F4]" />
+            <span className="font-medium">Como chegar</span>
+          </a>
+        )}
       </div>
     </div>
   );

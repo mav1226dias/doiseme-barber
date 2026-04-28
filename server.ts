@@ -108,7 +108,7 @@ async function startServer() {
     try {
       const { data: shop, error } = await supabase
         .from('barbershops')
-        .select('*')
+        .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
         .eq('slug', req.params.slug)
         .single();
         
@@ -117,6 +117,30 @@ async function startServer() {
     } catch (error) {
       res.status(500).json({ error: 'Erro ao buscar barbearia' });
     }
+  });
+
+  api.get('/admin/shop-info', authenticateToken, async (req: any, res) => {
+    try {
+      const { data, error } = await supabase
+        .from('barbershops')
+        .select('*')
+        .eq('id', req.user.barbershopId)
+        .single();
+      if (error) throw error;
+      res.json(data);
+    } catch (e) { res.status(500).json({ error: 'Erro ao buscar dados da barbearia' }); }
+  });
+
+  api.get('/public/shop/:slug', async (req, res) => {
+    try {
+      const { data, error } = await supabase
+        .from('barbershops')
+        .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
+        .eq('slug', req.params.slug)
+        .single();
+      if (error) throw error;
+      res.json(data);
+    } catch (e) { res.status(404).json({ error: 'Barbearia não encontrada' }); }
   });
 
   // Get active barbers for a shop
@@ -403,6 +427,26 @@ async function startServer() {
   // --- PROTECTED ADMIN ROUTES ---
   
   // Dashboard stats
+  api.patch('/admin/shop', authenticateToken, async (req: any, res) => {
+    const { logoUrl, primaryColor, secondaryColor, bookingLayout, slug } = req.body;
+    try {
+      const { data, error } = await supabase
+        .from('barbershops')
+        .update({
+          logo_url: logoUrl,
+          primary_color: primaryColor,
+          secondary_color: secondaryColor,
+          booking_layout: bookingLayout,
+          slug: slug
+        })
+        .eq('id', req.user.barbershopId)
+        .select()
+        .single();
+      if (error) throw error;
+      res.json(data);
+    } catch (e) { res.status(errorStatus(e)).json({ error: e.message }); }
+  });
+
   api.get('/admin/dashboard', authenticateToken, async (req: any, res) => {
     const { barbershopId } = req.user;
     const { start, end } = req.query;
@@ -491,7 +535,7 @@ async function startServer() {
   });
 
   api.post('/admin/expenses', authenticateToken, async (req: any, res) => {
-    const { description, amount, category, date } = req.body;
+    const { description, amount, category, date, barberId } = req.body;
     try {
       const id = crypto.randomUUID();
       const { error } = await supabase.from('expenses').insert({
@@ -500,7 +544,8 @@ async function startServer() {
         description,
         amount: Number(amount),
         category,
-        date
+        date,
+        barber_id: barberId || null
       });
       if (error) throw error;
       res.json({ success: true, id });
@@ -520,6 +565,96 @@ async function startServer() {
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Erro ao excluir despesa' });
+    }
+  });
+
+  // Client Packages
+  api.get('/admin/packages', authenticateToken, async (req: any, res) => {
+    try {
+      const { data, error } = await supabase
+        .from('client_packages')
+        .select('*')
+        .eq('barbershop_id', req.user.barbershopId)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      res.json(data || []);
+    } catch (error) {
+      res.status(500).json({ error: 'Erro ao buscar pacotes' });
+    }
+  });
+
+  api.post('/admin/packages', authenticateToken, async (req: any, res) => {
+    const { clientName, clientWhatsapp, packageName, totalQuantity, pricePaid } = req.body;
+    try {
+      const id = crypto.randomUUID();
+      const { error } = await supabase.from('client_packages').insert({
+        id,
+        barbershop_id: req.user.barbershopId,
+        client_name: clientName,
+        client_whatsapp: clientWhatsapp,
+        package_name: packageName,
+        total_quantity: Number(totalQuantity),
+        remaining_quantity: Number(totalQuantity),
+        price_paid: Number(pricePaid)
+      });
+      if (error) throw error;
+      res.json({ success: true, id });
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ error: 'Erro ao criar pacote' });
+    }
+  });
+
+  api.get('/admin/packages/search', authenticateToken, async (req: any, res) => {
+    const { whatsapp } = req.query;
+    try {
+      const { data, error } = await supabase
+        .from('client_packages')
+        .select('*')
+        .eq('barbershop_id', req.user.barbershopId)
+        .eq('client_whatsapp', whatsapp)
+        .gt('remaining_quantity', 0);
+      if (error) throw error;
+      res.json(data || []);
+    } catch (error) {
+      res.status(500).json({ error: 'Erro ao pesquisar pacote' });
+    }
+  });
+
+  api.post('/admin/packages/use/:id', authenticateToken, async (req: any, res) => {
+    try {
+      const { data: pkg, error: fetchError } = await supabase
+        .from('client_packages')
+        .select('remaining_quantity')
+        .eq('id', req.params.id)
+        .single();
+      
+      if (fetchError || !pkg) throw new Error('Pacote não encontrado');
+      if (pkg.remaining_quantity <= 0) throw new Error('Pacote esgotado');
+
+      const { error: updateError } = await supabase
+        .from('client_packages')
+        .update({ remaining_quantity: pkg.remaining_quantity - 1 })
+        .eq('id', req.params.id);
+      
+      if (updateError) throw updateError;
+      res.json({ success: true, remaining: pkg.remaining_quantity - 1 });
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Erro ao usar pacote' });
+    }
+  });
+
+  api.delete('/admin/packages/:id', authenticateToken, async (req: any, res) => {
+    try {
+      const { error } = await supabase
+        .from('client_packages')
+        .delete()
+        .eq('id', req.params.id)
+        .eq('barbershop_id', req.user.barbershopId);
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (error) {
+      res.status(500).json({ error: 'Erro ao excluir pacote' });
     }
   });
 
