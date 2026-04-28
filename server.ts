@@ -133,14 +133,22 @@ async function startServer() {
 
   api.get('/public/shop/:slug', async (req, res) => {
     try {
+      const slug = req.params.slug.toLowerCase().trim();
+      console.log('Fetching public shop with slug:', slug);
       const { data, error } = await supabase
         .from('barbershops')
         .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
-        .eq('slug', req.params.slug)
+        .ilike('slug', slug)
         .single();
-      if (error) throw error;
+      if (error) {
+        console.error('Supabase error fetching shop:', error);
+        throw error;
+      }
       res.json(data);
-    } catch (e) { res.status(404).json({ error: 'Barbearia não encontrada' }); }
+    } catch (e: any) { 
+      console.error('Error in /public/shop/:slug:', e);
+      res.status(404).json({ error: 'Barbearia não encontrada' }); 
+    }
   });
 
   // Get active barbers for a shop
@@ -428,7 +436,7 @@ async function startServer() {
   
   // Dashboard stats
   api.patch('/admin/shop', authenticateToken, async (req: any, res) => {
-    const { logoUrl, primaryColor, secondaryColor, bookingLayout, slug } = req.body;
+    const { logoUrl, primaryColor, secondaryColor, bookingLayout, slug, phone, instagram, mapsUrl } = req.body;
     try {
       const { data, error } = await supabase
         .from('barbershops')
@@ -437,14 +445,17 @@ async function startServer() {
           primary_color: primaryColor,
           secondary_color: secondaryColor,
           booking_layout: bookingLayout,
-          slug: slug
+          slug: slug,
+          phone: phone,
+          instagram: instagram,
+          maps_url: mapsUrl
         })
         .eq('id', req.user.barbershopId)
         .select()
         .single();
       if (error) throw error;
       res.json(data);
-    } catch (e) { res.status(errorStatus(e)).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e.message }); }
   });
 
   api.get('/admin/dashboard', authenticateToken, async (req: any, res) => {

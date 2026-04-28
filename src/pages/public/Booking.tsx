@@ -96,17 +96,30 @@ export default function Booking() {
 
   if (error) {
     return (
-      <div className="max-w-md mx-auto mt-32 px-4 text-center">
-        <h2 className="text-2xl font-bold mb-4">Página de agendamento não encontrada</h2>
-        <p className="text-gray-500">Verifique o link ou entre em contato com a barbearia.</p>
+      <div className="min-h-screen bg-[#0a0a0a] flex flex-col items-center justify-center p-4 text-center">
+        <div className="w-20 h-20 bg-white/5 rounded-full flex items-center justify-center mb-6">
+          <Scissors className="w-10 h-10 text-white/20" />
+        </div>
+        <h2 className="text-3xl font-bold mb-4 font-serif">Página de agendamento não encontrada</h2>
+        <p className="text-white/50 max-w-xs mx-auto mb-8">
+          Verifique se o link está correto. Se você é o dono da barbearia, certifique-se de configurar e salvar sua URL no painel administrativo.
+        </p>
+        <div className="flex flex-col gap-3 w-full max-w-xs">
+          <a href="/admin" className="bg-white text-black font-bold py-3 px-8 rounded-xl hover:bg-gray-200 transition-colors">
+            Ir para o Painel
+          </a>
+          <button onClick={() => window.location.reload()} className="text-white/50 hover:text-white text-sm">
+            Tentar novamente
+          </button>
+        </div>
       </div>
     );
   }
 
   if (!shop) return <div className="flex items-center justify-center min-h-[60vh] text-white/50">Carregando...</div>;
 
-  const bgStyle = shop.primaryColor ? { borderColor: shop.primaryColor, color: shop.primaryColor } : {};
-  const btnStyle = shop.primaryColor ? { backgroundColor: shop.primaryColor } : { backgroundColor: '#D4AF37' };
+  const bgStyle = shop.primary_color ? { borderColor: shop.primary_color, color: shop.primary_color } : {};
+  const btnStyle = shop.primary_color ? { backgroundColor: shop.primary_color } : { backgroundColor: '#D4AF37' };
 
   if (success) {
     const barber = barbers.find(b => b.id.toString() === formData.barber_id);
@@ -147,7 +160,13 @@ export default function Booking() {
         <p className="text-white/50 uppercase tracking-widest text-[10px] font-semibold">Agendamento Online</p>
       </div>
 
-      <div className="bg-[#141414] border border-white/10 rounded-3xl p-6 md:p-8 shadow-2xl">
+      <div className={`shadow-2xl transition-all ${
+        shop.booking_layout === 'classic' 
+          ? 'bg-[#1a1a1a] border-[#D4AF37]/30 rounded-none p-10' 
+          : shop.booking_layout === 'modern'
+            ? 'bg-white/5 backdrop-blur-xl border-white/20 rounded-[3rem] p-4'
+            : 'bg-[#141414] border-white/10 rounded-3xl p-6 md:p-8'
+      }`}>
         {/* Progress */}
         <div className="flex gap-2 mb-8">
           {[1, 2, 3, 4].map(i => (
@@ -170,7 +189,7 @@ export default function Booking() {
                     ? 'bg-white/5' 
                     : 'border-white/10 hover:border-white/30 bg-black/50'
                 }`}
-                style={formData.service_id === service.id.toString() ? { borderColor: shop.primaryColor } : {}}
+                style={formData.service_id === service.id.toString() ? { borderColor: shop.primary_color } : {}}
               >
                 <div className="text-left">
                   <div className="font-medium text-lg">{service.name}</div>
@@ -197,7 +216,7 @@ export default function Booking() {
                     ? 'bg-white/5' 
                     : 'border-white/10 hover:border-white/30 bg-black/50'
                 }`}
-                style={formData.barber_id === barber.id.toString() ? { borderColor: shop.primaryColor } : {}}
+                style={formData.barber_id === barber.id.toString() ? { borderColor: shop.primary_color } : {}}
               >
                 <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center mr-4">
                   <User className="w-6 h-6 text-white/50" />
@@ -240,7 +259,7 @@ export default function Booking() {
                           ? 'text-black font-bold'
                           : 'border-white/10 hover:border-white/30 bg-black/50'
                       }`}
-                      style={formData.time === slot ? { ...btnStyle, borderColor: shop.primaryColor } : {}}
+                      style={formData.time === slot ? { ...btnStyle, borderColor: shop.primary_color } : {}}
                     >
                       {slot}
                     </button>

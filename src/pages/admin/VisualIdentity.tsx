@@ -9,6 +9,9 @@ export default function VisualIdentity() {
   const [secondaryColor, setSecondaryColor] = useState('#000000');
   const [bookingLayout, setBookingLayout] = useState('standard');
   const [slug, setSlug] = useState('');
+  const [phone, setPhone] = useState('');
+  const [instagram, setInstagram] = useState('');
+  const [mapsUrl, setMapsUrl] = useState('');
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [suggestedPalettes, setSuggestedPalettes] = useState<any[]>([]);
@@ -28,6 +31,9 @@ export default function VisualIdentity() {
         setSecondaryColor(data.secondary_color || '#000000');
         setBookingLayout(data.booking_layout || 'standard');
         setSlug(data.slug || '');
+        setPhone(data.phone || '');
+        setInstagram(data.instagram || '');
+        setMapsUrl(data.maps_url || '');
       })
       .catch(console.error);
   }, []);
@@ -51,10 +57,8 @@ export default function VisualIdentity() {
     img.src = imageUrl;
     img.onload = async () => {
       try {
-        const palette = await getPalette(img, 5);
-        const hexColors = palette.map((rgb: number[]) => {
-          return '#' + rgb.map(x => x.toString(16).padStart(2, '0')).join('');
-        });
+        const palette = await getPalette(img, { colorCount: 5 });
+        const hexColors = (palette || []).map((color: any) => color.hex());
         
         // Generate a few palette combinations
         const suggestions = [
@@ -85,7 +89,10 @@ export default function VisualIdentity() {
           primaryColor,
           secondaryColor,
           bookingLayout,
-          slug
+          slug,
+          phone,
+          instagram,
+          mapsUrl
         })
       });
       if (res.ok) {
@@ -190,17 +197,52 @@ export default function VisualIdentity() {
                     </div>
                   </div>
                   <div>
-                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-2 block">Layout</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {['standard', 'classic'].map(l => (
+                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">WhatsApp</label>
+                    <input 
+                      type="text" 
+                      value={phone} 
+                      onChange={e => setPhone(e.target.value)} 
+                      placeholder="(53) 99999-9999"
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-xs" 
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Instagram (@)</label>
+                    <input 
+                      type="text" 
+                      value={instagram} 
+                      onChange={e => setInstagram(e.target.value)} 
+                      placeholder="@barbearia"
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-xs" 
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Link Google Maps</label>
+                    <input 
+                      type="text" 
+                      value={mapsUrl} 
+                      onChange={e => setMapsUrl(e.target.value)} 
+                      placeholder="https://goo.gl/maps/..."
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-100 dark:border-zinc-800 rounded-lg px-3 py-2 text-xs" 
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-2 block text-center">Sugestão: Use 3 cores para contraste perfeito</label>
+                    <label className="text-[10px] font-bold text-gray-400 uppercase mb-2 block">Layout da Página</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: 'standard', name: 'Padrão' },
+                        { id: 'classic', name: 'Clássico' },
+                        { id: 'modern', name: 'Moderno' }
+                      ].map(l => (
                         <button
-                          key={l}
-                          onClick={() => setBookingLayout(l)}
+                          key={l.id}
+                          onClick={() => setBookingLayout(l.id)}
                           className={`text-[10px] font-bold p-2 rounded-lg border uppercase tracking-wider transition-all ${
-                            bookingLayout === l ? 'bg-[#D4AF37] text-white border-[#D4AF37]' : 'border-gray-200 dark:border-zinc-800 text-gray-400'
+                            bookingLayout === l.id ? 'bg-[#D4AF37] text-white border-[#D4AF37]' : 'border-gray-200 dark:border-zinc-800 text-gray-400 hover:border-gray-300'
                           }`}
                         >
-                          {l}
+                          {l.name}
                         </button>
                       ))}
                     </div>
@@ -277,13 +319,13 @@ export default function VisualIdentity() {
 
                  {/* Mock Footer */}
                  <div className="mt-12 pt-8 border-t border-white/10 grid grid-cols-3 gap-2 px-2">
-                    <div className="bg-white/5 p-3 rounded-xl flex items-center justify-center border border-white/5">
+                    <div className={`bg-white/5 p-3 rounded-xl flex items-center justify-center border border-white/5 transition-opacity ${!phone && 'opacity-20'}`}>
                        <MessageCircle className="w-4 h-4 text-green-500" />
                     </div>
-                    <div className="bg-white/5 p-3 rounded-xl flex items-center justify-center border border-white/5">
+                    <div className={`bg-white/5 p-3 rounded-xl flex items-center justify-center border border-white/5 transition-opacity ${!instagram && 'opacity-20'}`}>
                        <Instagram className="w-4 h-4 text-pink-500" />
                     </div>
-                    <div className="bg-white/5 p-3 rounded-xl flex items-center justify-center border border-white/5">
+                    <div className={`bg-white/5 p-3 rounded-xl flex items-center justify-center border border-white/5 transition-opacity ${!mapsUrl && 'opacity-20'}`}>
                        <MapPin className="w-4 h-4 text-blue-500" />
                     </div>
                  </div>
