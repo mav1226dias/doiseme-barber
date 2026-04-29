@@ -41,8 +41,10 @@ export default function MasterAdmin() {
       } else {
         const text = await res.text();
         console.error('Fetch Master Data failed:', res.status, text.substring(0, 100));
-        if (!res.ok && res.status === 401) {
-          toast.error('Sessão expirada. Faça login novamente.');
+        if (!res.ok && (res.status === 401 || res.status === 403)) {
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          navigate('/admin/login');
         } else if (!res.ok) {
           console.warn('Response was not OK and/or not JSON');
         }

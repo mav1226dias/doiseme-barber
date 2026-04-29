@@ -6,6 +6,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
 import { supabase } from './src/db/supabase';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-for-doiseme';
@@ -96,17 +100,51 @@ async function startServer() {
   });
 
   // Auth Middleware
-  const authenticateToken = (req: any, res: any, next: any) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
+  const authenticateToken = async (req: any, res: any, next: any) => {
+    try {
+      const authHeader = req.headers['authorization'];
+      const token = authHeader && authHeader.split(' ')[1];
 
-    if (token == null) return res.status(401).json({ error: 'Unauthorized' });
+      if (!token || token === 'null' || token === 'undefined') {
+        return res.status(401).json({ error: 'Sessão inválida ou expirada. Por favor, faça login novamente.' });
+      }
 
-    jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
-      if (err) return res.status(403).json({ error: 'Forbidden' });
+      // Use a promise to verify the token
+      const user: any = await new Promise((resolve, reject) => {
+        jwt.verify(token, JWT_SECRET, (err: any, decoded: any) => {
+          if (err) {
+            console.error(`[JWT_VERIFY_ERROR] Token: ${token.substring(0, 10)}... Error:`, err.message);
+            reject(err);
+          }
+          else resolve(decoded);
+        });
+      });
+
       req.user = user;
+
+      // Skip extra checks for master admin unless they are NOT impersonating
+      if (user.role !== 'master' && user.barbershopId) {
+        const { data: shop, error } = await supabase
+          .from('barbershops')
+          .select('is_blocked, expires_at')
+          .eq('id', user.barbershopId)
+          .maybeSingle();
+        
+        if (shop) {
+          if (shop.is_blocked) {
+            return res.status(403).json({ error: 'Sua conta está bloqueada pelo administrador.' });
+          }
+          if (shop.expires_at && new Date(shop.expires_at) < new Date()) {
+            return res.status(403).json({ error: 'Seu período de teste ou assinatura expirou.' });
+          }
+        }
+      }
+
       next();
-    });
+    } catch (err) {
+      console.error('[AUTH_ERROR]', err);
+      return res.status(403).json({ error: 'Token inválido ou expirado' });
+    }
   };
 
   // Super Admin Check Middleware
@@ -240,6 +278,63 @@ async function startServer() {
       res.json(shop);
     } catch (error) {
       res.status(500).json({ error: 'Erro ao buscar barbearia' });
+    }
+  });
+
+  // Upload proxy to Supabase
+  api.post('/admin/upload', authenticateToken, async (req: any, res) => {
+    const { filePath, content, contentType } = req.body;
+    const BUCKET_NAME = 'barbearias-assets';
+    
+    if (!filePath || !content) {
+      return res.status(400).json({ error: 'Faltando dados de upload' });
+    }
+
+    try {
+      const buffer = Buffer.from(content, 'base64');
+      
+      // Check if bucket exists, if not try to create (might need higher permissions)
+      const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+      const bucketExists = buckets?.some(b => b.name === BUCKET_NAME);
+
+      if (!bucketExists) {
+        console.log(`[STORAGE] Bucket "${BUCKET_NAME}" não encontrado. Tentando criar...`);
+        const { error: createError } = await supabase.storage.createBucket(BUCKET_NAME, {
+          public: true, // Crucial for external access
+          fileSizeLimit: 5242880, // 5MB limit
+        });
+        
+        if (createError) {
+          console.error('[STORAGE_CREATE_ERROR]', createError);
+          // If we can't create it, we can't proceed
+          return res.status(500).json({ 
+            error: `O Bucket "${BUCKET_NAME}" não existe e não pôde ser criado automaticamente. Por favor, crie-o manualmente no painel do Supabase (Storage > New Bucket).`,
+            details: createError.message
+          });
+        }
+        console.log(`[STORAGE] Bucket "${BUCKET_NAME}" criado com sucesso.`);
+      }
+      
+      const { data, error } = await supabase.storage
+        .from(BUCKET_NAME)
+        .upload(filePath, buffer, {
+          contentType: contentType || 'image/png',
+          upsert: true
+        });
+
+      if (error) {
+        console.error('[SERVER_UPLOAD_ERROR]', error);
+        return res.status(500).json({ error: error.message });
+      }
+
+      const { data: { publicUrl } } = supabase.storage
+        .from(BUCKET_NAME)
+        .getPublicUrl(filePath);
+
+      res.json({ publicUrl });
+    } catch (e: any) {
+      console.error('[SERVER_UPLOAD_CATCH]', e);
+      res.status(500).json({ error: e.message || 'Erro interno no servidor de upload' });
     }
   });
 
@@ -561,7 +656,7 @@ async function startServer() {
         barbershopId: user.barbershop_id, 
         role: user.role,
         email: user.email 
-      }, JWT_SECRET, { expiresIn: '1d' });
+      }, JWT_SECRET, { expiresIn: '7d' });
       
       res.json({ 
         token, 
@@ -641,20 +736,33 @@ async function startServer() {
   });
 
   api.get('/admin/dashboard', authenticateToken, async (req: any, res) => {
-    const { barbershopId } = req.user;
+    const { barbershopId } = (req as any).user;
     const { start, end } = req.query;
+    console.log(`[DASHBOARD] Loading for shop ${barbershopId}, range: ${start} to ${end}`);
+    
     try {
+      // Use start_time instead of date based on schema
       let appointmentsQuery = supabase.from('appointments').select('*').eq('barbershop_id', barbershopId);
       
       if (start && end) {
-        appointmentsQuery = appointmentsQuery.gte('date', start).lte('date', end);
+        appointmentsQuery = appointmentsQuery.gte('start_time', `${start}T00:00:00`).lte('start_time', `${end}T23:59:59`);
       }
 
       const { data: allAppointments, error: appErr } = await appointmentsQuery;
+      if (appErr) console.error('[DASHBOARD_APP_ERR]', appErr);
+
       const { data: allServices, error: svcErr } = await supabase.from('services').select('*').eq('barbershop_id', barbershopId);
+      if (svcErr) console.error('[DASHBOARD_SVC_ERR]', svcErr);
+
       const { data: allBarbers, error: brbErr } = await supabase.from('barbers').select('*').eq('barbershop_id', barbershopId);
+      if (brbErr) console.error('[DASHBOARD_BRB_ERR]', brbErr);
       
-      if (appErr || svcErr || brbErr) throw new Error('Failed to load dashboard data');
+      if (appErr || svcErr || brbErr) {
+        return res.status(500).json({ 
+          error: 'Erro ao carregar dados do banco de dados',
+          details: (appErr || svcErr || brbErr)?.message 
+        });
+      }
 
       const totalAppointments = allAppointments?.length || 0;
       
@@ -662,33 +770,38 @@ async function startServer() {
       let totalRevenue = 0;
       let totalCommissions = 0;
       (allAppointments || []).forEach(app => {
-        if (app.status === 'completed' || app.status === 'scheduled') {
+        if (app.status === 'completed' || app.status === 'confirmed') {
           const service = (allServices || []).find(s => s.id === app.service_id);
           const barber = (allBarbers || []).find(b => b.id === app.barber_id);
           if (service) {
-            totalRevenue += service.price;
+            const price = Number(service.price) || 0;
+            totalRevenue += price;
             const rate = barber?.commission_percentage || 50;
-            totalCommissions += (service.price * rate) / 100;
+            totalCommissions += (price * rate) / 100;
           }
         }
       });
 
-      // Get expenses
-      const { data: allExpenses } = await supabase
-        .from('expenses')
+      // Get expenses from "finances" table (the correct one in schema)
+      const { data: allExpenses, error: expErr } = await supabase
+        .from('finances')
         .select('*')
         .eq('barbershop_id', barbershopId)
+        .eq('type', 'expense')
         .gte('date', start || '2000-01-01')
         .lte('date', end || '2100-01-01');
 
-      const totalExpenses = (allExpenses || []).reduce((acc, curr) => acc + curr.amount, 0);
+      if (expErr) console.error('[DASHBOARD_EXP_ERR]', expErr);
+
+      const totalExpenses = (allExpenses || []).reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
 
       // Calculate appointments by barber
       const appointmentsByBarber = (allBarbers || []).map(barber => {
-        const count = (allAppointments || []).filter(app => app.barber_id === barber.id).length;
-        const revenue = (allAppointments || []).filter(app => app.barber_id === barber.id).reduce((acc, app) => {
+        const barberApps = (allAppointments || []).filter(app => app.barber_id === barber.id);
+        const count = barberApps.length;
+        const revenue = barberApps.reduce((acc, app) => {
           const service = (allServices || []).find(s => s.id === app.service_id);
-          return acc + (service?.price || 0);
+          return acc + (Number(service?.price) || 0);
         }, 0);
         return { 
           name: barber.name, 
@@ -706,22 +819,23 @@ async function startServer() {
         netProfit: totalRevenue - totalCommissions - totalExpenses,
         appointmentsByBarber
       });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Erro ao carregar dashboard' });
+    } catch (error: any) {
+      console.error('[DASHBOARD_CATCH]', error);
+      res.status(500).json({ error: 'Erro interno ao processar dashboard', details: error.message });
     }
   });
 
   // Finances / Expenses
   api.get('/admin/expenses', authenticateToken, async (req: any, res) => {
     try {
-      const { data: expensesList, error } = await supabase
-        .from('expenses')
+      const { data: financesList, error } = await supabase
+        .from('finances')
         .select('*')
         .eq('barbershop_id', req.user.barbershopId)
+        .eq('type', 'expense')
         .order('date', { ascending: false });
       if (error) throw error;
-      res.json(expensesList || []);
+      res.json(financesList || []);
     } catch (error) {
       res.status(500).json({ error: 'Erro ao buscar despesas' });
     }
@@ -731,9 +845,10 @@ async function startServer() {
     const { description, amount, category, date, barberId } = req.body;
     try {
       const id = crypto.randomUUID();
-      const { error } = await supabase.from('expenses').insert({
+      const { error } = await supabase.from('finances').insert({
         id,
         barbershop_id: req.user.barbershopId,
+        type: 'expense',
         description,
         amount: Number(amount),
         category,
@@ -750,7 +865,7 @@ async function startServer() {
   api.delete('/admin/expenses/:id', authenticateToken, async (req: any, res) => {
     try {
       const { error } = await supabase
-        .from('expenses')
+        .from('finances')
         .delete()
         .eq('id', req.params.id)
         .eq('barbershop_id', req.user.barbershopId);
@@ -1575,10 +1690,10 @@ async function startServer() {
 
       // Create a master-elevated token for this specific shop
       const token = jwt.sign({ 
-        id: req.user.id, 
+        id: (req as any).user.id, 
         barbershopId: shopId, 
         role: 'master', // Keep master role so they can still access master tools if needed
-        email: req.user.email,
+        email: (req as any).user.email,
         isImpersonating: true
       }, JWT_SECRET, { expiresIn: '2h' }); // Short-lived token for impersonation
       

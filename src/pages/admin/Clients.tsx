@@ -22,6 +22,11 @@ export default function Clients() {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(async res => {
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem('token');
+          window.location.href = '/admin/login';
+          return [];
+        }
         const text = await res.text();
         return text ? JSON.parse(text) : [];
       })

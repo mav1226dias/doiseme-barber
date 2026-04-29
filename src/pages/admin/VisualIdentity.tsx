@@ -94,18 +94,41 @@ export default function VisualIdentity() {
       const fileName = `${type}-${Date.now()}.${fileExt}`;
       const filePath = `${shop.id}/${fileName}`;
 
-      const { error: uploadError } = await supabase.storage
-        .from('barbearias-assets')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: true
-        });
+      console.log(`[UPLOAD] Starting server-side upload for ${type}:`, filePath);
 
-      if (uploadError) throw uploadError;
+      // Convert file to base64
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve) => {
+        reader.onload = () => {
+          const split = (reader.result as string).split(',');
+          resolve(split[1]);
+        };
+        reader.readAsDataURL(file);
+      });
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('barbearias-assets')
-        .getPublicUrl(filePath);
+      const base64Content = await base64Promise;
+      const token = localStorage.getItem('token');
+
+      const res = await fetch('/api/admin/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          filePath,
+          content: base64Content,
+          contentType: file.type
+        })
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Server upload failed');
+      }
+
+      const { publicUrl } = await res.json();
+      console.log(`[UPLOAD_SUCCESS] Public URL:`, publicUrl);
 
       if (type === 'logo') {
         setLogoUrl(publicUrl);

@@ -16,7 +16,14 @@ export default function Packages() {
   const fetchPackages = async () => {
     const token = localStorage.getItem('token');
     fetch('/api/admin/packages', { headers: { 'Authorization': `Bearer ${token}` } })
-      .then(res => res.json())
+      .then(async res => {
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem('token');
+          window.location.href = '/admin/login';
+          return [];
+        }
+        return res.json();
+      })
       .then(data => {
         if (Array.isArray(data)) setPackages(data);
       })

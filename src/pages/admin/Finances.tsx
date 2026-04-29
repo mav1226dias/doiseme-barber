@@ -35,6 +35,11 @@ export default function Finances() {
     // Fetch summary stats from dashboard API
     fetch('/api/admin/dashboard', { headers: { 'Authorization': `Bearer ${token}` } })
       .then(async res => {
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem('token');
+          window.location.href = '/admin/login';
+          return null;
+        }
         const text = await res.text();
         try {
            const data = text ? JSON.parse(text) : {};
@@ -46,6 +51,11 @@ export default function Finances() {
     // Fetch expenses
     fetch('/api/admin/expenses', { headers: { 'Authorization': `Bearer ${token}` } })
       .then(async res => {
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem('token');
+          window.location.href = '/admin/login';
+          return [];
+        }
         const text = await res.text();
         try {
           const data = text ? JSON.parse(text) : [];
@@ -64,6 +74,11 @@ export default function Finances() {
     // Fetch barbers for draws
     fetch('/api/admin/barbers', { headers: { 'Authorization': `Bearer ${token}` } })
       .then(async res => {
+        if (res.status === 401 || res.status === 403) {
+          localStorage.removeItem('token');
+          window.location.href = '/admin/login';
+          return [];
+        }
         const text = await res.text();
         try {
           const data = text ? JSON.parse(text) : [];

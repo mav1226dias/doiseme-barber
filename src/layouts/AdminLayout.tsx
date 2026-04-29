@@ -22,7 +22,30 @@ export default function AdminLayout() {
     } else {
       // Simple JWT decode to check role/email
       try {
-        const payload = JSON.parse(atob(token.split('.')[1]));
+        const parts = token.split('.');
+        if (parts.length !== 3) throw new Error('Token malformed');
+        
+        // Base64URL to Base64
+        const base64Url = parts[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        
+        // Decode payload with Unicode support
+        const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
+          return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        
+        const payload = JSON.parse(jsonPayload);
+        
+        // Check if token is expired
+        const now = Math.floor(Date.now() / 1000);
+        if (payload.exp && payload.exp < now) {
+          console.warn('[AUTH] Token expirado');
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          navigate('/admin/login');
+          return;
+        }
+
         const masterEmails = ['admin@doiseme.com', 'marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com'];
         if (payload.role === 'master' || masterEmails.includes(payload.email)) {
           setIsMaster(true);
@@ -31,7 +54,10 @@ export default function AdminLayout() {
           setIsImpersonating(true);
         }
       } catch (e) {
-        console.error("Failed to decode token", e);
+        console.error("Token inválido ou corrompido", e);
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        navigate('/admin/login');
       }
     }
   }, [navigate]);

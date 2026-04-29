@@ -92,6 +92,19 @@ CREATE TABLE IF NOT EXISTS finances (
   description TEXT,
   amount DECIMAL(10,2) NOT NULL,
   date DATE NOT NULL,
+  barber_id TEXT REFERENCES barbers(id), -- Add barber_id to finances
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS client_packages (
+  id TEXT PRIMARY KEY,
+  barbershop_id TEXT NOT NULL REFERENCES barbershops(id),
+  client_name TEXT NOT NULL,
+  client_whatsapp TEXT NOT NULL,
+  package_name TEXT NOT NULL,
+  total_quantity INTEGER NOT NULL,
+  remaining_quantity INTEGER NOT NULL,
+  price_paid DECIMAL(10,2) NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

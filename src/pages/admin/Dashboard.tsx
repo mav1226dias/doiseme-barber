@@ -22,12 +22,29 @@ export default function Dashboard() {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(async res => {
+        if (res.status === 401 || res.status === 403) {
+          console.warn('[AUTH] Sessão expirada ou não autorizada');
+          localStorage.removeItem('token');
+          window.location.href = '/admin/login';
+          return { error: 'Sessão expirada' };
+        }
+        const contentType = res.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          return res.json();
+        }
         const text = await res.text();
-        return text ? JSON.parse(text) : {};
+        console.error('Non-JSON response:', res.status, text.substring(0, 200));
+        return { error: `Erro do servidor (${res.status}): Resposta inválida. Verifique os logs do servidor.` };
       })
       .then(data => {
-        if (data.error) console.error('Dashboard error:', data.error);
-        else setStats(prev => ({ ...prev, ...data }));
+        if (data.error) {
+          if (data.error !== 'Sessão expirada') {
+            console.error('Dashboard error:', data.error);
+            alert('Erro no Dashboard: ' + (data.details || data.error));
+          }
+        } else {
+          setStats(prev => ({ ...prev, ...data }));
+        }
       })
       .catch(console.error);
   };
