@@ -149,15 +149,17 @@ async function startServer() {
 
   // Super Admin Check Middleware
   const requireMaster = (req: any, res: any, next: any) => {
-    // Only users with 'master' role OR specific emails can access
-    const masterEmails = ['admin@doiseme.com', 'marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com'];
+    const authorizedEmails = ['marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com'];
     const userEmail = req.user.email?.toLowerCase();
     
-    if (req.user.role === 'master' || (userEmail && masterEmails.includes(userEmail))) {
+    const isAuthorized = userEmail && authorizedEmails.includes(userEmail);
+    const isMasterRole = req.user.role === 'master';
+
+    if (isMasterRole && isAuthorized) {
       next();
     } else {
-      console.warn(`[AUTH_BLOCKED] Non-master attempt: ${req.user.email} (Role: ${req.user.role})`);
-      res.status(403).json({ error: 'Acesso restrito ao Administrador Geral' });
+      console.warn(`[SECURITY_ALERT] Non-authorized Master attempt: ${req.user.email} (Role: ${req.user.role})`);
+      res.status(403).json({ error: 'Acesso restrito ao Administrador Geral.' });
     }
   };
 

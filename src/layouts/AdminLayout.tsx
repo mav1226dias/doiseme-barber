@@ -46,8 +46,10 @@ export default function AdminLayout() {
           return;
         }
 
-        const masterEmails = ['admin@doiseme.com', 'marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com'];
-        if (payload.role === 'master' || masterEmails.includes(payload.email)) {
+        const authorizedEmails = ['marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com'];
+        const userEmail = payload.email?.toLowerCase();
+        
+        if (payload.role === 'master' && authorizedEmails.includes(userEmail)) {
           setIsMaster(true);
         }
         if (payload.isImpersonating) {
