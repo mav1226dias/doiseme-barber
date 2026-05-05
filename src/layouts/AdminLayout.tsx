@@ -91,7 +91,7 @@ export default function AdminLayout() {
     { path: '/admin/clients', icon: Users, label: 'Clientes' },
     { path: '/admin/finances', icon: Wallet, label: 'Financeiro' },
     { path: '/admin/packages', icon: Package, label: 'Pacotes' },
-    { path: '/admin/visual', icon: Palette, label: 'Identidade Visual' },
+    { path: '/admin/profile', icon: Users, label: 'Perfil' },
     { path: '/admin/campaigns', icon: Megaphone, label: 'Campanhas' },
     { path: '/admin/notifications', icon: Bell, label: 'Notificações' },
     { path: '/admin/booking-site', icon: Globe, label: 'Site de Agendamento' },

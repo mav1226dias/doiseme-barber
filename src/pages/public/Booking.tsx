@@ -136,7 +136,8 @@ export default function Booking() {
   if (success) {
     const barber = barbers.find(b => b.id.toString() === formData.barber_id);
     const message = `Fala ${barber?.name}, agendei meu horário para o dia ${formData.date.split('-').reverse().join('/')} às ${formData.time}.`;
-    const whatsappUrl = `https://wa.me/55${shop.phone?.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`;
+    const phoneNum = shop.whatsapp || shop.phone;
+    const whatsappUrl = `https://wa.me/55${phoneNum?.replace(/\D/g, '')}?text=${encodeURIComponent(message)}`;
 
     return (
       <div className="max-w-md mx-auto mt-20 px-4 text-center">
@@ -184,13 +185,13 @@ export default function Booking() {
         <h1 className="text-4xl font-bold mb-2 font-serif tracking-tight drop-shadow-lg">{shop.name}</h1>
         
         <div className="flex items-center justify-center gap-3 mb-6">
-          {shop.phone && shop.show_whatsapp !== false && (
-            <a href={`https://wa.me/55${shop.phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="w-10 h-10 flex items-center justify-center rounded-full bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366] hover:text-white transition-all shadow-lg" title="WhatsApp">
+          {(shop.whatsapp || shop.phone) && shop.show_whatsapp !== false && (
+            <a href={`https://wa.me/55${(shop.whatsapp || shop.phone).replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="w-10 h-10 flex items-center justify-center rounded-full bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366] hover:text-white transition-all shadow-lg" title="WhatsApp">
               <MessageCircle className="w-5 h-5" />
             </a>
           )}
           {shop.instagram && shop.show_instagram !== false && (
-            <a href={`https://instagram.com/${shop.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="w-10 h-10 flex items-center justify-center rounded-full bg-[#E1306C]/10 text-[#E1306C] hover:bg-[#E1306C] hover:text-white transition-all shadow-lg" title="Instagram">
+            <a href={shop.instagram.startsWith('http') ? shop.instagram : `https://instagram.com/${shop.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="w-10 h-10 flex items-center justify-center rounded-full bg-[#E1306C]/10 text-[#E1306C] hover:bg-[#E1306C] hover:text-white transition-all shadow-lg" title="Instagram">
               <Instagram className="w-5 h-5" />
             </a>
           )}
@@ -381,16 +382,16 @@ export default function Booking() {
 
       {/* Footer Info */}
       <div className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-4">
-        {shop.phone && shop.show_whatsapp !== false && (
-          <a href={`https://wa.me/55${shop.phone.replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
+        {(shop.whatsapp || shop.phone) && shop.show_whatsapp !== false && (
+          <a href={`https://wa.me/55${(shop.whatsapp || shop.phone).replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
             <MessageCircle className="w-5 h-5 text-[#25D366]" />
             <span className="font-medium">WhatsApp</span>
           </a>
         )}
         {shop.instagram && shop.show_instagram !== false && (
-          <a href={`https://instagram.com/${shop.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
+          <a href={shop.instagram.startsWith('http') ? shop.instagram : `https://instagram.com/${shop.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 p-4 rounded-2xl transition-colors">
             <Instagram className="w-5 h-5 text-[#E1306C]" />
-            <span className="font-medium">@{shop.instagram.replace('@', '')}</span>
+            <span className="font-medium">{shop.instagram.includes('/') ? 'Instagram' : `@${shop.instagram.replace('@', '')}`}</span>
           </a>
         )}
         {shop.maps_url && shop.show_address !== false && (

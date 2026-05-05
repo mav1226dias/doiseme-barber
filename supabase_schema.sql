@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS barbershops (
   address TEXT,
   phone TEXT,
   instagram TEXT,
+  whatsapp TEXT,
   logo_url TEXT,
   banner_url TEXT,
   primary_color TEXT DEFAULT '#000000',
