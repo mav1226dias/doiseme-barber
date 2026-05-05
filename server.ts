@@ -702,23 +702,28 @@ async function startServer() {
       }
 
       const updateData: any = {
-        name: name,
-        address: address,
-        logo_url: logoUrl,
-        banner_url: bannerUrl,
-        primary_color: primaryColor,
-        secondary_color: secondaryColor,
-        booking_layout: bookingLayout,
-        slug: cleanSlug,
-        instagram: instagram,
-        whatsapp: whatsapp,
-        phone: whatsapp, // Sync phone with whatsapp for compatibility
-        maps_url: mapsUrl,
-        show_whatsapp: showWhatsapp ?? true,
-        show_instagram: showInstagram ?? true,
-        show_address: showAddress ?? true,
+        name: name !== undefined ? name : undefined,
+        address: address !== undefined ? address : undefined,
+        logo_url: logoUrl !== undefined ? logoUrl : undefined,
+        banner_url: bannerUrl !== undefined ? bannerUrl : undefined,
+        primary_color: primaryColor !== undefined ? primaryColor : undefined,
+        secondary_color: secondaryColor !== undefined ? secondaryColor : undefined,
+        booking_layout: bookingLayout !== undefined ? bookingLayout : undefined,
+        slug: cleanSlug !== undefined ? cleanSlug : undefined,
+        instagram: instagram !== undefined ? instagram : undefined,
+        whatsapp: whatsapp !== undefined ? whatsapp : undefined,
+        phone: whatsapp !== undefined ? whatsapp : undefined,
+        maps_url: mapsUrl !== undefined ? mapsUrl : undefined,
+        show_whatsapp: showWhatsapp !== undefined ? showWhatsapp : undefined,
+        show_instagram: showInstagram !== undefined ? showInstagram : undefined,
+        show_address: showAddress !== undefined ? showAddress : undefined,
         updated_at: new Date().toISOString()
       };
+
+      // Remove undefined values so they don't overwrite with null
+      Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
+
+      console.log(`[SHOP_UPDATE_START] Updating shop ID: ${req.user.barbershopId}`, updateData);
 
       const { data, error } = await supabase
         .from('barbershops')

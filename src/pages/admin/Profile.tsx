@@ -133,7 +133,13 @@ export default function Profile() {
           mapsUrl,
           slug,
           logoUrl,
-          bannerUrl
+          bannerUrl,
+          primaryColor: shop?.primary_color,
+          secondaryColor: shop?.secondary_color,
+          bookingLayout: shop?.booking_layout,
+          showWhatsapp: shop?.show_whatsapp,
+          showInstagram: shop?.show_instagram,
+          showAddress: shop?.show_address
         })
       });
 
@@ -176,14 +182,25 @@ export default function Profile() {
           <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Perfil da Barbearia</h1>
           <p className="text-gray-500 text-sm">Gerencie as informações públicas da sua unidade</p>
         </div>
-        <button 
-          onClick={handleSave}
-          disabled={saving || uploadingLogo || uploadingBanner}
-          className="flex items-center gap-2 bg-black dark:bg-[#D4AF37] text-white dark:text-black px-6 py-3 rounded-xl font-bold hover:opacity-90 transition-all shadow-lg active:scale-95 disabled:opacity-50"
-        >
-          {saving ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" /> : <Save className="w-5 h-5" />}
-          {saving ? 'SALVANDO...' : (uploadingLogo || uploadingBanner) ? 'CARREGANDO IMAGEM...' : 'SALVAR ALTERAÇÕES'}
-        </button>
+        <div className="flex flex-wrap items-center gap-3">
+          <a 
+            href={`/b/${slug || shop?.id}`} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 bg-gray-200 dark:bg-zinc-800 text-gray-900 dark:text-white px-6 py-3 rounded-xl font-bold hover:bg-gray-300 dark:hover:bg-zinc-700 transition-all shadow-sm active:scale-95"
+          >
+            <ExternalLink className="w-5 h-5" />
+            VER SITE PÚBLICO
+          </a>
+          <button 
+            onClick={handleSave}
+            disabled={saving || uploadingLogo || uploadingBanner}
+            className="flex items-center gap-2 bg-black dark:bg-[#D4AF37] text-white dark:text-black px-6 py-3 rounded-xl font-bold hover:opacity-90 transition-all shadow-lg active:scale-95 disabled:opacity-50"
+          >
+            {saving ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" /> : <Save className="w-5 h-5" />}
+            {saving ? 'SALVANDO...' : (uploadingLogo || uploadingBanner) ? 'CARREGANDO IMAGEM...' : 'SALVAR ALTERAÇÕES'}
+          </button>
+        </div>
       </header>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
