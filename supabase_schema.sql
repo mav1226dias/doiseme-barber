@@ -131,3 +131,27 @@ ALTER TABLE clients DISABLE ROW LEVEL SECURITY;
 ALTER TABLE appointments DISABLE ROW LEVEL SECURITY;
 ALTER TABLE shop_settings DISABLE ROW LEVEL SECURITY;
 ALTER TABLE finances DISABLE ROW LEVEL SECURITY;
+
+-- 6. Storage Configuration (Run this in Supabase SQL Editor)
+-- Criar o bucket para fotos da barbearia se não existir
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('barbearias-assets', 'barbearias-assets', true)
+ON CONFLICT (id) DO NOTHING;
+
+-- Política: Permitir que qualquer pessoa veja as fotos (Public Access)
+CREATE POLICY "Public Access" ON storage.objects
+  FOR SELECT USING (bucket_id = 'barbearias-assets');
+
+-- Política: Permitir Upload apenas para usuários autenticados
+CREATE POLICY "Admin Upload" ON storage.objects
+  FOR INSERT WITH CHECK (
+    bucket_id = 'barbearias-assets' AND 
+    auth.role() = 'authenticated'
+  );
+
+-- Política: Permitir Update/Delete apenas para usuários autenticados
+CREATE POLICY "Admin Update Delete" ON storage.objects
+  FOR UPDATE OR DELETE USING (
+    bucket_id = 'barbearias-assets' AND 
+    auth.role() = 'authenticated'
+  );
