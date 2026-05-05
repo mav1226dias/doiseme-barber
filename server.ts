@@ -208,6 +208,7 @@ async function startServer() {
 
       if (shopBySlug) {
         console.log(`[PUBLIC_SHOP_FOUND] Match by slug: ${identifier} -> ID: ${shopBySlug.id}`);
+        console.log(`[PUBLIC_SHOP_DATA] Logo: ${shopBySlug.logo_url ? 'Yes' : 'No'}, Banner: ${shopBySlug.banner_url ? 'Yes' : 'No'}`);
         
         // Block/Expiry check
         if (shopBySlug.is_blocked) {
@@ -237,6 +238,7 @@ async function startServer() {
 
         if (shopById) {
           console.log(`[PUBLIC_SHOP_FOUND] Match by ID: ${identifier}`);
+          console.log(`[PUBLIC_SHOP_DATA_ID] Logo: ${shopById.logo_url ? 'Yes' : 'No'}, Banner: ${shopById.banner_url ? 'Yes' : 'No'}`);
 
           // Block/Expiry check
           if (shopById.is_blocked) {
@@ -724,7 +726,12 @@ async function startServer() {
         .eq('id', req.user.barbershopId)
         .select()
         .single();
+      
       if (error) throw error;
+      
+      console.log(`[SHOP_UPDATE_SUCCESS] Barbershop ${req.user.barbershopId} updated. Slug: ${cleanSlug}`);
+      console.log(`[SHOP_UPDATE_DATA] Logo saved as: ${updateData.logo_url}`);
+      
       res.json(data);
     } catch (e: any) { 
       console.error('[SHOP_UPDATE_ERROR]', e);

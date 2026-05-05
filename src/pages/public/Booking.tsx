@@ -44,6 +44,7 @@ export default function Booking() {
         return res.json();
       })
       .then(data => {
+        console.log('[BOOKING_DEBUG] Shop Data:', data);
         setShop(data);
         setApiError(null);
         setErrorDetails(null);
