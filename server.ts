@@ -272,7 +272,7 @@ async function startServer() {
     try {
       const { data: shop, error } = await supabase
         .from('barbershops')
-        .select('id, name, slug, address, phone, instagram, maps_url, logo_url, primary_color, secondary_color, booking_layout')
+        .select('id, name, slug, address, phone, instagram, maps_url, logo_url, banner_url, primary_color, secondary_color, booking_layout')
         .eq('slug', req.params.slug.toLowerCase())
         .maybeSingle();
         
@@ -687,6 +687,16 @@ async function startServer() {
         if (existing && existing.id !== req.user.barbershopId) {
           return res.status(409).json({ error: 'Este link já está em uso por outra barbearia.' });
         }
+      }
+
+      // Safety check: Prevent saving blob URLs (which are only valid in the client session)
+      if (logoUrl && logoUrl.startsWith('blob:')) {
+        console.warn(`[SECURITY] Prevented saving blob URL as logo: ${logoUrl}`);
+        return res.status(400).json({ error: 'Aguarde o upload do logo ser concluído antes de salvar.' });
+      }
+      if (bannerUrl && bannerUrl.startsWith('blob:')) {
+        console.warn(`[SECURITY] Prevented saving blob URL as banner: ${bannerUrl}`);
+        return res.status(400).json({ error: 'Aguarde o upload da capa ser concluído antes de salvar.' });
       }
 
       const updateData: any = {

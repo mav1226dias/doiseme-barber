@@ -178,11 +178,11 @@ export default function Profile() {
         </div>
         <button 
           onClick={handleSave}
-          disabled={saving}
+          disabled={saving || uploadingLogo || uploadingBanner}
           className="flex items-center gap-2 bg-black dark:bg-[#D4AF37] text-white dark:text-black px-6 py-3 rounded-xl font-bold hover:opacity-90 transition-all shadow-lg active:scale-95 disabled:opacity-50"
         >
           {saving ? <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" /> : <Save className="w-5 h-5" />}
-          {saving ? 'SALVANDO...' : 'SALVAR ALTERAÇÕES'}
+          {saving ? 'SALVANDO...' : (uploadingLogo || uploadingBanner) ? 'CARREGANDO IMAGEM...' : 'SALVAR ALTERAÇÕES'}
         </button>
       </header>
 

@@ -29,7 +29,9 @@ export default function Booking() {
   useEffect(() => {
     if (!slug) return;
     
-    fetch(`/api/public/shop/${slug}`)
+    // Add cache buster to ensure fresh data
+    const cacheBuster = new Date().getTime();
+    fetch(`/api/public/shop/${slug}?t=${cacheBuster}`)
       .then(async res => {
         if (!res.ok) {
           const errData = await res.json().catch(() => ({}));
