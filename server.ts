@@ -665,7 +665,6 @@ async function startServer() {
       secondaryColor, 
       bookingLayout, 
       slug, 
-      phone, 
       instagram, 
       mapsUrl,
       whatsapp,
@@ -690,31 +689,37 @@ async function startServer() {
         }
       }
 
+      const updateData: any = {
+        name: name,
+        address: address,
+        logo_url: logoUrl,
+        banner_url: bannerUrl,
+        primary_color: primaryColor,
+        secondary_color: secondaryColor,
+        booking_layout: bookingLayout,
+        slug: cleanSlug,
+        instagram: instagram,
+        whatsapp: whatsapp,
+        phone: whatsapp, // Sync phone with whatsapp for compatibility
+        maps_url: mapsUrl,
+        show_whatsapp: showWhatsapp ?? true,
+        show_instagram: showInstagram ?? true,
+        show_address: showAddress ?? true,
+        updated_at: new Date().toISOString()
+      };
+
       const { data, error } = await supabase
         .from('barbershops')
-        .update({
-          name: name,
-          address: address,
-          logo_url: logoUrl,
-          banner_url: bannerUrl,
-          primary_color: primaryColor,
-          secondary_color: secondaryColor,
-          booking_layout: bookingLayout,
-          slug: cleanSlug,
-          phone: phone,
-          instagram: instagram,
-          whatsapp: whatsapp,
-          maps_url: mapsUrl,
-          show_whatsapp: showWhatsapp ?? true,
-          show_instagram: showInstagram ?? true,
-          show_address: showAddress ?? true
-        })
+        .update(updateData)
         .eq('id', req.user.barbershopId)
         .select()
         .single();
       if (error) throw error;
       res.json(data);
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e: any) { 
+      console.error('[SHOP_UPDATE_ERROR]', e);
+      res.status(500).json({ error: e.message }); 
+    }
   });
 
   api.get('/admin/dashboard', authenticateToken, async (req: any, res) => {
