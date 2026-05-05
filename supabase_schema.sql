@@ -143,15 +143,22 @@ CREATE POLICY "Public Access" ON storage.objects
   FOR SELECT USING (bucket_id = 'barbearias-assets');
 
 -- Política: Permitir Upload apenas para usuários autenticados
-CREATE POLICY "Admin Upload" ON storage.objects
+CREATE POLICY "Admin Insert" ON storage.objects
   FOR INSERT WITH CHECK (
     bucket_id = 'barbearias-assets' AND 
     auth.role() = 'authenticated'
   );
 
--- Política: Permitir Update/Delete apenas para usuários autenticados
-CREATE POLICY "Admin Update Delete" ON storage.objects
-  FOR UPDATE OR DELETE USING (
+-- Política: Permitir Update apenas para usuários autenticados
+CREATE POLICY "Admin Update" ON storage.objects
+  FOR UPDATE USING (
+    bucket_id = 'barbearias-assets' AND 
+    auth.role() = 'authenticated'
+  );
+
+-- Política: Permitir Delete apenas para usuários autenticados
+CREATE POLICY "Admin Delete" ON storage.objects
+  FOR DELETE USING (
     bucket_id = 'barbearias-assets' AND 
     auth.role() = 'authenticated'
   );
