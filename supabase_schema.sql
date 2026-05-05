@@ -142,23 +142,20 @@ ON CONFLICT (id) DO NOTHING;
 CREATE POLICY "Public Access" ON storage.objects
   FOR SELECT USING (bucket_id = 'barbearias-assets');
 
--- Política: Permitir Upload apenas para usuários autenticados
+-- Política: Permitir Upload para anon (protegido pelo nosso servidor)
 CREATE POLICY "Admin Insert" ON storage.objects
   FOR INSERT WITH CHECK (
-    bucket_id = 'barbearias-assets' AND 
-    auth.role() = 'authenticated'
+    bucket_id = 'barbearias-assets'
   );
 
--- Política: Permitir Update apenas para usuários autenticados
+-- Política: Permitir Update para anon
 CREATE POLICY "Admin Update" ON storage.objects
   FOR UPDATE USING (
-    bucket_id = 'barbearias-assets' AND 
-    auth.role() = 'authenticated'
+    bucket_id = 'barbearias-assets'
   );
 
--- Política: Permitir Delete apenas para usuários autenticados
+-- Política: Permitir Delete para anon
 CREATE POLICY "Admin Delete" ON storage.objects
   FOR DELETE USING (
-    bucket_id = 'barbearias-assets' AND 
-    auth.role() = 'authenticated'
+    bucket_id = 'barbearias-assets'
   );

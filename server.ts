@@ -295,28 +295,6 @@ async function startServer() {
     try {
       const buffer = Buffer.from(content, 'base64');
       
-      // Check if bucket exists, if not try to create (might need higher permissions)
-      const { data: buckets, error: listError } = await supabase.storage.listBuckets();
-      const bucketExists = buckets?.some(b => b.name === BUCKET_NAME);
-
-      if (!bucketExists) {
-        console.log(`[STORAGE] Bucket "${BUCKET_NAME}" não encontrado. Tentando criar...`);
-        const { error: createError } = await supabase.storage.createBucket(BUCKET_NAME, {
-          public: true, // Crucial for external access
-          fileSizeLimit: 5242880, // 5MB limit
-        });
-        
-        if (createError) {
-          console.error('[STORAGE_CREATE_ERROR]', createError);
-          // If we can't create it, we can't proceed
-          return res.status(500).json({ 
-            error: `O Bucket "${BUCKET_NAME}" não existe e não pôde ser criado automaticamente. Por favor, crie-o manualmente no painel do Supabase (Storage > New Bucket).`,
-            details: createError.message
-          });
-        }
-        console.log(`[STORAGE] Bucket "${BUCKET_NAME}" criado com sucesso.`);
-      }
-      
       const { data, error } = await supabase.storage
         .from(BUCKET_NAME)
         .upload(filePath, buffer, {
