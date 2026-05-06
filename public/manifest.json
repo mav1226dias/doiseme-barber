@@ -1,6 +1,6 @@
 {
-  "name": "Barber SaaS Premium",
-  "short_name": "BarberSaaS",
+  "name": "Doiseme Barber",
+  "short_name": "Doiseme",
   "description": "Sistema de Gestão para Barbearias",
   "start_url": "/",
   "display": "standalone",
@@ -8,7 +8,7 @@
   "theme_color": "#D4AF37",
   "icons": [
     {
-      "src": "https://cdn-icons-png.flaticon.com/512/103/103407.png",
+      "src": "https://cdn-icons-png.flaticon.com/512/9724/9724579.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
