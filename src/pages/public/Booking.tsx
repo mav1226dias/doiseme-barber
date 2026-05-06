@@ -188,11 +188,15 @@ export default function Booking() {
         <h1 className="text-4xl font-bold mb-2 font-serif tracking-tight drop-shadow-lg">{shop.name}</h1>
         
         <div className="flex items-center justify-center gap-3 mb-6">
-          {(shop.whatsapp || shop.phone) && shop.show_whatsapp !== false && (
-            <a href={`https://wa.me/55${(shop.whatsapp || shop.phone).replace(/\D/g, '')}`} target="_blank" rel="noreferrer" className="w-10 h-10 flex items-center justify-center rounded-full bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366] hover:text-white transition-all shadow-lg" title="WhatsApp">
-              <MessageCircle className="w-5 h-5" />
-            </a>
-          )}
+          {(shop.whatsapp || shop.phone) && shop.show_whatsapp !== false && (() => {
+            const pureNumber = (shop.whatsapp || shop.phone).replace(/\D/g, '');
+            const finalNumber = pureNumber.startsWith('55') ? pureNumber : `55${pureNumber}`;
+            return (
+              <a href={`https://wa.me/${finalNumber}`} target="_blank" rel="noreferrer" className="w-10 h-10 flex items-center justify-center rounded-full bg-[#25D366]/10 text-[#25D366] hover:bg-[#25D366] hover:text-white transition-all shadow-lg" title="WhatsApp">
+                <MessageCircle className="w-5 h-5" />
+              </a>
+            );
+          })()}
           {shop.instagram && shop.show_instagram !== false && (
             <a href={shop.instagram.startsWith('http') ? shop.instagram : `https://instagram.com/${shop.instagram.replace('@', '')}`} target="_blank" rel="noreferrer" className="w-10 h-10 flex items-center justify-center rounded-full bg-[#E1306C]/10 text-[#E1306C] hover:bg-[#E1306C] hover:text-white transition-all shadow-lg" title="Instagram">
               <Instagram className="w-5 h-5" />

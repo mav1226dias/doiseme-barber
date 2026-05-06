@@ -199,17 +199,25 @@ async function startServer() {
       const identifier = req.params.identifier.toLowerCase().trim();
       console.log(`[PUBLIC_SHOP_LOOKUP] Identifier: "${identifier}"`);
 
-      // 1. Try slug exact match
+      // 1. Try slug case-insensitive match
+      const cleanIdentifier = standardizeSlug(identifier) || identifier;
+
       const { data: shopBySlug, error: slugError } = await supabase
         .from('barbershops')
         .select('id, name, slug, address, phone, instagram, whatsapp, logo_url, banner_url, primary_color, secondary_color, booking_layout, show_whatsapp, show_instagram, show_address, is_blocked, expires_at')
-        .eq('slug', identifier)
+        .or(`slug.ilike.${identifier},slug.ilike.${cleanIdentifier},id.eq.${identifier}`)
         .maybeSingle();
 
       if (shopBySlug) {
-        console.log(`[PUBLIC_SHOP_FOUND] Match by slug: ${identifier} -> ID: ${shopBySlug.id}`);
-        console.log(`[PUBLIC_SHOP_DATA] Logo: ${shopBySlug.logo_url ? 'Yes' : 'No'}, Banner: ${shopBySlug.banner_url ? 'Yes' : 'No'}, Whatsapp: ${shopBySlug.whatsapp || shopBySlug.phone}`);
+        console.log(`[PUBLIC_SHOP_FOUND] Match found for: ${identifier} -> ID: ${shopBySlug.id}`);
         
+        // Ensure whatsapp is synced for the frontend if it was null in DB
+        const responseData = {
+          ...shopBySlug,
+          whatsapp: shopBySlug.whatsapp || shopBySlug.phone,
+          instagram: shopBySlug.instagram ? shopBySlug.instagram.replace(/^@/, '') : null
+        };
+
         // Block/Expiry check
         if (shopBySlug.is_blocked) {
           return res.status(403).json({ 
@@ -224,41 +232,10 @@ async function startServer() {
           });
         }
 
-        return res.json(shopBySlug);
+        return res.json(responseData);
       }
 
-      // 2. Try ID if slug didn't match (fallback)
-      // IDs are UUIDs or at least longer than standard slugs usually
-      if (identifier.length >= 20) { 
-        const { data: shopById, error: idError } = await supabase
-          .from('barbershops')
-          .select('id, name, slug, address, phone, instagram, whatsapp, logo_url, banner_url, primary_color, secondary_color, booking_layout, show_whatsapp, show_instagram, show_address, is_blocked, expires_at')
-          .eq('id', identifier)
-          .maybeSingle();
-
-        if (shopById) {
-          console.log(`[PUBLIC_SHOP_FOUND] Match by ID: ${identifier}`);
-          console.log(`[PUBLIC_SHOP_DATA_ID] Logo: ${shopById.logo_url ? 'Yes' : 'No'}, Banner: ${shopById.banner_url ? 'Yes' : 'No'}`);
-
-          // Block/Expiry check
-          if (shopById.is_blocked) {
-            return res.status(403).json({ 
-              error: 'Barbearia Temporariamente Indisponível', 
-              details: 'Esta barbearia está bloqueada pelo administrador do sistema.' 
-            });
-          }
-          if (shopById.expires_at && new Date(shopById.expires_at) < new Date()) {
-            return res.status(403).json({ 
-              error: 'Acesso Expirado', 
-              details: 'O prazo de utilização desta barbearia expirou.' 
-            });
-          }
-
-          return res.json(shopById);
-        }
-      }
-
-      console.warn(`[PUBLIC_SHOP_NOT_FOUND] No shop matches: "${identifier}"`);
+      console.warn(`[PUBLIC_SHOP_NOT_FOUND] No shop matches: "${identifier}" or "${cleanIdentifier}"`);
       res.status(404).json({ 
         error: 'Barbearia não encontrada', 
         details: `Não localizamos nenhuma barbearia com o link "${identifier}". Verifique se o endereço está correto.`
