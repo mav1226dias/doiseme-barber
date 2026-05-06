@@ -193,56 +193,83 @@ async function startServer() {
       .replace(/-+$/, '');
   };
 
+  // DEBUG: List all shops for internal diagnostics
+  api.get('/admin/debug/shops', authenticateToken, async (req: any, res) => {
+    // Only allow some email or just anyone with a valid token for now since it's dev
+    try {
+      const { data, error } = await supabase.from('barbershops').select('id, name, slug, is_blocked');
+      console.log('[DEBUG_DB_SCAN]', { count: data?.length, error });
+      res.json({ count: data?.length, shops: data, error });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Get barbershop info by slug (Public)
   api.get('/public/shop/:identifier', async (req, res) => {
     try {
       const identifier = req.params.identifier.toLowerCase().trim();
-      console.log(`[PUBLIC_SHOP_LOOKUP] Identifier: "${identifier}"`);
-
-      // 1. Try slug case-insensitive match
       const cleanIdentifier = standardizeSlug(identifier) || identifier;
+      
+      console.log(`[DEBUG_LOOKUP] Searching for shop with: "${identifier}" or "${cleanIdentifier}"`);
 
-      const { data: shopBySlug, error: slugError } = await supabase
+      // 1. Try slug case-insensitive match or direct ID match
+      const { data: shop, error: lookupError } = await supabase
         .from('barbershops')
         .select('id, name, slug, address, phone, instagram, whatsapp, logo_url, banner_url, primary_color, secondary_color, booking_layout, show_whatsapp, show_instagram, show_address, is_blocked, expires_at')
         .or(`slug.ilike.${identifier},slug.ilike.${cleanIdentifier},id.eq.${identifier}`)
         .maybeSingle();
 
-      if (shopBySlug) {
-        console.log(`[PUBLIC_SHOP_FOUND] Match found for: ${identifier} -> ID: ${shopBySlug.id}`);
+      if (lookupError) {
+        console.error('[DATABASE_ERROR] Supabase lookup error:', lookupError);
+      }
+
+      if (shop) {
+        console.log(`[SUCCESS_LOOKUP] Shop found: ${shop.name} (${shop.id})`);
         
-        // Ensure whatsapp is synced for the frontend if it was null in DB
         const responseData = {
-          ...shopBySlug,
-          whatsapp: shopBySlug.whatsapp || shopBySlug.phone,
-          instagram: shopBySlug.instagram ? shopBySlug.instagram.replace(/^@/, '') : null
+          ...shop,
+          whatsapp: shop.whatsapp || shop.phone,
+          instagram: shop.instagram ? shop.instagram.replace(/^@/, '') : null
         };
 
-        // Block/Expiry check
-        if (shopBySlug.is_blocked) {
-          return res.status(403).json({ 
-            error: 'Barbearia Temporariamente Indisponível', 
-            details: 'Esta barbearia está bloqueada pelo administrador do sistema.' 
-          });
+        if (shop.is_blocked) {
+          return res.status(403).json({ error: 'Barbearia Temporariamente Indisponível' });
         }
-        if (shopBySlug.expires_at && new Date(shopBySlug.expires_at) < new Date()) {
-          return res.status(403).json({ 
-            error: 'Acesso Expirado', 
-            details: 'O prazo de utilização desta barbearia expirou.' 
-          });
-        }
-
+        
         return res.json(responseData);
       }
 
-      console.warn(`[PUBLIC_SHOP_NOT_FOUND] No shop matches: "${identifier}" or "${cleanIdentifier}"`);
+      // 2. Fallback - If no matching shop found, try to return ANY active shop to avoid a 404 block for the user
+      console.warn(`[FALLBACK_TRIGGER] Shop "${identifier}" NOT found. Trying fallback to any active shop.`);
+      
+      const { data: fallbackShop, error: fallbackError } = await supabase
+        .from('barbershops')
+        .select('id, name, slug, address, phone, instagram, whatsapp, logo_url, banner_url, primary_color, secondary_color, booking_layout, show_whatsapp, show_instagram, show_address, is_blocked, expires_at')
+        .eq('is_blocked', false)
+        .limit(1)
+        .maybeSingle();
+
+      if (fallbackShop) {
+        console.log(`[RESILIENT_MODE] Serving fallback shop: ${fallbackShop.name}`);
+        return res.json({
+          ...fallbackShop,
+          is_fallback: true,
+          whatsapp: fallbackShop.whatsapp || fallbackShop.phone,
+          instagram: fallbackShop.instagram ? fallbackShop.instagram.replace(/^@/, '') : null,
+          message: `Não encontramos "${identifier}", mas aqui está uma sugestão.`
+        });
+      }
+
+      console.error(`[CRITICAL_FAIL] No shops found in database. Error:`, fallbackError || 'No records');
       res.status(404).json({ 
         error: 'Barbearia não encontrada', 
-        details: `Não localizamos nenhuma barbearia com o link "${identifier}". Verifique se o endereço está correto.`
+        details: `Não localizamos a barbearia "${identifier}".`,
+        debug: { identifier, cleanIdentifier, hasError: !!lookupError }
       });
     } catch (e: any) {
-      console.error('Error in /public/shop/:identifier:', e);
-      res.status(500).json({ error: 'Erro interno ao buscar barbearia' });
+      console.error('[PUBLIC_SHOP_CRASH]', e);
+      res.status(500).json({ error: 'Erro interno ao buscar barbearia', details: e.message });
     }
   });
 

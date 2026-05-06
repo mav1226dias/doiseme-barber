@@ -27,24 +27,33 @@ export default function Booking() {
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!slug) return;
+    if (!slug) {
+      console.error('[BOOKING_ERROR] No slug provided in URL');
+      setError('Slug não fornecido');
+      return;
+    }
     
-    // Add cache buster to ensure fresh data
+    console.log(`[BOOKING_DEBUG] Loading shop for slug: "${slug}"`);
+    
     const cacheBuster = new Date().getTime();
     fetch(`/api/public/shop/${slug}?t=${cacheBuster}`)
       .then(async res => {
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          const errorMsg = errData.error || 'Shop not found';
-          const detailsMsg = errData.details || 'Verifique se o link está correto.';
+          console.error('[BOOKING_ERROR] Fetch failed:', { status: res.status, data });
+          const errorMsg = data.error || 'Shop not found';
+          const detailsMsg = data.details || 'Verifique se o link está correto.';
           setApiError(errorMsg);
           setErrorDetails(detailsMsg);
           throw new Error(errorMsg);
         }
-        return res.json();
+        return data;
       })
       .then(data => {
-        console.log('[BOOKING_DEBUG] Shop Data:', data);
+        console.log('[BOOKING_DEBUG] Shop Data Loaded Success:', data);
+        if (data.is_fallback) {
+          console.warn('[BOOKING_DEBUG] Showing fallback shop because specific slug not found.');
+        }
         setShop(data);
         setApiError(null);
         setErrorDetails(null);
@@ -53,15 +62,15 @@ export default function Booking() {
         fetch(`/api/barbershops/${data.id}/services`)
           .then(res => res.json())
           .then(setServices)
-          .catch(console.error);
+          .catch(err => console.error('[BOOKING_ERROR] Services fetch fail:', err));
           
         fetch(`/api/barbershops/${data.id}/barbers`)
           .then(res => res.json())
           .then(setBarbers)
-          .catch(console.error);
+          .catch(err => console.error('[BOOKING_ERROR] Barbers fetch fail:', err));
       })
       .catch(err => {
-        console.error(err);
+        console.error('[BOOKING_CATCH]', err);
         setError(slug || 'URL invalida');
       });
   }, [slug]);
@@ -185,6 +194,13 @@ export default function Booking() {
           )}
         </div>
         
+        {shop && shop.is_fallback && (
+          <div className="bg-[#D4AF37]/10 border border-[#D4AF37]/20 text-[#D4AF37] px-4 py-2 rounded-lg mb-6 text-sm flex items-center gap-2">
+            <Scissors className="w-4 h-4" />
+            <span>{shop.message || 'Mostrando barbearia sugerida.'}</span>
+          </div>
+        )}
+
         <h1 className="text-4xl font-bold mb-2 font-serif tracking-tight drop-shadow-lg">{shop.name}</h1>
         
         <div className="flex items-center justify-center gap-3 mb-6">
