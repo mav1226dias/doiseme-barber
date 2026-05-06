@@ -20,6 +20,17 @@ app.set('trust proxy', 1);
 async function startServer() {
   const PORT = 3000;
 
+  console.log('SUPABASE URL:', process.env.SUPABASE_URL);
+
+  // Test DB connection immediately
+  const { data: test, error: testError } = await supabase
+    .from('barbershops')
+    .select('*')
+    .limit(1);
+
+  console.log('TESTE DB:', test);
+  console.log('TESTE ERROR:', testError);
+
   // Security Headers
   app.use(helmet({ contentSecurityPolicy: false })); // Disabled CSP to avoid breaking React dev server inline scripts
   app.disable('x-powered-by');
@@ -208,64 +219,29 @@ async function startServer() {
   // Get barbershop info by slug (Public)
   api.get('/public/shop/:identifier', async (req, res) => {
     try {
-      const identifier = req.params.identifier.toLowerCase().trim();
-      const cleanIdentifier = standardizeSlug(identifier) || identifier;
-      
-      console.log(`[DEBUG_LOOKUP] Searching for shop with: "${identifier}" or "${cleanIdentifier}"`);
+      const identifier = req.params.identifier.trim().toLowerCase();
+      console.log('SLUG RECEBIDO:', identifier);
 
-      // 1. Try slug case-insensitive match or direct ID match
-      const { data: shop, error: lookupError } = await supabase
+      const { data: shop, error } = await supabase
         .from('barbershops')
-        .select('id, name, slug, address, phone, instagram, whatsapp, logo_url, banner_url, primary_color, secondary_color, booking_layout, show_whatsapp, show_instagram, show_address, is_blocked, expires_at')
-        .or(`slug.ilike.${identifier},slug.ilike.${cleanIdentifier},id.eq.${identifier}`)
-        .maybeSingle();
+        .select('*')
+        .eq('slug', identifier)
+        .single();
 
-      if (lookupError) {
-        console.error('[DATABASE_ERROR] Supabase lookup error:', lookupError);
-      }
+      console.log('SHOP:', shop);
+      console.log('ERROR:', error);
 
-      if (shop) {
-        console.log(`[SUCCESS_LOOKUP] Shop found: ${shop.name} (${shop.id})`);
-        
-        const responseData = {
-          ...shop,
-          whatsapp: shop.whatsapp || shop.phone,
-          instagram: shop.instagram ? shop.instagram.replace(/^@/, '') : null
-        };
-
-        if (shop.is_blocked) {
-          return res.status(403).json({ error: 'Barbearia Temporariamente Indisponível' });
-        }
-        
-        return res.json(responseData);
-      }
-
-      // 2. Fallback - If no matching shop found, try to return ANY active shop to avoid a 404 block for the user
-      console.warn(`[FALLBACK_TRIGGER] Shop "${identifier}" NOT found. Trying fallback to any active shop.`);
-      
-      const { data: fallbackShop, error: fallbackError } = await supabase
-        .from('barbershops')
-        .select('id, name, slug, address, phone, instagram, whatsapp, logo_url, banner_url, primary_color, secondary_color, booking_layout, show_whatsapp, show_instagram, show_address, is_blocked, expires_at')
-        .eq('is_blocked', false)
-        .limit(1)
-        .maybeSingle();
-
-      if (fallbackShop) {
-        console.log(`[RESILIENT_MODE] Serving fallback shop: ${fallbackShop.name}`);
-        return res.json({
-          ...fallbackShop,
-          is_fallback: true,
-          whatsapp: fallbackShop.whatsapp || fallbackShop.phone,
-          instagram: fallbackShop.instagram ? fallbackShop.instagram.replace(/^@/, '') : null,
-          message: `Não encontramos "${identifier}", mas aqui está uma sugestão.`
+      if (error || !shop) {
+        return res.status(404).json({
+          error: 'Barbearia não encontrada',
+          debug: { identifier }
         });
       }
 
-      console.error(`[CRITICAL_FAIL] No shops found in database. Error:`, fallbackError || 'No records');
-      res.status(404).json({ 
-        error: 'Barbearia não encontrada', 
-        details: `Não localizamos a barbearia "${identifier}".`,
-        debug: { identifier, cleanIdentifier, hasError: !!lookupError }
+      return res.json({
+        ...shop,
+        whatsapp: shop.whatsapp || shop.phone,
+        instagram: shop.instagram ? shop.instagram.replace('@', '') : null
       });
     } catch (e: any) {
       console.error('[PUBLIC_SHOP_CRASH]', e);
