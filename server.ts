@@ -48,13 +48,13 @@ async function startServer() {
     next();
   });
   const DEFAULT_SETTINGS = {
-    monday: { isClosed: true, open: '09:00', close: '18:00' },
-    tuesday: { isClosed: false, open: '09:00', close: '18:00' },
-    wednesday: { isClosed: false, open: '09:00', close: '18:00' },
-    thursday: { isClosed: false, open: '09:00', close: '18:00' },
-    friday: { isClosed: false, open: '09:00', close: '18:00' },
-    saturday: { isClosed: false, open: '09:00', close: '18:00' },
-    sunday: { isClosed: true, open: '09:00', close: '18:00' }
+    monday: { isClosed: true, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' },
+    tuesday: { isClosed: false, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' },
+    wednesday: { isClosed: false, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' },
+    thursday: { isClosed: false, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' },
+    friday: { isClosed: false, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' },
+    saturday: { isClosed: false, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' },
+    sunday: { isClosed: true, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' }
   };
 
   const getShopSettings = async (shopId: string) => {
@@ -63,19 +63,31 @@ async function startServer() {
         .from('shop_settings')
         .select('config')
         .eq('barbershop_id', shopId)
-        .maybeSingle(); // Better than .single() as it won't throw 406 error if not found
+        .maybeSingle(); 
       
       if (error || !data) return DEFAULT_SETTINGS;
 
+      let config = {};
       if (typeof data.config === 'string') {
         try {
-          return JSON.parse(data.config);
+          config = JSON.parse(data.config);
         } catch (e) {
           console.error("Failed to parse settings JSON:", e);
           return DEFAULT_SETTINGS;
         }
+      } else {
+        config = data.config || {};
       }
-      return data.config || DEFAULT_SETTINGS;
+
+      // Ensure all days have nested properties (merge with default)
+      const merged: any = {};
+      Object.keys(DEFAULT_SETTINGS).forEach(day => {
+        merged[day] = { 
+          ...(DEFAULT_SETTINGS as any)[day], 
+          ...(config as any)[day] || {} 
+        };
+      });
+      return merged;
     } catch (e) {
       console.error("Error fetching settings:", e);
       return DEFAULT_SETTINGS;
@@ -398,11 +410,18 @@ async function startServer() {
       const startH = parseInt(dayConfig.open.split(':')[0]);
       const endH = parseInt(dayConfig.close.split(':')[0]);
 
+      // Lunch break info
+      const hasLunch = dayConfig.hasLunchBreak;
+      const lunchStartH = hasLunch ? parseInt(dayConfig.lunchOpen.split(':')[0]) : -1;
+      const lunchStartM = hasLunch ? parseInt(dayConfig.lunchOpen.split(':')[1]) : -1;
+      const lunchEndH = hasLunch ? parseInt(dayConfig.lunchClose.split(':')[0]) : -1;
+      const lunchEndM = hasLunch ? parseInt(dayConfig.lunchClose.split(':')[1]) : -1;
+
       for (let i = startH; i <= endH; i++) {
         const time = `${i.toString().padStart(2, '0')}:00`;
         const time30 = `${i.toString().padStart(2, '0')}:30`;
         
-        // Prevent booking exactly at closing hour if duration is going to exceed it (We don't know duration yet so we block exact close time)
+        // Prevent booking exactly at closing hour
         if (i === endH) continue;
         
         let isTimePast = false;
@@ -413,9 +432,25 @@ async function startServer() {
           if (i < currentHour || (i === currentHour && currentMinute >= 0)) isTimePast = true;
           if (i < currentHour || (i === currentHour && currentMinute >= 30)) isTime30Past = true;
         }
+
+        // Check for lunch break
+        let isLunch00 = false;
+        let isLunch30 = false;
         
-        if (!isTimePast && !existing?.find(a => a.start_time === time)) slots.push(time);
-        if (!isTime30Past && !existing?.find(a => a.start_time === time30)) slots.push(time30);
+        if (hasLunch) {
+          // Block if time is within lunch range
+          // [lunchStart, lunchEnd)
+          const t00Val = i * 60;
+          const t30Val = i * 60 + 30;
+          const lStartVal = lunchStartH * 60 + lunchStartM;
+          const lEndVal = lunchEndH * 60 + lunchEndM;
+
+          if (t00Val >= lStartVal && t00Val < lEndVal) isLunch00 = true;
+          if (t30Val >= lStartVal && t30Val < lEndVal) isLunch30 = true;
+        }
+        
+        if (!isTimePast && !isLunch00 && !existing?.find(a => a.start_time === time)) slots.push(time);
+        if (!isTime30Past && !isLunch30 && !existing?.find(a => a.start_time === time30)) slots.push(time30);
       }
       
       res.json(slots);
@@ -1244,15 +1279,35 @@ async function startServer() {
 
   api.delete('/admin/services/:id', authenticateToken, async (req: any, res) => {
     try {
+      console.log(`[DELETE_SERVICE] Attempting to delete service ${req.params.id} for shop ${req.user.barbershopId}`);
+      
+      // First delete associated appointments because of FK constraint
+      const { error: apptErr } = await supabase
+        .from('appointments')
+        .delete()
+        .eq('service_id', req.params.id)
+        .eq('barbershop_id', req.user.barbershopId);
+
+      if (apptErr) {
+        console.error('[DELETE_SERVICE_APPOINTMENTS_ERR]', apptErr);
+        // We continue anyway, maybe there were no appointments
+      }
+
       const { error } = await supabase
         .from('services')
         .delete()
         .eq('id', req.params.id)
         .eq('barbershop_id', req.user.barbershopId);
-      if (error) throw error;
+      
+      if (error) {
+        console.error('[DELETE_SERVICE_ERR]', error);
+        throw error;
+      }
+      
       res.json({ success: true });
-    } catch (error) {
-      res.status(500).json({ error: 'Erro ao excluir serviço' });
+    } catch (error: any) {
+      console.error('[DELETE_SERVICE_CRASH]', error);
+      res.status(500).json({ error: 'Erro ao excluir serviço', details: error.message });
     }
   });
 
@@ -1437,12 +1492,18 @@ async function startServer() {
     }
     
     try {
+      console.log(`[DELETE_CLIENTS] Attempting to delete ${ids.length} clients for shop ${req.user.barbershopId}`);
+      
       // First delete associated appointments to clear Foreign Key constraints before deleting clients
-      await supabase
+      const { error: apptErr } = await supabase
         .from('appointments')
         .delete()
         .in('client_id', ids)
         .eq('barbershop_id', req.user.barbershopId);
+
+      if (apptErr) {
+        console.warn('[DELETE_CLIENTS_APPOINTMENTS_ERR]', apptErr);
+      }
 
       const { error } = await supabase
         .from('clients')
@@ -1450,12 +1511,16 @@ async function startServer() {
         .in('id', ids)
         .eq('barbershop_id', req.user.barbershopId);
         
-      if (error) throw error;
+      if (error) {
+        console.error('[DELETE_CLIENTS_ERR]', error);
+        throw error;
+      }
       
+      console.log(`[DELETE_CLIENTS_SUCCESS] Excluded ${ids.length} clients.`);
       res.json({ success: true, count: ids.length });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Erro ao excluir clientes' });
+    } catch (error: any) {
+      console.error('[DELETE_CLIENTS_CRASH]', error);
+      res.status(500).json({ error: 'Erro ao excluir clientes', details: error.message });
     }
   });
 

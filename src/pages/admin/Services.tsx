@@ -54,11 +54,20 @@ export default function Services() {
   const handleDelete = async (id: string) => {
     if (!confirm('Tem certeza que deseja excluir este serviço?')) return;
     const token = localStorage.getItem('token');
-    await fetch(`/api/admin/services/${id}`, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    fetchServices();
+    try {
+      const res = await fetch(`/api/admin/services/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        fetchServices();
+      } else {
+        const err = await res.json();
+        alert(err.error || 'Erro ao excluir serviço.');
+      }
+    } catch (e) {
+      alert('Erro de rede ao excluir.');
+    }
   };
 
   return (

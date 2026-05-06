@@ -108,23 +108,26 @@ export default function Settings() {
         </div>
 
         <div className="space-y-4 max-w-3xl">
-          <div className="grid grid-cols-12 gap-4 text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 px-4 hidden sm:grid">
-            <div className="col-span-3">Dia da Semana</div>
-            <div className="col-span-3 text-center">Status</div>
-            <div className="col-span-3 text-center">Abertura</div>
-            <div className="col-span-3 text-center">Fechamento</div>
+          <div className="grid grid-cols-12 gap-4 text-sm font-medium text-gray-500 dark:text-gray-400 mb-2 px-4 hidden lg:grid">
+            <div className="col-span-2">Dia da Semana</div>
+            <div className="col-span-2 text-center">Status</div>
+            <div className="col-span-2 text-center">Abertura</div>
+            <div className="col-span-2 text-center">Fechamento</div>
+            <div className="col-span-2 text-center">Almoço (Início)</div>
+            <div className="col-span-2 text-center">Almoço (Fim)</div>
           </div>
 
           {DAYS.map(({ key, label }) => (
-            <div key={key} className="flex flex-col sm:grid sm:grid-cols-12 gap-4 items-center bg-gray-50 dark:bg-zinc-800/50 p-4 rounded-xl border border-gray-100 dark:border-zinc-800">
-              <div className="col-span-3 font-medium text-gray-900 dark:text-gray-100 w-full sm:w-auto">
+            <div key={key} className="flex flex-col lg:grid lg:grid-cols-12 gap-4 items-center bg-gray-50 dark:bg-zinc-800/50 p-4 rounded-xl border border-gray-100 dark:border-zinc-800">
+              <div className="col-span-2 font-medium text-gray-900 dark:text-gray-100 w-full lg:w-auto">
                 {label}
               </div>
               
-              <div className="col-span-3 flex justify-center w-full sm:w-auto">
+              <div className="col-span-2 flex flex-col sm:flex-row gap-2 justify-center w-full lg:w-auto">
                 <button
+                  type="button"
                   onClick={() => handleChange(key, 'isClosed', !hours[key].isClosed)}
-                  className={`w-full sm:w-auto px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  className={`flex-1 lg:px-4 py-2 rounded-lg text-xs font-medium transition-colors ${
                     !hours[key].isClosed 
                       ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-900/50' 
                       : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-900/50'
@@ -132,25 +135,61 @@ export default function Settings() {
                 >
                   {!hours[key].isClosed ? 'Aberto' : 'Fechado'}
                 </button>
+                <button
+                  type="button"
+                  disabled={hours[key].isClosed}
+                  onClick={() => handleChange(key, 'hasLunchBreak', !hours[key].hasLunchBreak)}
+                  className={`flex-1 lg:px-4 py-2 rounded-lg text-xs font-medium transition-colors disabled:opacity-30 ${
+                    hours[key].hasLunchBreak 
+                      ? 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 border border-yellow-200 dark:border-yellow-900/50' 
+                      : 'bg-gray-100 dark:bg-zinc-700 text-gray-700 dark:text-gray-300 border border-gray-200 dark:border-zinc-600'
+                  }`}
+                >
+                  {hours[key].hasLunchBreak ? 'C/ Intervalo' : 'S/ Intervalo'}
+                </button>
               </div>
 
-              <div className="col-span-3 w-full sm:w-auto">
+              <div className="col-span-2 w-full lg:w-auto">
+                <div className="lg:hidden text-xs text-gray-400 mb-1">Abertura</div>
                 <input
                   type="time"
                   disabled={hours[key].isClosed}
                   value={hours[key].open}
                   onChange={e => handleChange(key, 'open', e.target.value)}
-                  className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-gray-900 dark:text-gray-100 disabled:opacity-50 outline-none focus:border-black dark:focus:border-gray-500 text-center"
+                  className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-gray-900 dark:text-gray-100 disabled:opacity-50 outline-none focus:border-black dark:focus:border-gray-500 text-center text-sm"
                 />
               </div>
 
-              <div className="col-span-3 w-full sm:w-auto">
+              <div className="col-span-2 w-full lg:w-auto">
+                <div className="lg:hidden text-xs text-gray-400 mb-1">Fechamento</div>
                 <input
                   type="time"
                   disabled={hours[key].isClosed}
                   value={hours[key].close}
                   onChange={e => handleChange(key, 'close', e.target.value)}
-                  className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-gray-900 dark:text-gray-100 disabled:opacity-50 outline-none focus:border-black dark:focus:border-gray-500 text-center"
+                  className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-gray-900 dark:text-gray-100 disabled:opacity-50 outline-none focus:border-black dark:focus:border-gray-500 text-center text-sm"
+                />
+              </div>
+
+              <div className="col-span-2 w-full lg:w-auto">
+                <div className="lg:hidden text-xs text-gray-400 mb-1 text-center">Início Almoço</div>
+                <input
+                  type="time"
+                  disabled={hours[key].isClosed || !hours[key].hasLunchBreak}
+                  value={hours[key].lunchOpen || '12:00'}
+                  onChange={e => handleChange(key, 'lunchOpen', e.target.value)}
+                  className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-gray-900 dark:text-gray-100 disabled:opacity-30 outline-none focus:border-black dark:focus:border-gray-500 text-center text-sm"
+                />
+              </div>
+
+              <div className="col-span-2 w-full lg:w-auto">
+                <div className="lg:hidden text-xs text-gray-400 mb-1 text-center">Fim Almoço</div>
+                <input
+                  type="time"
+                  disabled={hours[key].isClosed || !hours[key].hasLunchBreak}
+                  value={hours[key].lunchClose || '13:00'}
+                  onChange={e => handleChange(key, 'lunchClose', e.target.value)}
+                  className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-gray-900 dark:text-gray-100 disabled:opacity-30 outline-none focus:border-black dark:focus:border-gray-500 text-center text-sm"
                 />
               </div>
             </div>
