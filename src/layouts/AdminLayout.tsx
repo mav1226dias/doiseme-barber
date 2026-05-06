@@ -3,6 +3,7 @@ import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
 import { LayoutDashboard, Users, Scissors, Calendar, Bell, LogOut, Menu, X, Sun, Moon, Settings, Wallet, Package, Palette, Globe, Megaphone, Shield } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
+import RealTimeNotifications from '../components/RealTimeNotifications';
 
 export default function AdminLayout() {
   const navigate = useNavigate();
@@ -207,6 +208,7 @@ export default function AdminLayout() {
         <div className="p-4 sm:p-6 md:p-8 max-w-6xl mx-auto w-full">
           <Outlet />
         </div>
+        <RealTimeNotifications />
       </main>
     </div>
   );
