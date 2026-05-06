@@ -290,22 +290,22 @@ export default function Finances() {
 
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm text-gray-500 font-medium">Comissões Acordadas</h3>
+              <h3 className="text-sm text-gray-500 font-medium">Comissões Pendentes</h3>
               <div className="p-2 bg-blue-50 dark:bg-blue-900/30 rounded-lg">
                 <Plus className="w-5 h-5 text-blue-600" />
               </div>
             </div>
-            <div className="text-2xl font-bold text-gray-900 dark:text-white">R$ {stats.totalCommissions?.toFixed(2) || '0.00'}</div>
+            <div className="text-2xl font-bold text-gray-900 dark:text-white">R$ {(stats.totalCommissions - (stats.totalDraws || 0)).toFixed(2)}</div>
           </div>
 
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm text-gray-500 font-medium">Custos & Despesas</h3>
+              <h3 className="text-sm text-gray-500 font-medium">Despesas do Negócio</h3>
               <div className="p-2 bg-red-50 dark:bg-red-900/30 rounded-lg">
                 <TrendingDown className="w-5 h-5 text-red-600" />
               </div>
             </div>
-            <div className="text-2xl font-bold text-gray-900 dark:text-white">R$ {stats.totalExpenses?.toFixed(2) || '0.00'}</div>
+            <div className="text-2xl font-bold text-gray-900 dark:text-white">R$ {(stats.totalExpenses - (stats.totalDraws || 0)).toFixed(2)}</div>
           </div>
 
           <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm border-l-4 border-l-[#D4AF37]">

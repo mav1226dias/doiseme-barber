@@ -814,16 +814,20 @@ async function startServer() {
       if (expErr) console.error('[DASHBOARD_EXP_ERR]', expErr);
 
       const totalExpenses = (allExpenses || []).reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+      const totalDraws = (allExpenses || [])
+        .filter(e => e.category === 'draw')
+        .reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
 
       // Calculate appointments by barber
       const appointmentsByBarber = (allBarbers || []).map(barber => {
-        const barberApps = (allAppointments || []).filter(app => app.barber_id === barber.id);
+        const barberApps = (allAppointments || []).filter(app => app.barber_id === barber.id && (app.status === 'completed' || app.status === 'confirmed'));
         const count = barberApps.length;
         const revenue = barberApps.reduce((acc, app) => {
           const service = (allServices || []).find(s => s.id === app.service_id);
           return acc + (Number(service?.price) || 0);
         }, 0);
         return { 
+          id: barber.id,
           name: barber.name, 
           count, 
           revenue,
@@ -836,7 +840,8 @@ async function startServer() {
         totalRevenue,
         totalCommissions,
         totalExpenses,
-        netProfit: totalRevenue - totalCommissions - totalExpenses,
+        totalDraws,
+        netProfit: totalRevenue - totalCommissions - (totalExpenses - totalDraws),
         appointmentsByBarber
       });
     } catch (error: any) {
