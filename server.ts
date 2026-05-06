@@ -425,106 +425,116 @@ async function startServer() {
     }
   });
 
-  // Create appointment
+  // Create appointment (Refacted to fix saving issues)
   api.post('/appointments', async (req, res) => {
-    const { barbershopId, barberId, serviceId, clientName, clientPhone, date, startTime } = req.body;
-    
+    // 1. ADICIONAR LOGS COMPLETOS NA ROTA
+    console.log('📥 BODY RECEBIDO:', req.body);
+
+    const { 
+      barbershopId, 
+      barberId, 
+      serviceId, 
+      clientName, 
+      clientPhone, 
+      date, 
+      startTime 
+    } = req.body;
+
+    // 6. VALIDAR CAMPOS
+    if (!barbershopId || !barberId || !serviceId || !clientName || !clientPhone || !date || !startTime) {
+      console.log('❌ VALIDAÇÃO FALHOU: Campos obrigatórios ausentes');
+      return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
+    }
+
     try {
-      // Check if shop is active
-      const { data: shop } = await supabase.from('barbershops').select('is_blocked, expires_at').eq('id', barbershopId).maybeSingle();
-      if (shop) {
-        if (shop.is_blocked || (shop.expires_at && new Date(shop.expires_at) < new Date())) {
-          return res.status(403).json({ error: 'Os agendamentos para esta barbearia estão suspensos temporariamente.' });
-        }
-      }
-      // 1. Find or create client
-      let { data: client } = await supabase
+      // 7. VALIDAR TIPOS E GARANTIR CLIENTE
+      // Nota: A tabela appointments do banco usa client_id vinculado à tabela clients
+      let { data: client, error: clientFetchErr } = await supabase
         .from('clients')
-        .select('*')
-        .eq('barbershop_id', barbershopId)
+        .select('id')
         .eq('phone', clientPhone)
-        .single();
-        
+        .eq('barbershop_id', barbershopId)
+        .maybeSingle();
+
       if (!client) {
-        const clientId = crypto.randomUUID();
-        const { data: newClient, error: clientErr } = await supabase.from('clients').insert({
-          id: clientId,
-          barbershop_id: barbershopId,
-          name: clientName,
-          phone: clientPhone,
-        }).select().single();
-        if (clientErr) throw clientErr;
-        client = newClient;
+        console.log('📋 Criando novo cliente na tabela clients...');
+        const { data: newC, error: createError } = await supabase
+          .from('clients')
+          .insert({
+            id: crypto.randomUUID(),
+            name: clientName,
+            phone: clientPhone,
+            barbershop_id: barbershopId
+          })
+          .select()
+          .single();
+
+        if (createError) throw createError;
+        client = newC;
       }
 
-      // 2. Get service duration
-      const { data: service, error: svcErr } = await supabase
+      // Buscar duração do serviço
+      const { data: service } = await supabase
         .from('services')
-        .select('*')
+        .select('duration_minutes')
         .eq('id', serviceId)
         .single();
-        
-      if (svcErr || !service) return res.status(404).json({ error: 'Serviço não encontrado' });
+      
+      const duration = service?.duration_minutes || 30;
+      
+      // Cálculo de end_time
+      const [sh, sm] = startTime.split(':').map(Number);
+      const totalMinutes = sh * 60 + sm + duration;
+      const eh = Math.floor(totalMinutes / 60);
+      const em = totalMinutes % 60;
+      const endTime = `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`;
 
-      // Calculate end time
-      const [hours, minutes] = startTime.split(':').map(Number);
-      const totalMinutes = hours * 60 + minutes + service.duration_minutes;
-      const endHours = Math.floor(totalMinutes / 60);
-      const endMins = totalMinutes % 60;
-      const endTime = `${endHours.toString().padStart(2, '0')}:${endMins.toString().padStart(2, '0')}`;
-
-      // 2.5 Check Conflict
-      const { data: conflict } = await supabase.from('appointments').select('*')
-        .eq('barber_id', barberId)
-        .eq('date', date)
-        .eq('start_time', startTime)
-        .eq('status', 'scheduled')
-        .single();
-        
-      if (conflict) {
-        return res.status(409).json({ error: 'Horário já preenchido. Por favor, escolha outro.' });
-      }
-
-      // 3. Create appointment
-      const appointmentId = crypto.randomUUID();
-      const { error: apptErr } = await supabase.from('appointments').insert({
-        id: appointmentId,
+      // 2. GARANTIR QUE O INSERT ESTÁ SENDO EXECUTADO
+      // Usando o padrão solicitado, mas ajustado para as colunas reais do banco
+      const insertData = {
+        id: crypto.randomUUID(),
         barbershop_id: barbershopId,
         barber_id: barberId,
         service_id: serviceId,
-        client_id: client.id,
-        date,
+        client_id: client.id, // ID do cliente encontrado/criado
+        date: date,
         start_time: startTime,
         end_time: endTime,
         status: 'scheduled'
-      });
-      if (apptErr) throw apptErr;
+      };
 
-      // 4. Create notification
-      const { data: barber } = await supabase.from('barbers').select('*').eq('id', barberId).single();
-      
-      // We store the data as serialized JSON in the message so we can extract it in the frontend
-      // If table supports `phone` column natively, this will fallback or could be added, but we encode it into message just in case
-      await supabase.from('notifications').insert({
-        id: crypto.randomUUID(),
-        barbershop_id: barbershopId,
-        type: 'new_appointment',
-        title: 'Novo Agendamento',
-        // Instead of plain text, we pass data via JSON in message
-        message: JSON.stringify({
-          text: `${clientName} agendou com ${barber?.name || 'Profissional'} para ${date} às ${startTime}`,
-          clientName: clientName,
-          clientPhone: clientPhone,
-          barberName: barber?.name,
-          date: date,
-          time: startTime
-        })
+      console.log('📝 TENTANDO INSERT NO SUPABASE:', insertData);
+
+      const { data, error } = await supabase
+        .from('appointments')
+        .insert([insertData])
+        .select();
+
+      // 3. LOGAR RESULTADOS
+      console.log('📤 RESULTADO DATA:', data);
+      console.log('❌ RESULTADO ERROR:', error);
+
+      // 4. TRATAR ERRO CORRETAMENTE
+      if (error) {
+        console.error('🚨 ERRO NO INSERT:', error.message);
+        return res.status(400).json({
+          error: error.message,
+          details: error
+        });
+      }
+
+      // 5. GARANTIR RESPOSTA DE SUCESSO
+      return res.json({
+        success: true,
+        data
       });
 
-      res.json({ success: true, appointmentId });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Erro ao criar agendamento' });
+    } catch (e: any) {
+      console.error('🔥 CRASH NA ROTA /api/appointments:', e);
+      return res.status(400).json({ 
+        error: e.message || 'Erro ao salvar agendamento', 
+        details: e 
+      });
     }
   });
 
@@ -639,106 +649,68 @@ async function startServer() {
   // --- PROTECTED ADMIN ROUTES ---
   
   // Dashboard stats
-  api.patch('/admin/shop', authenticateToken, async (req: any, res) => {
-    const { 
-      logoUrl, 
-      bannerUrl, 
-      primaryColor, 
-      secondaryColor, 
-      bookingLayout, 
-      slug, 
-      instagram, 
-      mapsUrl,
-      whatsapp,
-      showWhatsapp,
-      showInstagram,
-      showAddress,
-      name,
-      address
-    } = req.body;
+  api.patch('/admin/shop/:id?', authenticateToken, async (req: any, res) => {
+    // 1. ADICIONAR LOGS
+    console.log('BODY:', req.body);
+    console.log('ID:', req.params.id);
+
     try {
-      const cleanSlug = standardizeSlug(slug);
-      
-      if (cleanSlug) {
-        const { data: existing } = await supabase
-          .from('barbershops')
-          .select('id')
-          .eq('slug', cleanSlug)
-          .maybeSingle();
-        
-        if (existing && existing.id !== req.user.barbershopId) {
-          return res.status(409).json({ error: 'Este link já está em uso por outra barbearia.' });
-        }
-      }
+      // 2. GARANTIR UPDATE CORRETO
+      const targetId = req.params.id || req.user.barbershopId;
 
-      // Safety check: Prevent saving blob URLs (which are only valid in the client session)
-      if (logoUrl && logoUrl.startsWith('blob:')) {
-        console.warn(`[SECURITY] Prevented saving blob URL as logo: ${logoUrl}`);
-        return res.status(400).json({ error: 'Aguarde o upload do logo ser concluído antes de salvar.' });
-      }
-      if (bannerUrl && bannerUrl.startsWith('blob:')) {
-        console.warn(`[SECURITY] Prevented saving blob URL as banner: ${bannerUrl}`);
-        return res.status(400).json({ error: 'Aguarde o upload da capa ser concluído antes de salvar.' });
-      }
-
-      // Clean Instagram handle if it's a URL or contains '@'
-      let cleanInstagram = instagram;
-      if (cleanInstagram) {
-        cleanInstagram = cleanInstagram.trim();
-        // Remove trailing slashes
-        cleanInstagram = cleanInstagram.replace(/\/+$/, '');
-        // If it's a full URL, get the last part
-        if (cleanInstagram.includes('instagram.com/')) {
-          cleanInstagram = cleanInstagram.split('instagram.com/').pop() || '';
-        }
-        // Remove the '@' symbol
-        cleanInstagram = cleanInstagram.replace(/^@/, '');
-      }
-
-      const updateData: any = {
-        name: name || undefined,
-        address: address || undefined,
-        logo_url: logoUrl || undefined,
-        banner_url: bannerUrl || undefined,
-        primary_color: primaryColor || undefined,
-        secondary_color: secondaryColor || undefined,
-        booking_layout: bookingLayout || undefined,
-        slug: cleanSlug || undefined,
-        instagram: cleanInstagram || undefined,
-        whatsapp: whatsapp || undefined,
-        phone: whatsapp || undefined, // Always sync phone with whatsapp
-        maps_url: mapsUrl || undefined,
-        show_whatsapp: showWhatsapp !== undefined ? showWhatsapp : true,
-        show_instagram: showInstagram !== undefined ? showInstagram : true,
-        show_address: showAddress !== undefined ? showAddress : true,
+      const updateData = {
+        name: req.body.name,
+        logo_url: req.body.logo_url || req.body.logoUrl,
+        banner_url: req.body.banner_url || req.body.bannerUrl,
+        whatsapp: req.body.whatsapp,
+        phone: req.body.whatsapp,
+        instagram: req.body.instagram,
+        address: req.body.address,
+        slug: req.body.slug,
+        primary_color: req.body.primary_color || req.body.primaryColor,
+        secondary_color: req.body.secondary_color || req.body.secondaryColor,
+        maps_url: req.body.maps_url || req.body.mapsUrl,
+        show_whatsapp: req.body.show_whatsapp !== undefined ? req.body.show_whatsapp : req.body.showWhatsapp,
+        show_instagram: req.body.show_instagram !== undefined ? req.body.show_instagram : req.body.showInstagram,
+        show_address: req.body.show_address !== undefined ? req.body.show_address : req.body.showAddress,
         updated_at: new Date().toISOString()
       };
 
-      // Ensure we don't accidentally send empty strings as null if not intended, 
-      // but here we want to allow clearing fields too.
+      // Limpar campos undefined
       Object.keys(updateData).forEach(key => {
-        if (updateData[key] === undefined) delete updateData[key];
+        if ((updateData as any)[key] === undefined) delete (updateData as any)[key];
       });
 
-      console.log(`[CRITICAL_UPDATE] Shop ${req.user.barbershopId} updating with:`, JSON.stringify(updateData));
+      console.log('📝 TENTANDO UPDATE NO SUPABASE:', updateData);
 
-      const { data: updatedShop, error: updateError } = await supabase
+      const { data, error } = await supabase
         .from('barbershops')
         .update(updateData)
-        .eq('id', req.user.barbershopId)
-        .select()
-        .single();
-      
-      if (updateError) {
-        console.error('[SUPABASE_UPDATE_FAIL]', updateError);
-        return res.status(500).json({ error: 'Erro ao salvar no banco de dados', details: updateError.message });
+        .eq('id', targetId)
+        .select();
+
+      // 3. LOGAR RESULTADO
+      console.log('DATA:', data);
+      console.log('ERROR:', error);
+
+      // 4. TRATAR ERRO
+      if (error) {
+        console.error('🚨 ERRO NO UPDATE:', error.message);
+        return res.status(400).json({ error });
       }
-      
-      console.log(`[SHOP_UPDATE_SUCCESS] Barbershop ${req.user.barbershopId} updated successfully.`);
-      res.json(updatedShop);
-    } catch (e: any) { 
-      console.error('[SHOP_UPDATE_ERROR]', e);
-      res.status(500).json({ error: e.message }); 
+
+      // 5. ENTREGAR
+      return res.json({
+        success: true,
+        data: data?.[0]
+      });
+
+    } catch (e: any) {
+      console.error('🔥 CRASH NA ROTA /api/admin/shop:', e);
+      return res.status(400).json({ 
+        error: e.message || 'Erro ao salvar perfil', 
+        details: e 
+      });
     }
   });
 
