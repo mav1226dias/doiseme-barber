@@ -720,11 +720,17 @@ async function startServer() {
     console.log(`[DASHBOARD] Loading for shop ${barbershopId}, range: ${start} to ${end}`);
     
     try {
-      // Use start_time instead of date based on schema
+      // Use "date" column instead of "start_time" for date filtering
       let appointmentsQuery = supabase.from('appointments').select('*').eq('barbershop_id', barbershopId);
       
       if (start && end) {
-        appointmentsQuery = appointmentsQuery.gte('start_time', `${start}T00:00:00`).lte('start_time', `${end}T23:59:59`);
+        appointmentsQuery = appointmentsQuery.gte('date', start).lte('date', end);
+      } else {
+        // Fallback to current month if no range provided
+        const now = new Date();
+        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+        const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+        appointmentsQuery = appointmentsQuery.gte('date', startOfMonth).lte('date', endOfMonth);
       }
 
       const { data: allAppointments, error: appErr } = await appointmentsQuery;
@@ -806,13 +812,19 @@ async function startServer() {
 
   // Finances / Expenses
   api.get('/admin/expenses', authenticateToken, async (req: any, res) => {
+    const { start, end } = req.query;
     try {
-      const { data: financesList, error } = await supabase
+      let query = supabase
         .from('finances')
         .select('*')
         .eq('barbershop_id', req.user.barbershopId)
-        .eq('type', 'expense')
-        .order('date', { ascending: false });
+        .eq('type', 'expense');
+
+      if (start && end) {
+        query = query.gte('date', start).lte('date', end);
+      }
+
+      const { data: financesList, error } = await query.order('date', { ascending: false });
       if (error) throw error;
       res.json(financesList || []);
     } catch (error) {

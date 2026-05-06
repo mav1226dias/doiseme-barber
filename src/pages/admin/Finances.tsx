@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, Trash2, TrendingUp, TrendingDown, DollarSign, Wallet, Calendar, Printer, User, FileText } from 'lucide-react';
+import { Plus, Trash2, TrendingUp, TrendingDown, DollarSign, Wallet, Calendar, Printer, User, FileText, Filter } from 'lucide-react';
 
 const CATEGORIES = [
   { id: 'rent', label: 'Aluguel' },
@@ -13,6 +13,12 @@ const CATEGORIES = [
 export default function Finances() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [barbers, setBarbers] = useState<any[]>([]);
+  
+  const [dateRange, setDateRange] = useState({
+    start: new Date(new Date().setDate(1)).toISOString().split('T')[0], // 1st of current month
+    end: new Date().toISOString().split('T')[0]
+  });
+
   const [newExpense, setNewExpense] = useState({
     description: '',
     amount: '',
@@ -31,9 +37,10 @@ export default function Finances() {
 
   const fetchFinances = async () => {
     const token = localStorage.getItem('token');
+    const queryParams = `?start=${dateRange.start}&end=${dateRange.end}`;
     
     // Fetch summary stats from dashboard API
-    fetch('/api/admin/dashboard', { headers: { 'Authorization': `Bearer ${token}` } })
+    fetch(`/api/admin/dashboard${queryParams}`, { headers: { 'Authorization': `Bearer ${token}` } })
       .then(async res => {
         if (res.status === 401 || res.status === 403) {
           localStorage.removeItem('token');
@@ -49,7 +56,7 @@ export default function Finances() {
       .catch(console.error);
 
     // Fetch expenses
-    fetch('/api/admin/expenses', { headers: { 'Authorization': `Bearer ${token}` } })
+    fetch(`/api/admin/expenses${queryParams}`, { headers: { 'Authorization': `Bearer ${token}` } })
       .then(async res => {
         if (res.status === 401 || res.status === 403) {
           localStorage.removeItem('token');
@@ -90,7 +97,7 @@ export default function Finances() {
 
   useEffect(() => {
     fetchFinances();
-  }, []);
+  }, [dateRange]);
 
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -146,8 +153,8 @@ export default function Finances() {
             <p className="text-gray-600 font-medium">Barbearia Master • {new Date().toLocaleDateString('pt-BR')}</p>
           </div>
           <div className="text-right">
-            <p className="text-sm font-bold uppercase">Competência</p>
-            <p className="text-xl">{new Date().toLocaleString('pt-BR', { month: 'long', year: 'numeric' })}</p>
+            <p className="text-sm font-bold uppercase">Período Selecionado</p>
+            <p className="text-sm font-bold">{new Date(dateRange.start + 'T12:00:00').toLocaleDateString('pt-BR')} até {new Date(dateRange.end + 'T12:00:00').toLocaleDateString('pt-BR')}</p>
           </div>
         </div>
 
@@ -243,12 +250,30 @@ export default function Finances() {
             <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Contabilidade</h1>
             <p className="text-gray-500 dark:text-gray-400 mt-1">Gerencie as finanças, comissões e despesas da barbearia</p>
           </div>
-          <button 
-            onClick={handlePrint}
-            className="flex items-center gap-2 bg-black dark:bg-[#D4AF37] text-white px-6 py-3 rounded-xl font-bold hover:opacity-90 transition-opacity shadow-lg"
-          >
-            <Printer className="w-5 h-5" /> Imprimir Relatório
-          </button>
+          <div className="flex flex-wrap items-center gap-3">
+             <div className="flex items-center gap-3 bg-white dark:bg-zinc-900 p-2 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-sm">
+              <Filter className="w-5 h-5 text-gray-400 ml-2" />
+              <input 
+                type="date" 
+                value={dateRange.start}
+                onChange={e => setDateRange({...dateRange, start: e.target.value})}
+                className="bg-transparent border-none outline-none text-gray-900 dark:text-gray-100 text-sm font-medium"
+              />
+              <span className="text-gray-400">até</span>
+              <input 
+                type="date" 
+                value={dateRange.end}
+                onChange={e => setDateRange({...dateRange, end: e.target.value})}
+                className="bg-transparent border-none outline-none text-gray-900 dark:text-gray-100 text-sm font-medium mr-2"
+              />
+            </div>
+            <button 
+              onClick={handlePrint}
+              className="flex items-center gap-2 bg-black dark:bg-[#D4AF37] text-white px-6 py-3 rounded-xl font-bold hover:opacity-90 transition-opacity shadow-lg"
+            >
+              <Printer className="w-5 h-5" /> Imprimir Relatório
+            </button>
+          </div>
         </div>
 
         {/* Summary Cards */}
