@@ -10,6 +10,11 @@ export default function RealTimeNotifications() {
   const [lastNotification, setLastNotification] = useState<any>(null);
 
   useEffect(() => {
+    // Request notification permission on mount
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+
     const token = localStorage.getItem('token');
     if (!token) return;
 
@@ -57,13 +62,27 @@ export default function RealTimeNotifications() {
           setLastNotification(newNotif);
           setShowCounter(true);
 
-          // Play a subtle sound if enabled (optional)
+          // 1. Play Alert Sound
           try {
+            // Using a distinct, authoritative notification sound
             const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-            audio.volume = 0.5;
-            audio.play();
+            audio.volume = 0.7;
+            audio.play().catch(e => console.log('Audio play blocked by browser:', e));
           } catch (e) {
-            // Browsers often block auto-play audio
+            console.error('Error playing notification sound:', e);
+          }
+
+          // 2. Browser Push Notification (for mobile/desktop background)
+          if ("Notification" in window && Notification.permission === "granted") {
+            const browserNotif = new Notification("Novo Agendamento!", {
+              body: `${clientData?.name || 'Cliente'} agendou para ${payload.new.date} às ${payload.new.start_time}`,
+              icon: '/favicon.ico', // Adjust icon path if necessary
+            });
+            
+            browserNotif.onclick = () => {
+              window.focus();
+              handleOpenAgenda();
+            };
           }
         }
       )
