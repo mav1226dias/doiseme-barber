@@ -202,13 +202,13 @@ async function startServer() {
       // 1. Try slug exact match
       const { data: shopBySlug, error: slugError } = await supabase
         .from('barbershops')
-        .select('*')
+        .select('id, name, slug, address, phone, instagram, whatsapp, logo_url, banner_url, primary_color, secondary_color, booking_layout, show_whatsapp, show_instagram, show_address, is_blocked, expires_at')
         .eq('slug', identifier)
         .maybeSingle();
 
       if (shopBySlug) {
         console.log(`[PUBLIC_SHOP_FOUND] Match by slug: ${identifier} -> ID: ${shopBySlug.id}`);
-        console.log(`[PUBLIC_SHOP_DATA] Logo: ${shopBySlug.logo_url ? 'Yes' : 'No'}, Banner: ${shopBySlug.banner_url ? 'Yes' : 'No'}`);
+        console.log(`[PUBLIC_SHOP_DATA] Logo: ${shopBySlug.logo_url ? 'Yes' : 'No'}, Banner: ${shopBySlug.banner_url ? 'Yes' : 'No'}, Whatsapp: ${shopBySlug.whatsapp || shopBySlug.phone}`);
         
         // Block/Expiry check
         if (shopBySlug.is_blocked) {
@@ -232,7 +232,7 @@ async function startServer() {
       if (identifier.length >= 20) { 
         const { data: shopById, error: idError } = await supabase
           .from('barbershops')
-          .select('*')
+          .select('id, name, slug, address, phone, instagram, whatsapp, logo_url, banner_url, primary_color, secondary_color, booking_layout, show_whatsapp, show_instagram, show_address, is_blocked, expires_at')
           .eq('id', identifier)
           .maybeSingle();
 
@@ -701,43 +701,61 @@ async function startServer() {
         return res.status(400).json({ error: 'Aguarde o upload da capa ser concluído antes de salvar.' });
       }
 
+      // Clean Instagram handle if it's a URL or contains '@'
+      let cleanInstagram = instagram;
+      if (cleanInstagram) {
+        cleanInstagram = cleanInstagram.trim();
+        // Remove trailing slashes
+        cleanInstagram = cleanInstagram.replace(/\/+$/, '');
+        // If it's a full URL, get the last part
+        if (cleanInstagram.includes('instagram.com/')) {
+          cleanInstagram = cleanInstagram.split('instagram.com/').pop() || '';
+        }
+        // Remove the '@' symbol
+        cleanInstagram = cleanInstagram.replace(/^@/, '');
+      }
+
       const updateData: any = {
-        name: name !== undefined ? name : undefined,
-        address: address !== undefined ? address : undefined,
-        logo_url: logoUrl !== undefined ? logoUrl : undefined,
-        banner_url: bannerUrl !== undefined ? bannerUrl : undefined,
-        primary_color: primaryColor !== undefined ? primaryColor : undefined,
-        secondary_color: secondaryColor !== undefined ? secondaryColor : undefined,
-        booking_layout: bookingLayout !== undefined ? bookingLayout : undefined,
-        slug: cleanSlug !== undefined ? cleanSlug : undefined,
-        instagram: instagram !== undefined ? instagram : undefined,
-        whatsapp: whatsapp !== undefined ? whatsapp : undefined,
-        phone: whatsapp !== undefined ? whatsapp : undefined,
-        maps_url: mapsUrl !== undefined ? mapsUrl : undefined,
-        show_whatsapp: showWhatsapp !== undefined ? showWhatsapp : undefined,
-        show_instagram: showInstagram !== undefined ? showInstagram : undefined,
-        show_address: showAddress !== undefined ? showAddress : undefined,
+        name: name || undefined,
+        address: address || undefined,
+        logo_url: logoUrl || undefined,
+        banner_url: bannerUrl || undefined,
+        primary_color: primaryColor || undefined,
+        secondary_color: secondaryColor || undefined,
+        booking_layout: bookingLayout || undefined,
+        slug: cleanSlug || undefined,
+        instagram: cleanInstagram || undefined,
+        whatsapp: whatsapp || undefined,
+        phone: whatsapp || undefined, // Always sync phone with whatsapp
+        maps_url: mapsUrl || undefined,
+        show_whatsapp: showWhatsapp !== undefined ? showWhatsapp : true,
+        show_instagram: showInstagram !== undefined ? showInstagram : true,
+        show_address: showAddress !== undefined ? showAddress : true,
         updated_at: new Date().toISOString()
       };
 
-      // Remove undefined values so they don't overwrite with null
-      Object.keys(updateData).forEach(key => updateData[key] === undefined && delete updateData[key]);
+      // Ensure we don't accidentally send empty strings as null if not intended, 
+      // but here we want to allow clearing fields too.
+      Object.keys(updateData).forEach(key => {
+        if (updateData[key] === undefined) delete updateData[key];
+      });
 
-      console.log(`[SHOP_UPDATE_START] Updating shop ID: ${req.user.barbershopId}`, updateData);
+      console.log(`[CRITICAL_UPDATE] Shop ${req.user.barbershopId} updating with:`, JSON.stringify(updateData));
 
-      const { data, error } = await supabase
+      const { data: updatedShop, error: updateError } = await supabase
         .from('barbershops')
         .update(updateData)
         .eq('id', req.user.barbershopId)
         .select()
         .single();
       
-      if (error) throw error;
+      if (updateError) {
+        console.error('[SUPABASE_UPDATE_FAIL]', updateError);
+        return res.status(500).json({ error: 'Erro ao salvar no banco de dados', details: updateError.message });
+      }
       
-      console.log(`[SHOP_UPDATE_SUCCESS] Barbershop ${req.user.barbershopId} updated. Slug: ${cleanSlug}`);
-      console.log(`[SHOP_UPDATE_DATA] Logo saved as: ${updateData.logo_url}`);
-      
-      res.json(data);
+      console.log(`[SHOP_UPDATE_SUCCESS] Barbershop ${req.user.barbershopId} updated successfully.`);
+      res.json(updatedShop);
     } catch (e: any) { 
       console.error('[SHOP_UPDATE_ERROR]', e);
       res.status(500).json({ error: e.message }); 

@@ -34,7 +34,8 @@ export default function Profile() {
   const fetchShopInfo = async () => {
     const token = localStorage.getItem('token');
     try {
-      const res = await fetch('/api/admin/shop-info', {
+      const cacheBuster = new Date().getTime();
+      const res = await fetch(`/api/admin/shop-info?t=${cacheBuster}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const data = await res.json();
@@ -116,39 +117,62 @@ export default function Profile() {
   };
 
   const handleSave = async () => {
+    if (uploadingLogo || uploadingBanner) {
+      toast.error('Aguarde o upload das imagens terminar');
+      return;
+    }
+
     setSaving(true);
     const token = localStorage.getItem('token');
     try {
+      // Sanitize instagram handle before sending
+      let sanitizedInstagram = instagram.trim();
+      if (sanitizedInstagram) {
+        sanitizedInstagram = sanitizedInstagram.replace(/\/+$/, '');
+        if (sanitizedInstagram.includes('instagram.com/')) {
+          sanitizedInstagram = sanitizedInstagram.split('instagram.com/').pop() || '';
+        }
+        sanitizedInstagram = sanitizedInstagram.replace(/^@/, '');
+      }
+
+      const payload = {
+        name,
+        instagram: sanitizedInstagram,
+        whatsapp,
+        address,
+        mapsUrl,
+        slug,
+        logoUrl,
+        bannerUrl,
+        primaryColor: shop?.primary_color || '#D4AF37',
+        secondaryColor: shop?.secondary_color || '#000000',
+        bookingLayout: shop?.booking_layout || 'grid',
+        showWhatsapp: shop?.show_whatsapp ?? true,
+        showInstagram: shop?.show_instagram ?? true,
+        showAddress: shop?.show_address ?? true
+      };
+
+      console.log('[DEBUG] Saving Payload:', payload);
+
       const res = await fetch('/api/admin/shop', {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify({
-          name,
-          instagram,
-          whatsapp,
-          address,
-          mapsUrl,
-          slug,
-          logoUrl,
-          bannerUrl,
-          primaryColor: shop?.primary_color,
-          secondaryColor: shop?.secondary_color,
-          bookingLayout: shop?.booking_layout,
-          showWhatsapp: shop?.show_whatsapp,
-          showInstagram: shop?.show_instagram,
-          showAddress: shop?.show_address
-        })
+        body: JSON.stringify(payload)
       });
+
+      const result = await res.json();
 
       if (res.ok) {
         toast.success('Perfil atualizado com sucesso!');
-        fetchShopInfo();
+        setShop(result);
+        setInstagram(sanitizedInstagram); // Reflect cleaned version
+        setTimeout(fetchShopInfo, 500);
       } else {
-        const err = await res.json();
-        toast.error(err.error || 'Erro ao salvar');
+        toast.error(result.error || 'Erro ao salvar');
+        if (result.details) console.error('[SAVE_ERROR_DETAILS]', result.details);
       }
     } catch (e) {
       console.error(e);
