@@ -20,6 +20,8 @@ interface ServiceItem {
   name: string;
   durationMinutes: number;
   price: number;
+  imageUrl?: string | null;
+  image_url?: string | null;
 }
 
 interface BarberItem {
@@ -27,6 +29,8 @@ interface BarberItem {
   name: string;
   active: boolean;
   serviceIds?: string[];
+  photoUrl?: string | null;
+  photo_url?: string | null;
 }
 
 export default function Booking() {
@@ -470,12 +474,25 @@ function isLightColor(hexColor?: string): boolean {
                         color: textColor
                       }}
                     >
-                      <div 
-                        className="w-12 h-12 rounded-2xl flex items-center justify-center mr-4 shrink-0 border transition-all"
-                        style={{ backgroundColor: `${primaryColor}15`, borderColor: `${primaryColor}30` }}
-                      >
-                        <SegmentIcon iconName={currentPreset.icon} className="w-6 h-6" style={bgStyle} />
-                      </div>
+                      {barber.photoUrl || barber.photo_url ? (
+                        <div 
+                          className="w-12 h-12 rounded-2xl overflow-hidden mr-4 shrink-0 border transition-all"
+                          style={borderStyle}
+                        >
+                          <img 
+                            src={barber.photoUrl || barber.photo_url || ''} 
+                            alt={barber.name} 
+                            className="w-full h-full object-cover" 
+                          />
+                        </div>
+                      ) : (
+                        <div 
+                          className="w-12 h-12 rounded-2xl flex items-center justify-center mr-4 shrink-0 border transition-all"
+                          style={{ backgroundColor: `${primaryColor}15`, borderColor: `${primaryColor}30` }}
+                        >
+                          <SegmentIcon iconName={currentPreset.icon} className="w-6 h-6" style={bgStyle} />
+                        </div>
+                      )}
                       <div className="flex-1">
                         <div className="font-semibold text-base" style={{ color: textColor }}>{barber.name}</div>
                         <div className="text-xs mt-0.5" style={{ color: textColor, opacity: 0.6 }}>
@@ -537,12 +554,25 @@ function isLightColor(hexColor?: string): boolean {
                       }}
                     >
                       <div className="flex items-center gap-3.5">
-                        <div 
-                          className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border"
-                          style={{ backgroundColor: `${primaryColor}12`, borderColor: `${primaryColor}25` }}
-                        >
-                          <SegmentIcon iconName={currentPreset.icon} className="w-4 h-4" style={bgStyle} />
-                        </div>
+                        {service.imageUrl || service.image_url ? (
+                          <div 
+                            className="w-12 h-12 rounded-xl overflow-hidden shrink-0 border transition-all"
+                            style={borderStyle}
+                          >
+                            <img 
+                              src={service.imageUrl || service.image_url || ''} 
+                              alt={service.name} 
+                              className="w-full h-full object-cover" 
+                            />
+                          </div>
+                        ) : (
+                          <div 
+                            className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 border"
+                            style={{ backgroundColor: `${primaryColor}12`, borderColor: `${primaryColor}25` }}
+                          >
+                            <SegmentIcon iconName={currentPreset.icon} className="w-4 h-4" style={bgStyle} />
+                          </div>
+                        )}
                         <div>
                           <div className="font-semibold text-base" style={{ color: textColor }}>{service?.name || 'Serviço'}</div>
                           <div className="text-xs mt-0.5 flex items-center gap-1.5" style={{ color: textColor, opacity: 0.6 }}>
@@ -697,16 +727,35 @@ function isLightColor(hexColor?: string): boolean {
                 }}
               >
                 <div className="text-xs uppercase tracking-wider font-semibold opacity-60">Resumo do Agendamento</div>
-                <div className="flex justify-between items-start">
-                  <div>
-                    <div className="font-semibold text-base" style={{ color: textColor }}>
-                      {availableServices.find(s => s.id.toString() === formData.service_id)?.name}
-                    </div>
-                    <div className="text-xs mt-0.5 opacity-75">
-                      Profissional: <strong style={{ color: textColor }}>{selectedBarber?.name}</strong>
+                <div className="flex justify-between items-start gap-3">
+                  <div className="flex items-center gap-3">
+                    {(() => {
+                      const curService = availableServices.find(s => s.id.toString() === formData.service_id);
+                      const sPhoto = curService?.imageUrl || curService?.image_url;
+                      if (!sPhoto) return null;
+                      return (
+                        <div className="w-12 h-12 rounded-xl overflow-hidden shrink-0 border" style={borderStyle}>
+                          <img src={sPhoto} alt="Procedimento" className="w-full h-full object-cover" />
+                        </div>
+                      );
+                    })()}
+                    <div>
+                      <div className="font-semibold text-base" style={{ color: textColor }}>
+                        {availableServices.find(s => s.id.toString() === formData.service_id)?.name}
+                      </div>
+                      <div className="text-xs mt-0.5 opacity-75 flex items-center gap-1.5">
+                        {(selectedBarber?.photoUrl || selectedBarber?.photo_url) && (
+                          <img 
+                            src={selectedBarber.photoUrl || selectedBarber.photo_url || ''} 
+                            alt="" 
+                            className="w-4 h-4 rounded-full object-cover inline-block" 
+                          />
+                        )}
+                        <span>Profissional: <strong style={{ color: textColor }}>{selectedBarber?.name}</strong></span>
+                      </div>
                     </div>
                   </div>
-                  <div className="font-bold text-base font-mono tabular-nums" style={bgStyle}>
+                  <div className="font-bold text-base font-mono tabular-nums shrink-0" style={bgStyle}>
                     R$ {Number(availableServices.find(s => s.id.toString() === formData.service_id)?.price || 0).toFixed(2)}
                   </div>
                 </div>

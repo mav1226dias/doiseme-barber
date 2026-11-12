@@ -410,13 +410,18 @@ async function startServer() {
         
       if (error) throw error;
       
-      // Map to camelCase for the frontend including assigned serviceIds
+      const barberIds = (shopBarbers || []).map(b => b.id.toString());
+      const photosMap = nicheDb.getEntityPhotosMap(barberIds);
+
+      // Map to camelCase for the frontend including assigned serviceIds and photoUrl
       res.json((shopBarbers || []).map(b => ({
         id: b.id,
         barbershopId: b.barbershop_id,
         userId: b.user_id,
         name: b.name,
         active: b.active,
+        photoUrl: photosMap[b.id] || b.photo_url || b.avatar_url || null,
+        photo_url: photosMap[b.id] || b.photo_url || b.avatar_url || null,
         serviceIds: Array.isArray(b.service_ids) ? b.service_ids : []
       })));
     } catch (error) {
@@ -435,13 +440,18 @@ async function startServer() {
         
       if (error) throw error;
       
+      const serviceIds = (shopServices || []).map(s => s.id.toString());
+      const photosMap = nicheDb.getEntityPhotosMap(serviceIds);
+
       res.json((shopServices || []).map(s => ({
         id: s.id,
         barbershopId: s.barbershop_id,
         name: s.name,
         durationMinutes: s.duration_minutes,
         price: s.price,
-        active: s.active
+        active: s.active,
+        imageUrl: photosMap[s.id] || s.image_url || s.photo_url || null,
+        image_url: photosMap[s.id] || s.image_url || s.photo_url || null
       })));
     } catch (error) {
       res.status(500).json({ error: 'Erro ao buscar serviços' });
@@ -998,13 +1008,20 @@ async function startServer() {
 
       const totalAppointments = allAppointments?.length || 0;
       
+      const barberIds = (allBarbers || []).map(b => b.id.toString());
+      const barbersMetaMap = nicheDb.getBarbersMetadataMap(barberIds);
+      const enrichedBarbers = (allBarbers || []).map(b => ({
+        ...b,
+        commission_percentage: barbersMetaMap[b.id]?.commission_percentage ?? b.commission_percentage ?? 50
+      }));
+
       // Calculate revenue and commissions
       let totalRevenue = 0;
       let totalCommissions = 0;
       (allAppointments || []).forEach(app => {
         if (app.status === 'completed' || app.status === 'confirmed') {
           const service = (allServices || []).find(s => s.id === app.service_id);
-          const barber = (allBarbers || []).find(b => b.id === app.barber_id);
+          const barber = enrichedBarbers.find(b => b.id === app.barber_id);
           if (service) {
             const price = Number(service.price) || 0;
             totalRevenue += price;
@@ -1031,7 +1048,7 @@ async function startServer() {
         .reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
 
       // Calculate appointments by barber
-      const appointmentsByBarber = (allBarbers || []).map(barber => {
+      const appointmentsByBarber = enrichedBarbers.map(barber => {
         const barberApps = (allAppointments || []).filter(app => app.barber_id === barber.id && (app.status === 'completed' || app.status === 'confirmed'));
         const count = barberApps.length;
         const revenue = barberApps.reduce((acc, app) => {
@@ -1396,8 +1413,16 @@ async function startServer() {
         .eq('barbershop_id', req.user.barbershopId);
         
       if (error) throw error;
+
+      const barberIds = (barbersList || []).map((b: any) => b.id.toString());
+      const photosMap = nicheDb.getEntityPhotosMap(barberIds);
+      const metaMap = nicheDb.getBarbersMetadataMap(barberIds);
+
       res.json((barbersList || []).map((b: any) => ({
         ...b,
+        commission_percentage: metaMap[b.id]?.commission_percentage ?? b.commission_percentage ?? 50,
+        photo_url: photosMap[b.id] || b.photo_url || b.avatar_url || null,
+        photoUrl: photosMap[b.id] || b.photo_url || b.avatar_url || null,
         service_ids: Array.isArray(b.service_ids) ? b.service_ids : []
       })));
     } catch (error) {
@@ -1406,26 +1431,25 @@ async function startServer() {
   });
 
   api.post('/admin/barbers', authenticateToken, async (req: any, res) => {
-    const { name, commission_percentage, service_ids } = req.body;
+    const { name, commission_percentage, service_ids, photo_url, photoUrl } = req.body;
     try {
       const id = crypto.randomUUID();
+      const finalPhoto = photo_url || photoUrl || null;
+
       const insertData: any = {
         id,
         barbershop_id: req.user.barbershopId,
         name,
         active: true
       };
-      if (commission_percentage !== undefined) {
-        insertData.commission_percentage = commission_percentage;
-      }
       if (Array.isArray(service_ids)) {
         insertData.service_ids = service_ids;
       }
 
       let { error } = await supabase.from('barbers').insert(insertData);
 
-      // If service_ids or commission_percentage column doesn't exist yet, retry safely
-      if (error && error.message?.includes('service_ids')) {
+      // If service_ids column doesn't exist yet, retry safely without it
+      if (error && (error.code === 'PGRST204' || error.message?.includes('service_ids') || error.message?.includes('schema cache'))) {
         console.warn('[DB_FALLBACK] service_ids column not yet migrated in Supabase. Inserting without it.');
         delete insertData.service_ids;
         const retry = await supabase.from('barbers').insert(insertData);
@@ -1433,7 +1457,18 @@ async function startServer() {
       }
 
       if (error) throw error;
-      res.json({ success: true, id });
+
+      // Persist commission in nicheDb
+      if (commission_percentage !== undefined) {
+        nicheDb.upsertBarberMetadata(id, req.user.barbershopId, Number(commission_percentage));
+      }
+
+      // Persist photo safely in nicheDb
+      if (finalPhoto) {
+        nicheDb.upsertEntityPhoto(id, req.user.barbershopId, 'barber', finalPhoto);
+      }
+
+      res.json({ success: true, id, photo_url: finalPhoto });
     } catch (error) {
       console.error('[CREATE_BARBER_ERROR]', error);
       res.status(500).json({ error: 'Erro ao criar profissional' });
@@ -1441,33 +1476,49 @@ async function startServer() {
   });
 
   api.patch('/admin/barbers/:id', authenticateToken, async (req: any, res) => {
-    const { active, name, commission_percentage, service_ids } = req.body;
+    const { active, name, commission_percentage, service_ids, photo_url, photoUrl } = req.body;
     try {
       const updateData: any = {};
       if (active !== undefined) updateData.active = active;
       if (name !== undefined) updateData.name = name;
-      if (commission_percentage !== undefined) updateData.commission_percentage = commission_percentage;
       if (service_ids !== undefined && Array.isArray(service_ids)) updateData.service_ids = service_ids;
 
-      let { error } = await supabase
-        .from('barbers')
-        .update(updateData)
-        .eq('id', req.params.id)
-        .eq('barbershop_id', req.user.barbershopId);
-
-      // If service_ids does not exist yet, retry without it
-      if (error && error.message?.includes('service_ids')) {
-        console.warn('[DB_FALLBACK] service_ids column not yet migrated in Supabase. Updating without it.');
-        delete updateData.service_ids;
-        const retry = await supabase
+      if (Object.keys(updateData).length > 0) {
+        let { error } = await supabase
           .from('barbers')
           .update(updateData)
           .eq('id', req.params.id)
           .eq('barbershop_id', req.user.barbershopId);
-        error = retry.error;
+
+        // If service_ids does not exist in schema cache, retry without it
+        if (error && (error.code === 'PGRST204' || error.message?.includes('service_ids') || error.message?.includes('schema cache'))) {
+          console.warn('[DB_FALLBACK] service_ids column not yet migrated in Supabase. Updating without it.');
+          delete updateData.service_ids;
+          if (Object.keys(updateData).length > 0) {
+            const retry = await supabase
+              .from('barbers')
+              .update(updateData)
+              .eq('id', req.params.id)
+              .eq('barbershop_id', req.user.barbershopId);
+            error = retry.error;
+          } else {
+            error = null;
+          }
+        }
+
+        if (error) throw error;
       }
 
-      if (error) throw error;
+      // Save commission_percentage in nicheDb
+      if (commission_percentage !== undefined) {
+        nicheDb.upsertBarberMetadata(req.params.id, req.user.barbershopId, Number(commission_percentage));
+      }
+
+      // Update photo in nicheDb if provided
+      if (photo_url !== undefined || photoUrl !== undefined) {
+        nicheDb.upsertEntityPhoto(req.params.id, req.user.barbershopId, 'barber', photo_url ?? photoUrl);
+      }
+
       res.json({ success: true });
     } catch (error) {
       console.error('[UPDATE_BARBER_ERROR]', error);
@@ -1484,13 +1535,18 @@ async function startServer() {
         .eq('barbershop_id', req.user.barbershopId);
       if (error) throw error;
       
+      const serviceIds = (servicesList || []).map((s: any) => s.id.toString());
+      const photosMap = nicheDb.getEntityPhotosMap(serviceIds);
+
       res.json((servicesList || []).map(s => ({
         id: s.id,
         barbershopId: s.barbershop_id,
         name: s.name,
         durationMinutes: s.duration_minutes,
         price: s.price,
-        active: s.active
+        active: s.active,
+        image_url: photosMap[s.id] || s.image_url || s.photo_url || null,
+        imageUrl: photosMap[s.id] || s.image_url || s.photo_url || null
       })));
     } catch (error) {
       res.status(500).json({ error: 'Erro ao buscar serviços' });
@@ -1498,9 +1554,11 @@ async function startServer() {
   });
 
   api.post('/admin/services', authenticateToken, async (req: any, res) => {
-    const { name, durationMinutes, price } = req.body;
+    const { name, durationMinutes, price, image_url, imageUrl, photo_url } = req.body;
     try {
       const id = crypto.randomUUID();
+      const finalImage = image_url || imageUrl || photo_url || null;
+
       const { error } = await supabase.from('services').insert({
         id,
         barbershop_id: req.user.barbershopId,
@@ -1510,26 +1568,40 @@ async function startServer() {
         active: true
       });
       if (error) throw error;
-      res.json({ success: true, id });
+
+      // Save photo in nicheDb
+      if (finalImage) {
+        nicheDb.upsertEntityPhoto(id, req.user.barbershopId, 'service', finalImage);
+      }
+
+      res.json({ success: true, id, image_url: finalImage });
     } catch (error) {
       res.status(500).json({ error: 'Erro ao criar serviço' });
     }
   });
 
   api.patch('/admin/services/:id', authenticateToken, async (req: any, res) => {
-    const { active, name, durationMinutes, price } = req.body;
+    const { active, name, durationMinutes, price, image_url, imageUrl, photo_url } = req.body;
     try {
-      const { error } = await supabase
-        .from('services')
-        .update({ 
-          active, 
-          name, 
-          duration_minutes: durationMinutes, 
-          price 
-        })
-        .eq('id', req.params.id)
-        .eq('barbershop_id', req.user.barbershopId);
-      if (error) throw error;
+      const updateData: any = {};
+      if (active !== undefined) updateData.active = active;
+      if (name !== undefined) updateData.name = name;
+      if (durationMinutes !== undefined) updateData.duration_minutes = durationMinutes;
+      if (price !== undefined) updateData.price = price;
+
+      if (Object.keys(updateData).length > 0) {
+        const { error } = await supabase
+          .from('services')
+          .update(updateData)
+          .eq('id', req.params.id)
+          .eq('barbershop_id', req.user.barbershopId);
+        if (error) throw error;
+      }
+
+      if (image_url !== undefined || imageUrl !== undefined || photo_url !== undefined) {
+        nicheDb.upsertEntityPhoto(req.params.id, req.user.barbershopId, 'service', image_url ?? imageUrl ?? photo_url);
+      }
+
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Erro ao atualizar serviço' });

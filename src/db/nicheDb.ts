@@ -203,6 +203,29 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_tattoo_records_client
   ON client_tattoo_records (barbershop_id, client_id, session_date DESC);
+
+  -- Entity Photos for Professionals (Barbers) and Services / Procedures
+  CREATE TABLE IF NOT EXISTS entity_photos (
+    entity_id TEXT PRIMARY KEY,
+    barbershop_id TEXT,
+    entity_type TEXT NOT NULL, -- 'barber' or 'service'
+    photo_url TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_entity_photos_type
+  ON entity_photos (entity_type, barbershop_id);
+
+  -- Barber / Professional Metadata (e.g. commission percentage, etc.)
+  CREATE TABLE IF NOT EXISTS barber_metadata (
+    barber_id TEXT PRIMARY KEY,
+    barbershop_id TEXT,
+    commission_percentage REAL DEFAULT 50,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_barber_meta_shop
+  ON barber_metadata (barbershop_id);
 `);
 
 export interface ClinicalNote {
@@ -924,5 +947,69 @@ export const nicheDb = {
     `);
     const res = stmt.run(id, barbershopId);
     return res.changes > 0;
+  },
+
+  // --- ENTITY PHOTOS (PROFESSIONALS & SERVICES/PROCEDURES) ---
+  upsertEntityPhoto(entityId: string, barbershopId: string, entityType: 'barber' | 'service', photoUrl: string | null): void {
+    const now = new Date().toISOString();
+    if (!photoUrl) {
+      db.prepare(`DELETE FROM entity_photos WHERE entity_id = ?`).run(entityId);
+      return;
+    }
+    const stmt = db.prepare(`
+      INSERT INTO entity_photos (entity_id, barbershop_id, entity_type, photo_url, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(entity_id) DO UPDATE SET
+        photo_url = excluded.photo_url,
+        barbershop_id = excluded.barbershop_id,
+        updated_at = excluded.updated_at
+    `);
+    stmt.run(entityId, barbershopId, entityType, photoUrl, now);
+  },
+
+  getEntityPhoto(entityId: string): string | null {
+    const row = db.prepare(`SELECT photo_url FROM entity_photos WHERE entity_id = ?`).get(entityId) as any;
+    return row ? row.photo_url : null;
+  },
+
+  getEntityPhotosMap(entityIds: string[]): Record<string, string> {
+    if (!entityIds.length) return {};
+    const placeholders = entityIds.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT entity_id, photo_url FROM entity_photos WHERE entity_id IN (${placeholders})`).all(...entityIds) as any[];
+    const map: Record<string, string> = {};
+    rows.forEach(r => {
+      map[r.entity_id] = r.photo_url;
+    });
+    return map;
+  },
+
+  deleteEntityPhoto(entityId: string): boolean {
+    const res = db.prepare(`DELETE FROM entity_photos WHERE entity_id = ?`).run(entityId);
+    return res.changes > 0;
+  },
+
+  // --- BARBER METADATA (COMMISSION & EXTRA FIELDS) ---
+  upsertBarberMetadata(barberId: string, barbershopId: string, commissionPercentage: number): void {
+    const now = new Date().toISOString();
+    const stmt = db.prepare(`
+      INSERT INTO barber_metadata (barber_id, barbershop_id, commission_percentage, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(barber_id) DO UPDATE SET
+        commission_percentage = excluded.commission_percentage,
+        barbershop_id = excluded.barbershop_id,
+        updated_at = excluded.updated_at
+    `);
+    stmt.run(barberId, barbershopId, commissionPercentage, now);
+  },
+
+  getBarbersMetadataMap(barberIds: string[]): Record<string, { commission_percentage: number }> {
+    if (!barberIds.length) return {};
+    const placeholders = barberIds.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT barber_id, commission_percentage FROM barber_metadata WHERE barber_id IN (${placeholders})`).all(...barberIds) as any[];
+    const map: Record<string, { commission_percentage: number }> = {};
+    rows.forEach(r => {
+      map[r.barber_id] = { commission_percentage: r.commission_percentage };
+    });
+    return map;
   }
 };

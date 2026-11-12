@@ -1,5 +1,5 @@
-import React, { useState, useEffect, FormEvent } from 'react';
-import { Plus, User, Check, X, Scissors, Layers, CheckSquare, Square, Edit2 } from 'lucide-react';
+import React, { useState, useEffect, useRef, FormEvent } from 'react';
+import { Plus, User, Check, X, Scissors, Layers, CheckSquare, Square, Edit2, Camera, Trash2, Loader2 } from 'lucide-react';
 import { getSegment } from '../../lib/segments';
 import { toast } from 'sonner';
 
@@ -17,6 +17,8 @@ interface BarberItem {
   commission_percentage?: number;
   active: boolean;
   service_ids?: string[];
+  photo_url?: string | null;
+  photoUrl?: string | null;
 }
 
 export default function Barbers() {
@@ -25,12 +27,18 @@ export default function Barbers() {
   const [newBarber, setNewBarber] = useState('');
   const [newCommission, setNewCommission] = useState(50);
   const [newSelectedServices, setNewSelectedServices] = useState<string[]>([]);
+  const [newPhotoUrl, setNewPhotoUrl] = useState('');
+  const [uploadingNewPhoto, setUploadingNewPhoto] = useState(false);
+  const newFileInputRef = useRef<HTMLInputElement>(null);
   
   // Editing state
   const [editingBarber, setEditingBarber] = useState<BarberItem | null>(null);
   const [editName, setEditName] = useState('');
   const [editCommission, setEditCommission] = useState(50);
   const [editSelectedServices, setEditSelectedServices] = useState<string[]>([]);
+  const [editPhotoUrl, setEditPhotoUrl] = useState('');
+  const [uploadingEditPhoto, setUploadingEditPhoto] = useState(false);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
 
   const [segment, setSegment] = useState('barbershop');
   const [isLoading, setIsLoading] = useState(false);
@@ -118,6 +126,67 @@ export default function Barbers() {
     }
   };
 
+  const handleUploadPhoto = async (file: File, isEdit: boolean) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Selecione uma imagem válida (PNG, JPG, WEBP)');
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('A imagem deve ter no máximo 5MB');
+      return;
+    }
+
+    if (isEdit) setUploadingEditPhoto(true);
+    else setUploadingNewPhoto(true);
+
+    try {
+      const ext = file.name.split('.').pop() || 'jpg';
+      const filePath = `barbers/${Date.now()}-${Math.random().toString(36).substring(2, 7)}.${ext}`;
+      
+      const base64Promise = new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const split = (reader.result as string).split(',');
+          resolve(split[1]);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      const base64Content = await base64Promise;
+      const token = localStorage.getItem('token');
+
+      const res = await fetch('/api/admin/upload', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          filePath,
+          content: base64Content,
+          contentType: file.type
+        })
+      });
+
+      if (!res.ok) throw new Error('Upload falhou');
+      const { publicUrl } = await res.json();
+      if (isEdit) {
+        setEditPhotoUrl(publicUrl);
+      } else {
+        setNewPhotoUrl(publicUrl);
+      }
+      toast.success('Foto carregada com sucesso!');
+    } catch (err) {
+      console.error(err);
+      toast.error('Erro ao fazer upload da foto');
+    } finally {
+      if (isEdit) setUploadingEditPhoto(false);
+      else setUploadingNewPhoto(false);
+    }
+  };
+
   const handleAdd = async (e: FormEvent) => {
     e.preventDefault();
     if (!newBarber.trim()) {
@@ -137,7 +206,8 @@ export default function Barbers() {
         body: JSON.stringify({ 
           name: newBarber.trim(), 
           commission_percentage: newCommission,
-          service_ids: newSelectedServices
+          service_ids: newSelectedServices,
+          photo_url: newPhotoUrl || null
         })
       });
 
@@ -145,6 +215,7 @@ export default function Barbers() {
         toast.success('Profissional cadastrado com sucesso!');
         setNewBarber('');
         setNewCommission(50);
+        setNewPhotoUrl('');
         setNewSelectedServices(services.map(s => s.id.toString()));
         fetchBarbers();
       } else {
@@ -161,6 +232,7 @@ export default function Barbers() {
     setEditingBarber(barber);
     setEditName(barber.name);
     setEditCommission(barber.commission_percentage || 50);
+    setEditPhotoUrl(barber.photo_url || barber.photoUrl || '');
     // If barber has service_ids array, use it; otherwise default to all services
     const currentIds = Array.isArray(barber.service_ids) && barber.service_ids.length > 0
       ? barber.service_ids.map(String)
@@ -187,7 +259,8 @@ export default function Barbers() {
         body: JSON.stringify({
           name: editName.trim(),
           commission_percentage: Number(editCommission),
-          service_ids: editSelectedServices
+          service_ids: editSelectedServices,
+          photo_url: editPhotoUrl || null
         })
       });
 
@@ -249,15 +322,59 @@ export default function Barbers() {
         </h2>
 
         <form onSubmit={handleAdd} className="space-y-5">
-          <div className="flex flex-col sm:flex-row gap-4">
+          <div className="flex flex-col sm:flex-row items-center gap-4">
+            {/* Foto do Profissional */}
+            <div className="flex items-center gap-3 shrink-0">
+              <input 
+                type="file" 
+                ref={newFileInputRef}
+                accept="image/*"
+                className="hidden"
+                onChange={e => {
+                  if (e.target.files?.[0]) handleUploadPhoto(e.target.files[0], false);
+                }}
+              />
+              <div 
+                onClick={() => newFileInputRef.current?.click()}
+                className="relative group w-14 h-14 rounded-full border-2 border-dashed border-gray-300 dark:border-zinc-700 hover:border-[#D4AF37] dark:hover:border-[#D4AF37] cursor-pointer overflow-hidden flex items-center justify-center bg-gray-50 dark:bg-zinc-800 transition-colors shrink-0"
+                title="Clique para adicionar foto do profissional"
+              >
+                {uploadingNewPhoto ? (
+                  <Loader2 className="w-5 h-5 text-[#D4AF37] animate-spin" />
+                ) : newPhotoUrl ? (
+                  <>
+                    <img src={newPhotoUrl} alt="Foto" className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white">
+                      <Camera className="w-4 h-4" />
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-gray-400 group-hover:text-[#D4AF37]">
+                    <Camera className="w-5 h-5" />
+                    <span className="text-[9px] font-medium leading-none mt-1">Foto</span>
+                  </div>
+                )}
+              </div>
+              {newPhotoUrl && (
+                <button
+                  type="button"
+                  onClick={() => setNewPhotoUrl('')}
+                  className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800"
+                  title="Remover foto"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
             <input 
               type="text" 
               value={newBarber}
               onChange={e => setNewBarber(e.target.value)}
               placeholder={`Nome completo do(a) ${currentPreset.terms.professional.toLowerCase()}`}
-              className="flex-1 border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl p-3 outline-none focus:border-black dark:focus:border-white transition-colors placeholder:text-gray-400"
+              className="flex-1 w-full border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl p-3 outline-none focus:border-black dark:focus:border-white transition-colors placeholder:text-gray-400"
             />
-            <div className="flex items-center gap-2 bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4">
+            <div className="flex items-center gap-2 bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4 py-3 shrink-0">
               <span className="text-sm text-gray-400">Comissão:</span>
               <input 
                 type="number" 
@@ -271,8 +388,8 @@ export default function Barbers() {
             </div>
             <button 
               type="submit" 
-              disabled={isLoading || !newBarber.trim()}
-              className="bg-black dark:bg-[#D4AF37] text-white dark:text-black px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:opacity-90 transition-all disabled:opacity-50"
+              disabled={isLoading || uploadingNewPhoto || !newBarber.trim()}
+              className="bg-black dark:bg-[#D4AF37] text-white dark:text-black px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:opacity-90 transition-all disabled:opacity-50 shrink-0 w-full sm:w-auto"
             >
               <Plus className="w-5 h-5" /> Adicionar
             </button>
@@ -348,8 +465,52 @@ export default function Barbers() {
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="sm:col-span-2">
+          <div className="flex flex-col sm:flex-row items-center gap-4">
+            {/* Foto no modo edição */}
+            <div className="flex items-center gap-3 shrink-0">
+              <input 
+                type="file" 
+                ref={editFileInputRef}
+                accept="image/*"
+                className="hidden"
+                onChange={e => {
+                  if (e.target.files?.[0]) handleUploadPhoto(e.target.files[0], true);
+                }}
+              />
+              <div 
+                onClick={() => editFileInputRef.current?.click()}
+                className="relative group w-14 h-14 rounded-full border-2 border-dashed border-gray-300 dark:border-zinc-700 hover:border-[#D4AF37] dark:hover:border-[#D4AF37] cursor-pointer overflow-hidden flex items-center justify-center bg-white dark:bg-zinc-800 transition-colors shrink-0"
+                title="Clique para trocar foto do profissional"
+              >
+                {uploadingEditPhoto ? (
+                  <Loader2 className="w-5 h-5 text-[#D4AF37] animate-spin" />
+                ) : editPhotoUrl ? (
+                  <>
+                    <img src={editPhotoUrl} alt="Foto" className="w-full h-full object-cover" />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white">
+                      <Camera className="w-4 h-4" />
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-gray-400 group-hover:text-[#D4AF37]">
+                    <Camera className="w-5 h-5" />
+                    <span className="text-[9px] font-medium leading-none mt-1">Foto</span>
+                  </div>
+                )}
+              </div>
+              {editPhotoUrl && (
+                <button
+                  type="button"
+                  onClick={() => setEditPhotoUrl('')}
+                  className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800"
+                  title="Remover foto"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 w-full">
               <label className="block text-xs font-semibold text-gray-500 mb-1">Nome</label>
               <input 
                 type="text" 
@@ -358,7 +519,7 @@ export default function Barbers() {
                 className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl p-2.5 text-sm outline-none"
               />
             </div>
-            <div>
+            <div className="w-full sm:w-32">
               <label className="block text-xs font-semibold text-gray-500 mb-1">Comissão (%)</label>
               <input 
                 type="number" 
@@ -456,8 +617,16 @@ export default function Barbers() {
                 className="flex flex-col sm:flex-row sm:items-center justify-between p-4 border border-gray-100 dark:border-zinc-800 bg-white dark:bg-zinc-800/40 rounded-xl hover:border-gray-200 dark:hover:border-zinc-700 transition-colors gap-4"
               >
                 <div className="flex items-start sm:items-center gap-4">
-                  <div className="w-12 h-12 bg-gray-50 dark:bg-zinc-700 rounded-full flex items-center justify-center shrink-0 mt-1 sm:mt-0">
-                    <User className="w-6 h-6 text-gray-400 dark:text-gray-300" />
+                  <div className="w-12 h-12 bg-gray-50 dark:bg-zinc-700 rounded-full flex items-center justify-center shrink-0 mt-1 sm:mt-0 overflow-hidden border border-gray-200 dark:border-zinc-700">
+                    {(barber.photo_url || barber.photoUrl) ? (
+                      <img 
+                        src={barber.photo_url || barber.photoUrl || ''} 
+                        alt={barber.name} 
+                        className="w-full h-full object-cover" 
+                      />
+                    ) : (
+                      <User className="w-6 h-6 text-gray-400 dark:text-gray-300" />
+                    )}
                   </div>
                   <div>
                     <div className="flex items-center gap-2">
