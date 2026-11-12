@@ -1,4 +1,4 @@
-import { pgTable, text, integer, real, boolean, timestamp } from 'drizzle-orm/pg-core';
+import { pgTable, text, integer, real, boolean, timestamp, jsonb } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
 export const barbershops = pgTable('barbershops', {
@@ -13,6 +13,7 @@ export const barbershops = pgTable('barbershops', {
   primaryColor: text('primary_color').default('#000000'),
   secondaryColor: text('secondary_color').default('#ffffff'),
   bookingLayout: text('booking_layout').default('standard'), // standard, classic, modern
+  segment: text('segment').default('barbershop'), // barbershop, aesthetics, lash_design, beauty_salon, tattoo, nutrition, psychology, pilates, personal_trainer, photography, video_production, architecture, makeup, auto_detailing, woodwork
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 
@@ -33,6 +34,7 @@ export const barbers = pgTable('barbers', {
   name: text('name').notNull(),
   commissionPercentage: real('commission_percentage').notNull().default(50), // Percentage for the barber
   active: boolean('active').notNull().default(true),
+  serviceIds: jsonb('service_ids').$type<string[]>().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 });
 

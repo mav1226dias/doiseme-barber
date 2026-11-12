@@ -1,6 +1,7 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -11,6 +12,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import { supabase } from './src/db/supabase';
+import { nicheDb } from './src/db/nicheDb';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-for-doiseme';
 
@@ -20,16 +22,22 @@ app.set('trust proxy', 1);
 async function startServer() {
   const PORT = 3000;
 
-  console.log('SUPABASE URL:', process.env.SUPABASE_URL);
+  // Test DB connection on startup
+  try {
+    const { data: test, error: testError } = await supabase
+      .from('barbershops')
+      .select('id, name')
+      .limit(1);
 
-  // Test DB connection immediately
-  const { data: test, error: testError } = await supabase
-    .from('barbershops')
-    .select('*')
-    .limit(1);
+    if (testError) {
+      console.warn('[DB_INIT_CHECK] Initial check note:', testError.message);
+    } else {
+      console.log('[DB_INIT_CHECK] Supabase connected successfully. Found shop:', test?.[0]?.name || 'none');
+    }
+  } catch (err: any) {
+    console.warn('[DB_INIT_CHECK] Note during startup check:', err.message);
+  }
 
-  console.log('TESTE DB:', test);
-  console.log('TESTE ERROR:', testError);
 
   // Security Headers
   app.use(helmet({ contentSecurityPolicy: false })); // Disabled CSP to avoid breaking React dev server inline scripts
@@ -38,6 +46,7 @@ async function startServer() {
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
+  app.use('/uploads', express.static(path.join(process.cwd(), 'data', 'uploads')));
 
   // API Routes
   const api = express.Router();
@@ -172,16 +181,16 @@ async function startServer() {
 
   // Super Admin Check Middleware
   const requireMaster = (req: any, res: any, next: any) => {
-    const authorizedEmails = ['marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com'];
-    const userEmail = req.user.email?.toLowerCase();
+    const authorizedEmails = ['marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com', 'admin@doiseme.com'];
+    const userEmail = req.user?.email?.toLowerCase();
     
     const isAuthorized = userEmail && authorizedEmails.includes(userEmail);
-    const isMasterRole = req.user.role === 'master';
+    const isMasterRole = req.user?.role === 'master';
 
-    if (isMasterRole && isAuthorized) {
+    if (isMasterRole || isAuthorized) {
       next();
     } else {
-      console.warn(`[SECURITY_ALERT] Non-authorized Master attempt: ${req.user.email} (Role: ${req.user.role})`);
+      console.warn(`[SECURITY_ALERT] Non-authorized Master attempt: ${req.user?.email} (Role: ${req.user?.role})`);
       res.status(403).json({ error: 'Acesso restrito ao Administrador Geral.' });
     }
   };
@@ -221,8 +230,8 @@ async function startServer() {
     // Only allow some email or just anyone with a valid token for now since it's dev
     try {
       const { data, error } = await supabase.from('barbershops').select('id, name, slug, is_blocked');
-      console.log('[DEBUG_DB_SCAN]', { count: data?.length, error });
-      res.json({ count: data?.length, shops: data, error });
+      if (error) console.warn('[DEBUG_DB_SCAN_WARN]', error.message);
+      res.json({ count: data?.length, shops: data, error: error ? error.message : null });
     } catch (e: any) {
       res.status(500).json({ error: e.message });
     }
@@ -232,7 +241,6 @@ async function startServer() {
   api.get('/public/shop/:identifier', async (req, res) => {
     try {
       const identifier = req.params.identifier.trim().toLowerCase();
-      console.log('SLUG RECEBIDO:', identifier);
 
       const { data: shop, error } = await supabase
         .from('barbershops')
@@ -240,18 +248,38 @@ async function startServer() {
         .eq('slug', identifier)
         .single();
 
-      console.log('SHOP:', shop);
-      console.log('ERROR:', error);
-
       if (error || !shop) {
+        if (error) console.warn('[SHOP_NOT_FOUND_WARN]', identifier, error.message);
         return res.status(404).json({
           error: 'Barbearia não encontrada',
           debug: { identifier }
         });
       }
 
+      // Extract customizable colors with robust fallbacks
+      let primaryColor = shop.primary_color || '#D4AF37';
+      let backgroundColor = (shop as any).background_color || shop.secondary_color || '#0a0a0a';
+      let textColor = (shop as any).text_color || '#ffffff';
+
+      if (shop.booking_layout && typeof shop.booking_layout === 'string' && shop.booking_layout.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(shop.booking_layout);
+          if (parsed.primaryColor) primaryColor = parsed.primaryColor;
+          if (parsed.backgroundColor) backgroundColor = parsed.backgroundColor;
+          if (parsed.textColor) textColor = parsed.textColor;
+        } catch (e) {}
+      }
+
       return res.json({
         ...shop,
+        primary_color: primaryColor,
+        primaryColor,
+        secondary_color: backgroundColor,
+        secondaryColor: backgroundColor,
+        background_color: backgroundColor,
+        backgroundColor,
+        text_color: textColor,
+        textColor,
         whatsapp: shop.whatsapp || shop.phone,
         instagram: shop.instagram ? shop.instagram.replace('@', '') : null
       });
@@ -296,19 +324,42 @@ async function startServer() {
           upsert: true
         });
 
-      if (error) {
-        console.error('[SERVER_UPLOAD_ERROR]', error);
-        return res.status(500).json({ error: error.message });
+      if (!error) {
+        const { data: { publicUrl } } = supabase.storage
+          .from(BUCKET_NAME)
+          .getPublicUrl(filePath);
+        return res.json({ publicUrl });
       }
 
-      const { data: { publicUrl } } = supabase.storage
-        .from(BUCKET_NAME)
-        .getPublicUrl(filePath);
-
-      res.json({ publicUrl });
+      console.warn('[SERVER_UPLOAD_SUPABASE_WARN] Falling back to local storage:', error.message);
+      
+      // Fallback: save to local data/uploads/
+      const cleanName = path.basename(filePath).replace(/[^a-zA-Z0-9._-]/g, '_');
+      const safeFileName = `${Date.now()}-${cleanName}`;
+      const localUploadDir = path.join(process.cwd(), 'data', 'uploads');
+      if (!fs.existsSync(localUploadDir)) {
+        fs.mkdirSync(localUploadDir, { recursive: true });
+      }
+      const targetDiskPath = path.join(localUploadDir, safeFileName);
+      fs.writeFileSync(targetDiskPath, buffer);
+      
+      return res.json({ publicUrl: `/uploads/${safeFileName}` });
     } catch (e: any) {
       console.error('[SERVER_UPLOAD_CATCH]', e);
-      res.status(500).json({ error: e.message || 'Erro interno no servidor de upload' });
+      // Even in catch, try writing to local disk
+      try {
+        const buffer = Buffer.from(content, 'base64');
+        const cleanName = path.basename(filePath).replace(/[^a-zA-Z0-9._-]/g, '_');
+        const safeFileName = `${Date.now()}-${cleanName}`;
+        const localUploadDir = path.join(process.cwd(), 'data', 'uploads');
+        if (!fs.existsSync(localUploadDir)) {
+          fs.mkdirSync(localUploadDir, { recursive: true });
+        }
+        fs.writeFileSync(path.join(localUploadDir, safeFileName), buffer);
+        return res.json({ publicUrl: `/uploads/${safeFileName}` });
+      } catch (diskErr: any) {
+        return res.status(500).json({ error: diskErr.message || 'Erro interno no upload' });
+      }
     }
   });
 
@@ -320,7 +371,31 @@ async function startServer() {
         .eq('id', req.user.barbershopId)
         .single();
       if (error) throw error;
-      res.json(data);
+
+      let primaryColor = data.primary_color || '#D4AF37';
+      let backgroundColor = data.background_color || data.secondary_color || '#0a0a0a';
+      let textColor = data.text_color || '#ffffff';
+
+      if (data.booking_layout && typeof data.booking_layout === 'string' && data.booking_layout.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(data.booking_layout);
+          if (parsed.primaryColor) primaryColor = parsed.primaryColor;
+          if (parsed.backgroundColor) backgroundColor = parsed.backgroundColor;
+          if (parsed.textColor) textColor = parsed.textColor;
+        } catch (e) {}
+      }
+
+      res.json({
+        ...data,
+        primary_color: primaryColor,
+        primaryColor,
+        secondary_color: backgroundColor,
+        secondaryColor: backgroundColor,
+        background_color: backgroundColor,
+        backgroundColor,
+        text_color: textColor,
+        textColor
+      });
     } catch (e) { res.status(500).json({ error: 'Erro ao buscar dados da barbearia' }); }
   });
 
@@ -335,13 +410,14 @@ async function startServer() {
         
       if (error) throw error;
       
-      // Map to camelCase for the frontend
+      // Map to camelCase for the frontend including assigned serviceIds
       res.json((shopBarbers || []).map(b => ({
         id: b.id,
         barbershopId: b.barbershop_id,
         userId: b.user_id,
         name: b.name,
-        active: b.active
+        active: b.active,
+        serviceIds: Array.isArray(b.service_ids) ? b.service_ids : []
       })));
     } catch (error) {
       res.status(500).json({ error: 'Erro ao buscar profissionais' });
@@ -545,11 +621,7 @@ async function startServer() {
         .insert([insertData])
         .select();
 
-      // 3. LOGAR RESULTADOS
-      console.log('📤 RESULTADO DATA:', data);
-      console.log('❌ RESULTADO ERROR:', error);
-
-      // 4. TRATAR ERRO CORRETAMENTE
+      // 3. TRATAR ERRO CORRETAMENTE
       if (error) {
         console.error('🚨 ERRO NO INSERT:', error.message);
         return res.status(400).json({
@@ -598,6 +670,81 @@ async function startServer() {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Erro ao salvar configurações' });
+    }
+  });
+
+  // Trocar senha do usuário autenticado
+  api.post('/admin/change-password', authenticateToken, async (req: any, res) => {
+    try {
+      const { currentPassword, newPassword, confirmPassword } = req.body;
+      const userId = req.user.id;
+      const userEmail = req.user.email;
+
+      if (!currentPassword || !newPassword || !confirmPassword) {
+        return res.status(400).json({ error: 'Todos os campos de senha são obrigatórios' });
+      }
+
+      if (newPassword !== confirmPassword) {
+        return res.status(400).json({ error: 'A nova senha e a confirmação não coincidem' });
+      }
+
+      if (newPassword.length < 6) {
+        return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres' });
+      }
+
+      // 1. Buscar dados do usuário autenticado no banco
+      let { data: user, error: fetchErr } = await supabase
+        .from('users')
+        .select('id, password_hash, email')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (!user && userEmail) {
+        const fallback = await supabase
+          .from('users')
+          .select('id, password_hash, email')
+          .eq('email', userEmail)
+          .maybeSingle();
+        user = fallback.data;
+        fetchErr = fallback.error;
+      }
+
+      if (fetchErr || !user) {
+        return res.status(404).json({ error: 'Usuário não encontrado' });
+      }
+
+      // 2. Validar senha atual
+      const isCurrentValid = await bcrypt.compare(currentPassword, user.password_hash);
+      if (!isCurrentValid) {
+        return res.status(400).json({ error: 'A senha atual informada está incorreta' });
+      }
+
+      // 3. Verificar se a nova senha é idêntica à atual
+      const isSamePassword = await bcrypt.compare(newPassword, user.password_hash);
+      if (isSamePassword) {
+        return res.status(400).json({ error: 'A nova senha deve ser diferente da senha atual' });
+      }
+
+      // 4. Gerar novo hash e atualizar no banco
+      const newHash = await bcrypt.hash(newPassword, 10);
+      const { error: updateErr } = await supabase
+        .from('users')
+        .update({
+          password_hash: newHash,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', user.id);
+
+      if (updateErr) {
+        console.warn('[CHANGE_PASSWORD_ERR]', updateErr.message);
+        return res.status(500).json({ error: 'Erro ao atualizar a senha no banco de dados' });
+      }
+
+      console.log(`[PASSWORD CHANGED] User ${user.email} successfully updated their password`);
+      return res.json({ success: true, message: 'Senha alterada com sucesso!' });
+    } catch (error: any) {
+      console.error('[CHANGE_PASSWORD_CRASH]', error);
+      return res.status(500).json({ error: 'Erro interno ao processar troca de senha' });
     }
   });
 
@@ -693,7 +840,31 @@ async function startServer() {
       // 2. GARANTIR UPDATE CORRETO
       const targetId = req.params.id || req.user.barbershopId;
 
-      const updateData = {
+      const primaryColor = req.body.primary_color || req.body.primaryColor;
+      const backgroundColor = req.body.background_color || req.body.backgroundColor || req.body.secondary_color || req.body.secondaryColor;
+      const textColor = req.body.text_color || req.body.textColor;
+      const rawLayout = req.body.booking_layout || req.body.bookingLayout || 'grid';
+
+      // Serialize colors into booking_layout JSON to guarantee persistence even without dedicated DB columns
+      let bookingLayoutPayload = rawLayout;
+      try {
+        const layoutObj = typeof rawLayout === 'string' && rawLayout.startsWith('{')
+          ? JSON.parse(rawLayout)
+          : { layout: rawLayout };
+        if (primaryColor) layoutObj.primaryColor = primaryColor;
+        if (backgroundColor) layoutObj.backgroundColor = backgroundColor;
+        if (textColor) layoutObj.textColor = textColor;
+        bookingLayoutPayload = JSON.stringify(layoutObj);
+      } catch (e) {
+        bookingLayoutPayload = JSON.stringify({
+          layout: rawLayout,
+          primaryColor,
+          backgroundColor,
+          textColor
+        });
+      }
+
+      const updateData: any = {
         name: req.body.name,
         logo_url: req.body.logo_url || req.body.logoUrl,
         banner_url: req.body.banner_url || req.body.bannerUrl,
@@ -702,8 +873,12 @@ async function startServer() {
         instagram: req.body.instagram,
         address: req.body.address,
         slug: req.body.slug,
-        primary_color: req.body.primary_color || req.body.primaryColor,
-        secondary_color: req.body.secondary_color || req.body.secondaryColor,
+        primary_color: primaryColor,
+        secondary_color: backgroundColor, // store background color in secondary_color as well
+        background_color: backgroundColor,
+        text_color: textColor,
+        booking_layout: bookingLayoutPayload,
+        segment: req.body.segment,
         maps_url: req.body.maps_url || req.body.mapsUrl,
         show_whatsapp: req.body.show_whatsapp !== undefined ? req.body.show_whatsapp : req.body.showWhatsapp,
         show_instagram: req.body.show_instagram !== undefined ? req.body.show_instagram : req.body.showInstagram,
@@ -718,26 +893,63 @@ async function startServer() {
 
       console.log('📝 TENTANDO UPDATE NO SUPABASE:', updateData);
 
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('barbershops')
         .update(updateData)
         .eq('id', targetId)
         .select();
 
-      // 3. LOGAR RESULTADO
-      console.log('DATA:', data);
-      console.log('ERROR:', error);
+      // If optional columns do not exist yet in Supabase (e.g. background_color, text_color, segment), retry without them
+      if (error && error.message?.includes('column')) {
+        console.warn('⚠️ Coluna opcional ainda não existe no Supabase. Removendo campos não existentes e retentando...', error.message);
+        if (error.message.includes('background_color')) delete updateData.background_color;
+        if (error.message.includes('text_color')) delete updateData.text_color;
+        if (error.message.includes('segment')) delete updateData.segment;
 
-      // 4. TRATAR ERRO
+        const retry = await supabase
+          .from('barbershops')
+          .update(updateData)
+          .eq('id', targetId)
+          .select();
+        
+        if (retry.error && retry.error.message?.includes('column')) {
+          if (retry.error.message.includes('background_color')) delete updateData.background_color;
+          if (retry.error.message.includes('text_color')) delete updateData.text_color;
+          if (retry.error.message.includes('segment')) delete updateData.segment;
+          const retry2 = await supabase
+            .from('barbershops')
+            .update(updateData)
+            .eq('id', targetId)
+            .select();
+          data = retry2.data;
+          error = retry2.error;
+        } else {
+          data = retry.data;
+          error = retry.error;
+        }
+      }
+
+      // 3. TRATAR ERRO
       if (error) {
         console.error('🚨 ERRO NO UPDATE:', error.message);
         return res.status(400).json({ error });
       }
 
-      // 5. ENTREGAR
+      const updatedShop = data?.[0] || {};
       return res.json({
         success: true,
-        data: data?.[0]
+        data: {
+          ...updatedShop,
+          primary_color: primaryColor || updatedShop.primary_color,
+          primaryColor: primaryColor || updatedShop.primary_color,
+          secondary_color: backgroundColor || updatedShop.secondary_color,
+          secondaryColor: backgroundColor || updatedShop.secondary_color,
+          background_color: backgroundColor || updatedShop.background_color,
+          backgroundColor: backgroundColor || updatedShop.background_color,
+          text_color: textColor || updatedShop.text_color,
+          textColor: textColor || updatedShop.text_color,
+          booking_layout: bookingLayoutPayload
+        }
       });
 
     } catch (e: any) {
@@ -1006,8 +1218,8 @@ async function startServer() {
       let query = supabase
         .from('appointments')
         .select(`
-          id, date, start_time, end_time, status,
-          clients (name, phone),
+          id, date, start_time, end_time, status, client_id,
+          clients (id, name, phone),
           barbers (name),
           services (name, price)
         `)
@@ -1027,6 +1239,7 @@ async function startServer() {
         startTime: apt.start_time,
         endTime: apt.end_time,
         status: apt.status,
+        clientId: (apt.clients as any)?.id || apt.client_id,
         clientName: (apt.clients as any)?.name,
         clientPhone: (apt.clients as any)?.phone,
         barberName: (apt.barbers as any)?.name,
@@ -1183,40 +1396,81 @@ async function startServer() {
         .eq('barbershop_id', req.user.barbershopId);
         
       if (error) throw error;
-      res.json(barbersList || []);
+      res.json((barbersList || []).map((b: any) => ({
+        ...b,
+        service_ids: Array.isArray(b.service_ids) ? b.service_ids : []
+      })));
     } catch (error) {
       res.status(500).json({ error: 'Erro ao buscar profissionais' });
     }
   });
 
   api.post('/admin/barbers', authenticateToken, async (req: any, res) => {
-    const { name } = req.body;
+    const { name, commission_percentage, service_ids } = req.body;
     try {
       const id = crypto.randomUUID();
-      const { error } = await supabase.from('barbers').insert({
+      const insertData: any = {
         id,
         barbershop_id: req.user.barbershopId,
         name,
         active: true
-      });
+      };
+      if (commission_percentage !== undefined) {
+        insertData.commission_percentage = commission_percentage;
+      }
+      if (Array.isArray(service_ids)) {
+        insertData.service_ids = service_ids;
+      }
+
+      let { error } = await supabase.from('barbers').insert(insertData);
+
+      // If service_ids or commission_percentage column doesn't exist yet, retry safely
+      if (error && error.message?.includes('service_ids')) {
+        console.warn('[DB_FALLBACK] service_ids column not yet migrated in Supabase. Inserting without it.');
+        delete insertData.service_ids;
+        const retry = await supabase.from('barbers').insert(insertData);
+        error = retry.error;
+      }
+
       if (error) throw error;
       res.json({ success: true, id });
     } catch (error) {
+      console.error('[CREATE_BARBER_ERROR]', error);
       res.status(500).json({ error: 'Erro ao criar profissional' });
     }
   });
 
   api.patch('/admin/barbers/:id', authenticateToken, async (req: any, res) => {
-    const { active, name } = req.body;
+    const { active, name, commission_percentage, service_ids } = req.body;
     try {
-      const { error } = await supabase
+      const updateData: any = {};
+      if (active !== undefined) updateData.active = active;
+      if (name !== undefined) updateData.name = name;
+      if (commission_percentage !== undefined) updateData.commission_percentage = commission_percentage;
+      if (service_ids !== undefined && Array.isArray(service_ids)) updateData.service_ids = service_ids;
+
+      let { error } = await supabase
         .from('barbers')
-        .update({ active, name })
+        .update(updateData)
         .eq('id', req.params.id)
         .eq('barbershop_id', req.user.barbershopId);
+
+      // If service_ids does not exist yet, retry without it
+      if (error && error.message?.includes('service_ids')) {
+        console.warn('[DB_FALLBACK] service_ids column not yet migrated in Supabase. Updating without it.');
+        delete updateData.service_ids;
+        const retry = await supabase
+          .from('barbers')
+          .update(updateData)
+          .eq('id', req.params.id)
+          .eq('barbershop_id', req.user.barbershopId);
+        error = retry.error;
+      }
+
       if (error) throw error;
       res.json({ success: true });
     } catch (error) {
+      console.error('[UPDATE_BARBER_ERROR]', error);
       res.status(500).json({ error: 'Erro ao atualizar profissional' });
     }
   });
@@ -1529,6 +1783,670 @@ async function startServer() {
     }
   });
 
+  // --- CLIENT CLINICAL RECORDS & ANAMNESIS (NICHE: PSYCHOLOGY & OTHERS) ---
+  api.get('/admin/clients/:id/records', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    try {
+      // 1. Fetch client details
+      const { data: client, error: clientErr } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('id', clientId)
+        .eq('barbershop_id', barbershopId)
+        .single();
+
+      if (clientErr || !client) {
+        return res.status(404).json({ error: 'Cliente não encontrado' });
+      }
+
+      // 2. Fetch clinical notes
+      const notes = nicheDb.getNotesByClient(barbershopId, clientId);
+
+      // 3. Fetch anamnesis
+      const anamnesis = nicheDb.getAnamnesis(barbershopId, clientId);
+
+      // 4. Fetch client appointments history
+      const { data: appts } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('client_id', clientId)
+        .eq('barbershop_id', barbershopId)
+        .order('date', { ascending: false });
+
+      // Fetch service and barber names for human-readable display
+      const { data: services } = await supabase
+        .from('services')
+        .select('id, name')
+        .eq('barbershop_id', barbershopId);
+
+      const { data: barbers } = await supabase
+        .from('barbers')
+        .select('id, name')
+        .eq('barbershop_id', barbershopId);
+
+      const enrichedAppts = (appts || []).map(a => {
+        const s = (services || []).find(srv => srv.id === a.service_id);
+        const b = (barbers || []).find(brb => brb.id === a.barber_id);
+        return {
+          ...a,
+          serviceName: s?.name || 'Sessão / Consulta',
+          barberName: b?.name || 'Profissional'
+        };
+      });
+
+      res.json({
+        client,
+        notes,
+        anamnesis,
+        appointments: enrichedAppts
+      });
+    } catch (error: any) {
+      console.error('[CLIENT_RECORDS_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar prontuário do cliente' });
+    }
+  });
+
+  api.post('/admin/clients/:id/notes', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const { 
+      title, 
+      content, 
+      session_date, 
+      session_time, 
+      patient_mood, 
+      therapeutic_goals, 
+      techniques_used, 
+      is_private 
+    } = req.body;
+
+    if (!title || !content) {
+      return res.status(400).json({ error: 'Título e conteúdo da anotação são obrigatórios' });
+    }
+
+    try {
+      const id = crypto.randomUUID();
+      const newNote = nicheDb.createNote({
+        id,
+        barbershop_id: barbershopId,
+        client_id: clientId,
+        author_name: req.user.email || 'Psicólogo(a)',
+        session_date: session_date || new Date().toISOString().split('T')[0],
+        session_time: session_time || undefined,
+        title,
+        content,
+        patient_mood,
+        therapeutic_goals,
+        techniques_used,
+        is_private: is_private !== undefined ? (is_private ? 1 : 0) : 1
+      });
+
+      res.json({ success: true, note: newNote });
+    } catch (error: any) {
+      console.error('[CREATE_NOTE_ERR]', error);
+      res.status(500).json({ error: 'Erro ao registrar anotação clínica' });
+    }
+  });
+
+  api.put('/admin/clients/:id/notes/:noteId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const noteId = req.params.noteId;
+    const { 
+      title, 
+      content, 
+      session_date, 
+      session_time, 
+      patient_mood, 
+      therapeutic_goals, 
+      techniques_used, 
+      is_private 
+    } = req.body;
+
+    try {
+      const updated = nicheDb.updateNote(noteId, barbershopId, {
+        title,
+        content,
+        session_date,
+        session_time,
+        patient_mood,
+        therapeutic_goals,
+        techniques_used,
+        is_private: is_private !== undefined ? (is_private ? 1 : 0) : undefined
+      });
+
+      if (!updated) {
+        return res.status(404).json({ error: 'Anotação não encontrada' });
+      }
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[UPDATE_NOTE_ERR]', error);
+      res.status(500).json({ error: 'Erro ao atualizar anotação clínica' });
+    }
+  });
+
+  api.delete('/admin/clients/:id/notes/:noteId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const noteId = req.params.noteId;
+
+    try {
+      const deleted = nicheDb.deleteNote(noteId, barbershopId);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Anotação não encontrada' });
+      }
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[DELETE_NOTE_ERR]', error);
+      res.status(500).json({ error: 'Erro ao excluir anotação' });
+    }
+  });
+
+  api.post('/admin/clients/:id/anamnesis', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const {
+      chief_complaint,
+      history_of_problem,
+      family_medical_history,
+      current_medications,
+      emergency_contact_name,
+      emergency_contact_phone,
+      notes
+    } = req.body;
+
+    try {
+      const anamnesis = nicheDb.upsertAnamnesis({
+        client_id: clientId,
+        barbershop_id: barbershopId,
+        chief_complaint,
+        history_of_problem,
+        family_medical_history,
+        current_medications,
+        emergency_contact_name,
+        emergency_contact_phone,
+        notes
+      });
+
+      res.json({ success: true, anamnesis });
+    } catch (error: any) {
+      console.error('[ANAMNESIS_ERR]', error);
+      res.status(500).json({ error: 'Erro ao salvar ficha de anamnese' });
+    }
+  });
+
+  // --- NICHE 2: AESTHETICS & BEAUTY (ANAMNESIS, BEFORE/AFTER PHOTOS, TOUCHUP CYCLES) ---
+  api.get('/admin/clients/:id/aesthetics', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+
+    try {
+      const anamnesis = nicheDb.getAestheticsAnamnesis(barbershopId, clientId);
+      const photos = nicheDb.getAestheticsPhotos(barbershopId, clientId);
+      const touchups = nicheDb.getAestheticsTouchups(barbershopId, clientId);
+
+      res.json({
+        anamnesis: anamnesis || {
+          skin_phototype: '',
+          skin_type: '',
+          allergies: '',
+          contraindications: '',
+          main_complaints: '',
+          home_care_routine: '',
+          treatment_plan: '',
+          notes: ''
+        },
+        photos: photos || [],
+        touchups: touchups || []
+      });
+    } catch (error: any) {
+      console.error('[AESTHETICS_GET_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar dados de estética da cliente' });
+    }
+  });
+
+  api.post('/admin/clients/:id/aesthetics/anamnesis', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const {
+      skin_phototype,
+      skin_type,
+      allergies,
+      contraindications,
+      main_complaints,
+      home_care_routine,
+      treatment_plan,
+      notes
+    } = req.body;
+
+    try {
+      const anamnesis = nicheDb.upsertAestheticsAnamnesis({
+        client_id: clientId,
+        barbershop_id: barbershopId,
+        skin_phototype,
+        skin_type,
+        allergies,
+        contraindications,
+        main_complaints,
+        home_care_routine,
+        treatment_plan,
+        notes
+      });
+
+      res.json({ success: true, anamnesis });
+    } catch (error: any) {
+      console.error('[AESTHETICS_ANAMNESIS_ERR]', error);
+      res.status(500).json({ error: 'Erro ao salvar anamnese estética' });
+    }
+  });
+
+  api.post('/admin/clients/:id/aesthetics/photos', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const { procedure_name, date, before_photo_url, after_photo_url, notes } = req.body;
+
+    if (!procedure_name) {
+      return res.status(400).json({ error: 'Nome do procedimento é obrigatório' });
+    }
+
+    try {
+      const id = crypto.randomUUID();
+      const photoRecord = nicheDb.addAestheticsPhoto({
+        id,
+        barbershop_id: barbershopId,
+        client_id: clientId,
+        procedure_name,
+        date: date || new Date().toISOString().split('T')[0],
+        before_photo_url,
+        after_photo_url,
+        notes
+      });
+
+      res.json({ success: true, photo: photoRecord });
+    } catch (error: any) {
+      console.error('[AESTHETICS_PHOTO_ERR]', error);
+      res.status(500).json({ error: 'Erro ao salvar fotos de evolução' });
+    }
+  });
+
+  api.delete('/admin/clients/:id/aesthetics/photos/:photoId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const photoId = req.params.photoId;
+
+    try {
+      const deleted = nicheDb.deleteAestheticsPhoto(photoId, barbershopId);
+      if (!deleted) return res.status(404).json({ error: 'Registro fotográfico não encontrado' });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[AESTHETICS_PHOTO_DEL_ERR]', error);
+      res.status(500).json({ error: 'Erro ao excluir registro fotográfico' });
+    }
+  });
+
+  api.post('/admin/clients/:id/aesthetics/touchups', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const { procedure_name, performed_date, return_due_date, interval_days, notes } = req.body;
+
+    if (!procedure_name || !return_due_date) {
+      return res.status(400).json({ error: 'Procedimento e data de retorno são obrigatórios' });
+    }
+
+    try {
+      const id = crypto.randomUUID();
+      const touchup = nicheDb.createAestheticsTouchup({
+        id,
+        barbershop_id: barbershopId,
+        client_id: clientId,
+        procedure_name,
+        performed_date: performed_date || new Date().toISOString().split('T')[0],
+        return_due_date,
+        interval_days: Number(interval_days || 15),
+        status: 'pending',
+        notes
+      });
+
+      res.json({ success: true, touchup });
+    } catch (error: any) {
+      console.error('[AESTHETICS_TOUCHUP_ERR]', error);
+      res.status(500).json({ error: 'Erro ao criar alerta de retorno/retoque' });
+    }
+  });
+
+  api.patch('/admin/clients/:id/aesthetics/touchups/:touchupId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const touchupId = req.params.touchupId;
+    const { status } = req.body;
+
+    if (!['pending', 'contacted', 'completed'].includes(status)) {
+      return res.status(400).json({ error: 'Status inválido' });
+    }
+
+    try {
+      const updated = nicheDb.updateAestheticsTouchupStatus(touchupId, barbershopId, status);
+      if (!updated) return res.status(404).json({ error: 'Alerta de retorno não encontrado' });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[AESTHETICS_TOUCHUP_PATCH_ERR]', error);
+      res.status(500).json({ error: 'Erro ao atualizar status do retorno' });
+    }
+  });
+
+  api.delete('/admin/clients/:id/aesthetics/touchups/:touchupId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const touchupId = req.params.touchupId;
+
+    try {
+      const deleted = nicheDb.deleteAestheticsTouchup(touchupId, barbershopId);
+      if (!deleted) return res.status(404).json({ error: 'Alerta não encontrado' });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[AESTHETICS_TOUCHUP_DEL_ERR]', error);
+      res.status(500).json({ error: 'Erro ao excluir alerta de retorno' });
+    }
+  });
+
+  // --- NICHE: PET SHOP & BANHO E TOSA ---
+  api.get('/admin/clients/:id/pets', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+
+    try {
+      const pets = nicheDb.getPets(barbershopId, clientId);
+      res.json({ pets });
+    } catch (error: any) {
+      console.error('[PETS_GET_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar pets do cliente' });
+    }
+  });
+
+  api.post('/admin/clients/:id/pets', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const { pet_name, species, breed, size, coat_type, birth_year, temperament, allergies_medical, special_instructions } = req.body;
+
+    if (!pet_name) {
+      return res.status(400).json({ error: 'Nome do pet é obrigatório' });
+    }
+
+    try {
+      const id = crypto.randomUUID();
+      const pet = nicheDb.createPet({
+        id,
+        barbershop_id: barbershopId,
+        client_id: clientId,
+        pet_name,
+        species: species || 'Cão',
+        breed,
+        size,
+        coat_type,
+        birth_year,
+        temperament,
+        allergies_medical,
+        special_instructions
+      });
+
+      res.json({ success: true, pet });
+    } catch (error: any) {
+      console.error('[PETS_POST_ERR]', error);
+      res.status(500).json({ error: 'Erro ao cadastrar pet' });
+    }
+  });
+
+  api.delete('/admin/clients/:id/pets/:petId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const petId = req.params.petId;
+
+    try {
+      const deleted = nicheDb.deletePet(petId, barbershopId);
+      if (!deleted) return res.status(404).json({ error: 'Pet não encontrado' });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[PETS_DEL_ERR]', error);
+      res.status(500).json({ error: 'Erro ao remover pet' });
+    }
+  });
+
+  // --- NICHE: OFICINA MECÂNICA & ESTÉTICA AUTOMOTIVA ---
+  api.get('/admin/clients/:id/vehicles', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+
+    try {
+      const vehicles = nicheDb.getVehicles(barbershopId, clientId);
+      res.json({ vehicles });
+    } catch (error: any) {
+      console.error('[VEHICLES_GET_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar veículos do cliente' });
+    }
+  });
+
+  api.post('/admin/clients/:id/vehicles', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const { plate, brand, model, year, color, current_km, next_oil_change_km, fuel_level, pre_existing_damages, notes } = req.body;
+
+    if (!plate || !brand || !model) {
+      return res.status(400).json({ error: 'Placa, marca e modelo são obrigatórios' });
+    }
+
+    try {
+      const id = crypto.randomUUID();
+      const vehicle = nicheDb.createVehicle({
+        id,
+        barbershop_id: barbershopId,
+        client_id: clientId,
+        plate,
+        brand,
+        model,
+        year,
+        color,
+        current_km: current_km ? Number(current_km) : undefined,
+        next_oil_change_km: next_oil_change_km ? Number(next_oil_change_km) : undefined,
+        fuel_level,
+        pre_existing_damages,
+        notes
+      });
+
+      res.json({ success: true, vehicle });
+    } catch (error: any) {
+      console.error('[VEHICLES_POST_ERR]', error);
+      res.status(500).json({ error: 'Erro ao registrar veículo' });
+    }
+  });
+
+  api.delete('/admin/clients/:id/vehicles/:vehicleId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const vehicleId = req.params.vehicleId;
+
+    try {
+      const deleted = nicheDb.deleteVehicle(vehicleId, barbershopId);
+      if (!deleted) return res.status(404).json({ error: 'Veículo não encontrado' });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[VEHICLES_DEL_ERR]', error);
+      res.status(500).json({ error: 'Erro ao remover veículo' });
+    }
+  });
+
+  // --- NICHE: BARBEARIA & SALÃO (PREFERÊNCIAS & COLORAÇÃO) ---
+  api.get('/admin/clients/:id/style-preferences', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+
+    try {
+      const preferences = nicheDb.getStylePreferences(barbershopId, clientId);
+      res.json({
+        preferences: preferences || {
+          hair_cut_style: '',
+          beard_style: '',
+          blade_sizes: '',
+          hair_color_formula: '',
+          shampoo_preference: '',
+          aftershave_allergies: '',
+          notes: ''
+        }
+      });
+    } catch (error: any) {
+      console.error('[STYLE_PREFS_GET_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar preferências de estilo' });
+    }
+  });
+
+  api.post('/admin/clients/:id/style-preferences', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const { hair_cut_style, beard_style, blade_sizes, hair_color_formula, shampoo_preference, aftershave_allergies, notes } = req.body;
+
+    try {
+      const preferences = nicheDb.upsertStylePreferences({
+        client_id: clientId,
+        barbershop_id: barbershopId,
+        hair_cut_style,
+        beard_style,
+        blade_sizes,
+        hair_color_formula,
+        shampoo_preference,
+        aftershave_allergies,
+        notes
+      });
+
+      res.json({ success: true, preferences });
+    } catch (error: any) {
+      console.error('[STYLE_PREFS_POST_ERR]', error);
+      res.status(500).json({ error: 'Erro ao salvar preferências de estilo e coloração' });
+    }
+  });
+
+  // --- NICHE: PERSONAL TRAINER & PILATES & NUTRIÇÃO ---
+  api.get('/admin/clients/:id/fitness-assessments', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+
+    try {
+      const assessments = nicheDb.getFitnessAssessments(barbershopId, clientId);
+      res.json({ assessments });
+    } catch (error: any) {
+      console.error('[FITNESS_GET_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar avaliações físicas' });
+    }
+  });
+
+  api.post('/admin/clients/:id/fitness-assessments', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const {
+      assessment_date, weight_kg, height_cm, body_fat_pct, muscle_mass_kg,
+      chest_cm, waist_cm, abdomen_cm, hips_cm, arms_cm, thighs_cm,
+      physical_restrictions, training_goal, workout_prescription, notes
+    } = req.body;
+
+    try {
+      const id = crypto.randomUUID();
+      const assessment = nicheDb.createFitnessAssessment({
+        id,
+        barbershop_id: barbershopId,
+        client_id: clientId,
+        assessment_date: assessment_date || new Date().toISOString().split('T')[0],
+        weight_kg: weight_kg ? Number(weight_kg) : undefined,
+        height_cm: height_cm ? Number(height_cm) : undefined,
+        body_fat_pct: body_fat_pct ? Number(body_fat_pct) : undefined,
+        muscle_mass_kg: muscle_mass_kg ? Number(muscle_mass_kg) : undefined,
+        chest_cm: chest_cm ? Number(chest_cm) : undefined,
+        waist_cm: waist_cm ? Number(waist_cm) : undefined,
+        abdomen_cm: abdomen_cm ? Number(abdomen_cm) : undefined,
+        hips_cm: hips_cm ? Number(hips_cm) : undefined,
+        arms_cm: arms_cm ? Number(arms_cm) : undefined,
+        thighs_cm: thighs_cm ? Number(thighs_cm) : undefined,
+        physical_restrictions,
+        training_goal,
+        workout_prescription,
+        notes
+      });
+
+      res.json({ success: true, assessment });
+    } catch (error: any) {
+      console.error('[FITNESS_POST_ERR]', error);
+      res.status(500).json({ error: 'Erro ao salvar avaliação física' });
+    }
+  });
+
+  api.delete('/admin/clients/:id/fitness-assessments/:assessmentId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const assessmentId = req.params.assessmentId;
+
+    try {
+      const deleted = nicheDb.deleteFitnessAssessment(assessmentId, barbershopId);
+      if (!deleted) return res.status(404).json({ error: 'Avaliação não encontrada' });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[FITNESS_DEL_ERR]', error);
+      res.status(500).json({ error: 'Erro ao excluir avaliação física' });
+    }
+  });
+
+  // --- NICHE: TATTOO & PIERCING ---
+  api.get('/admin/clients/:id/tattoo-records', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+
+    try {
+      const records = nicheDb.getTattooRecords(barbershopId, clientId);
+      res.json({ records });
+    } catch (error: any) {
+      console.error('[TATTOO_GET_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar registros de tatuagem/piercing' });
+    }
+  });
+
+  api.post('/admin/clients/:id/tattoo-records', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const { title, placement, style, needle_batch, ink_batch, session_date, healing_stage, consent_signed, aftercare_instructions, notes } = req.body;
+
+    if (!title || !placement) {
+      return res.status(400).json({ error: 'Título do projeto e local do corpo são obrigatórios' });
+    }
+
+    try {
+      const id = crypto.randomUUID();
+      const record = nicheDb.createTattooRecord({
+        id,
+        barbershop_id: barbershopId,
+        client_id: clientId,
+        title,
+        placement,
+        style,
+        needle_batch,
+        ink_batch,
+        session_date: session_date || new Date().toISOString().split('T')[0],
+        healing_stage: healing_stage || 'Recente',
+        consent_signed: consent_signed !== undefined ? (consent_signed ? 1 : 0) : 1,
+        aftercare_instructions,
+        notes
+      });
+
+      res.json({ success: true, record });
+    } catch (error: any) {
+      console.error('[TATTOO_POST_ERR]', error);
+      res.status(500).json({ error: 'Erro ao registrar sessão de tatuagem/piercing' });
+    }
+  });
+
+  api.delete('/admin/clients/:id/tattoo-records/:recordId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const recordId = req.params.recordId;
+
+    try {
+      const deleted = nicheDb.deleteTattooRecord(recordId, barbershopId);
+      if (!deleted) return res.status(404).json({ error: 'Registro não encontrado' });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[TATTOO_DEL_ERR]', error);
+      res.status(500).json({ error: 'Erro ao excluir registro de tatuagem' });
+    }
+  });
+
   // --- CAMPAIGNS ---
   api.post('/admin/campaigns', authenticateToken, async (req: any, res) => {
     const { name, messageTemplate, daysActive } = req.body;
@@ -1613,7 +2531,7 @@ async function startServer() {
 
   // Create new shop + master user
   api.post('/admin/master/shops', authenticateToken, requireMaster, async (req, res) => {
-    const { name, slug, email, password } = req.body;
+    const { name, slug, email, password, segment } = req.body;
     
     if (!name || !slug || !email || !password) {
       return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
@@ -1644,14 +2562,16 @@ async function startServer() {
         return res.status(400).json({ error: 'Este email já está cadastrado.' });
       }
 
-      // Create shop
+      // Create shop with segment / business_type
       const shopId = crypto.randomUUID();
+      const shopType = req.body.business_type || req.body.businessType || segment || 'barbershop';
       const { error: shopErr } = await supabase
         .from('barbershops')
         .insert({
           id: shopId,
           name,
           slug: cleanSlug,
+          segment: shopType,
         });
 
       if (shopErr) throw shopErr;
@@ -1732,6 +2652,44 @@ async function startServer() {
       res.json({ success: true, expires_at });
     } catch (e: any) {
       res.status(500).json({ error: 'Erro ao alterar data de expiração' });
+    }
+  });
+
+  // Update shop segment / business_type (Master only)
+  api.patch('/admin/master/shops/:id/segment', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const targetType = req.body.business_type || req.body.businessType || req.body.segment;
+
+      if (!targetType) {
+        return res.status(400).json({ error: 'business_type ou segment é obrigatório' });
+      }
+
+      const { error } = await supabase
+        .from('barbershops')
+        .update({ 
+          segment: targetType, 
+          business_type: targetType, // If column exists in Supabase, update it too
+          updated_at: new Date().toISOString() 
+        })
+        .eq('id', id);
+
+      if (error) {
+        // Fallback without business_type if column is named segment
+        const { error: fallbackErr } = await supabase
+          .from('barbershops')
+          .update({ 
+            segment: targetType, 
+            updated_at: new Date().toISOString() 
+          })
+          .eq('id', id);
+
+        if (fallbackErr) throw fallbackErr;
+      }
+
+      res.json({ success: true, business_type: targetType, segment: targetType });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao alterar segmento do estabelecimento', details: e.message });
     }
   });
 
@@ -1863,6 +2821,11 @@ async function startServer() {
 
   app.use('/api', api);
 
+  // Catch-all for unhandled API routes so they return JSON 404 rather than Vite index.html
+  app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: `Rota API não encontrada: ${req.method} ${req.originalUrl}` });
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1893,8 +2856,16 @@ async function startServer() {
         ];
 
         for (const u of masterUsers) {
-          const { data: existingUser } = await supabase.from('users').select('id').eq('email', u.email).maybeSingle();
+          const { data: existingUser, error: checkErr } = await supabase.from('users').select('id').eq('email', u.email).maybeSingle();
           
+          if (checkErr && (checkErr.message?.includes('fetch failed') || (checkErr as any).message?.includes('ENOTFOUND'))) {
+            console.error('\n[CRITICAL ERROR] 🚨 SUPABASE PROJECT PAUSED OR UNREACHABLE 🚨');
+            console.error('The application cannot connect to Supabase (ENOTFOUND).');
+            console.error('This usually happens when your Supabase Free Tier project is paused due to inactivity.');
+            console.error('Please log in to your Supabase dashboard and restore your project.');
+            break; // Stop trying if we can't even connect
+          }
+
           if (existingUser) {
             const { error } = await supabase.from('users').update({ role: 'master' }).eq('email', u.email);
             if (!error) console.log(`[STARTUP] Updated ${u.email} to master.`);
@@ -1912,8 +2883,16 @@ async function startServer() {
             if (error) console.error(`[STARTUP] Failed to create ${u.email}:`, error);
           }
         }
-      } catch (e) {
-        console.error('[STARTUP_SYNC_FAILED]', e);
+      } catch (e: any) {
+        if (e?.message?.includes('fetch failed') || e?.message?.includes('ENOTFOUND')) {
+          console.error('\n[CRITICAL ERROR] 🚨 SUPABASE PROJECT PAUSED OR UNREACHABLE 🚨');
+          console.error('The application cannot connect to Supabase (ENOTFOUND).');
+          console.error('This usually happens when your Supabase Free Tier project is paused due to inactivity.');
+          console.error('Please log in to your Supabase dashboard and restore your project.');
+          console.error(`URL attempted: ${process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL}\n`);
+        } else {
+          console.error('[STARTUP_SYNC_FAILED]', e);
+        }
       }
     });
   }

@@ -1,11 +1,13 @@
-// watch triggered
 import React, { useState, useEffect } from 'react';
-import { Calendar as CalendarIcon, Clock, User, Scissors, Check, X, ShieldAlert, Plus } from 'lucide-react';
+import { Calendar as CalendarIcon, Clock, User, Scissors, Check, X, ShieldAlert, Plus, Brain, Sparkles } from 'lucide-react';
+import PatientRecordModal from '../../components/PatientRecordModal';
 
 export default function Agenda() {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
   const [appointments, setAppointments] = useState<any[]>([]);
   const [filterStatus, setFilterStatus] = useState('all');
+  const [segment, setSegment] = useState('barbershop');
+  const [selectedClientForRecord, setSelectedClientForRecord] = useState<any | null>(null);
   
   const [barbersListOptions, setBarbersListOptions] = useState<any[]>([]);
   const [servicesListOptions, setServicesListOptions] = useState<any[]>([]);
@@ -72,6 +74,12 @@ export default function Agenda() {
   useEffect(() => {
     fetchAppointments();
     loadOptions();
+
+    const token = localStorage.getItem('token');
+    fetch('/api/admin/shop-info', { headers: { 'Authorization': `Bearer ${token}` } })
+      .then(res => res.json())
+      .then(data => { if (data?.segment) setSegment(data.segment); })
+      .catch(console.error);
   }, [date]);
 
   const updateStatus = async (id: string, status: string) => {
@@ -239,6 +247,35 @@ export default function Agenda() {
                               )}
                               {isCompleted && <div className="text-xs font-medium text-green-600 dark:text-green-400 mt-2">Concluído ✓</div>}
                               {isCancelled && <div className="text-xs font-medium text-red-500 dark:text-red-400 mt-2">Cancelado ✖</div>}
+
+                              {(apt.clientId || apt.clientName) && (
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedClientForRecord({
+                                    id: apt.clientId || apt.id,
+                                    name: apt.clientName,
+                                    phone: apt.clientPhone || ''
+                                  })}
+                                  className={`mt-2.5 w-full flex items-center justify-center gap-1.5 py-1 px-2 rounded-lg text-[11px] font-bold transition-colors ${
+                                    segment === 'aesthetics' || segment === 'lash_design' || segment === 'beauty_salon'
+                                      ? 'bg-[#E0A98B]/15 text-[#C47C62] dark:text-[#E0A98B] border border-[#E0A98B]/30 hover:bg-[#E0A98B]/25'
+                                      : 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/50'
+                                  }`}
+                                >
+                                  {segment === 'aesthetics' || segment === 'lash_design' || segment === 'beauty_salon' ? (
+                                    <Sparkles className="w-3.5 h-3.5 text-[#C47C62] dark:text-[#E0A98B]" />
+                                  ) : (
+                                    <Brain className="w-3.5 h-3.5 text-indigo-500" />
+                                  )}
+                                  <span>
+                                    {segment === 'aesthetics' || segment === 'lash_design' || segment === 'beauty_salon'
+                                      ? 'Ficha Estética / Fotos' 
+                                      : segment === 'psychology' 
+                                      ? 'Prontuário / Evolução' 
+                                      : 'Ficha / Anotações'}
+                                  </span>
+                                </button>
+                              )}
                             </div>
                           ) : (
                             <div className="flex flex-col h-full justify-between">
@@ -339,6 +376,17 @@ export default function Agenda() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Patient Record Modal */}
+      {selectedClientForRecord && (
+        <PatientRecordModal
+          clientId={selectedClientForRecord.id}
+          clientName={selectedClientForRecord.name || 'Paciente'}
+          clientPhone={selectedClientForRecord.phone || ''}
+          segment={segment}
+          onClose={() => setSelectedClientForRecord(null)}
+        />
       )}
     </div>
   );

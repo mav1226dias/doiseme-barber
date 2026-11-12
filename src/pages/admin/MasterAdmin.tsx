@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Shield, Users, Server, Database, Activity, Lock, Plus, Globe, Mail, Key, Trash2,
-  ShieldCheck, ShieldAlert, Calendar, ExternalLink, Unlock, CheckCircle2, XCircle
+  ShieldCheck, ShieldAlert, Calendar, ExternalLink, Unlock, CheckCircle2, XCircle, Sparkles
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
+import { SEGMENTS, getSegment } from '../../lib/segments';
+import { useBusinessConfig } from '../../hooks/useBusinessConfig';
+import { SegmentIcon } from '../../components/SegmentIcon';
 
 export default function MasterAdmin() {
   const navigate = useNavigate();
@@ -23,7 +26,8 @@ export default function MasterAdmin() {
     name: '',
     slug: '',
     email: '',
-    password: ''
+    password: '',
+    segment: 'barbershop'
   });
 
   const fetchMasterData = async () => {
@@ -102,6 +106,15 @@ export default function MasterAdmin() {
     }
   };
 
+  const { setBusinessTypeForShop } = useBusinessConfig();
+
+  const handleUpdateSegment = async (shopId: string, segment: string) => {
+    const success = await setBusinessTypeForShop(shopId, segment);
+    if (success) {
+      fetchMasterData();
+    }
+  };
+
   const handleEnterDashboard = async (shopId: string) => {
     const token = localStorage.getItem('token');
     try {
@@ -167,12 +180,12 @@ export default function MasterAdmin() {
       }
       
       if (res.ok) {
-        toast.success('Barbearia criada com sucesso!');
-        setNewShop({ name: '', slug: '', email: '', password: '' });
+        toast.success('Estabelecimento cadastrado com sucesso!');
+        setNewShop({ name: '', slug: '', email: '', password: '', segment: 'barbershop' });
         setShowForm(false);
         fetchMasterData();
       } else {
-        toast.error(data.error || 'Erro ao criar barbearia');
+        toast.error(data.error || 'Erro ao criar estabelecimento');
       }
     } catch (e) {
       toast.error('Erro de conexão com o servidor');
@@ -190,24 +203,24 @@ export default function MasterAdmin() {
           </div>
           <div>
             <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Painel Master</h1>
-            <p className="text-gray-500 dark:text-gray-400 mt-1">Controle global do ecossistema Doiseme.</p>
+            <p className="text-gray-500 dark:text-gray-400 mt-1">Controle global do ecossistema e nichos de mercado.</p>
           </div>
         </div>
         <button 
           onClick={() => setShowForm(!showForm)}
           className="flex items-center gap-2 bg-black dark:bg-[#D4AF37] text-white px-6 py-3 rounded-xl font-bold hover:opacity-90 transition-opacity shadow-lg"
         >
-          <Plus className="w-5 h-5" /> Cadastrar Barbearia
+          <Plus className="w-5 h-5" /> Cadastrar Estabelecimento
         </button>
       </div>
 
       {showForm && (
         <div className="bg-white dark:bg-zinc-900 p-6 rounded-3xl border-2 border-dashed border-gray-200 dark:border-zinc-800 animate-in fade-in slide-in-from-top-4">
-          <h2 className="text-xl font-bold mb-6">Nova Barbearia</h2>
+          <h2 className="text-xl font-bold mb-6">Novo Estabelecimento</h2>
           <form onSubmit={handleCreateShop} className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Nome da Barbearia</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Nome do Estabelecimento</label>
                 <div className="relative">
                   <Server className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
                   <input 
@@ -215,11 +228,31 @@ export default function MasterAdmin() {
                     required
                     value={newShop.name}
                     onChange={e => setNewShop({...newShop, name: e.target.value})}
-                    placeholder="Ex: Barber Shop Central"
+                    placeholder="Ex: Studio Bella Lash / Clínica Vitta"
                     className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl pl-10 pr-4 py-2.5 outline-none focus:border-[#D4AF37]"
                   />
                 </div>
               </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Nicho / Segmento</label>
+                <div className="relative">
+                  <Sparkles className="absolute left-3 top-3 w-5 h-5 text-[#D4AF37]" />
+                  <select
+                    value={newShop.segment}
+                    onChange={e => setNewShop({...newShop, segment: e.target.value})}
+                    className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl pl-10 pr-4 py-2.5 outline-none focus:border-[#D4AF37] text-gray-900 dark:text-gray-100"
+                  >
+                    {Object.values(SEGMENTS).map(seg => (
+                      <option key={seg.id} value={seg.id}>
+                        {seg.name} ({seg.terms.business})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p className="text-[10px] text-gray-500 mt-1">O sistema carregará automaticamente termos e layout deste nicho.</p>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Link (Slug)</label>
                 <div className="relative">
@@ -229,11 +262,11 @@ export default function MasterAdmin() {
                     required
                     value={newShop.slug}
                     onChange={e => setNewShop({...newShop, slug: e.target.value})}
-                    placeholder="ex: barber-central"
+                    placeholder="ex: clinica-vitta"
                     className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl pl-10 pr-4 py-2.5 outline-none focus:border-[#D4AF37]"
                   />
                 </div>
-                <p className="text-[10px] text-gray-500 mt-1 italic">Este será o link de agendamento: doiseme.com/b/{newShop.slug || 'slug'}</p>
+                <p className="text-[10px] text-gray-500 mt-1 italic">Link de agendamento: doiseme.com/b/{newShop.slug || 'slug'}</p>
               </div>
             </div>
 
@@ -247,7 +280,7 @@ export default function MasterAdmin() {
                     required
                     value={newShop.email}
                     onChange={e => setNewShop({...newShop, email: e.target.value})}
-                    placeholder="admin@loja.com"
+                    placeholder="admin@empresa.com"
                     className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl pl-10 pr-4 py-2.5 outline-none focus:border-[#D4AF37]"
                   />
                 </div>
@@ -339,6 +372,7 @@ export default function MasterAdmin() {
             <thead>
               <tr className="bg-gray-50 dark:bg-zinc-800/50 text-xs font-bold uppercase text-gray-500">
                 <th className="p-4">Nome</th>
+                <th className="p-4">Nicho / Segmento</th>
                 <th className="p-4">Status & Plano</th>
                 <th className="p-4">Link / Slug</th>
                 <th className="p-4">Validade</th>
@@ -348,12 +382,32 @@ export default function MasterAdmin() {
             <tbody className="divide-y divide-gray-100 dark:divide-zinc-800">
               {shops.map(shop => {
                 const isExpired = shop.expires_at && new Date(shop.expires_at) < new Date();
-                
+                const shopPreset = getSegment(shop.segment);
+
                 return (
                   <tr key={shop.id} className="hover:bg-gray-50 dark:hover:bg-zinc-800/20 transition-colors">
                     <td className="p-4">
                       <div className="font-bold text-gray-900 dark:text-gray-100">{shop.name}</div>
                       <div className="text-[10px] text-gray-400 font-mono uppercase tracking-widest">{shop.id}</div>
+                    </td>
+                    <td className="p-4">
+                      <select
+                        value={shop.segment || 'barbershop'}
+                        onChange={(e) => handleUpdateSegment(shop.id, e.target.value)}
+                        className="text-xs bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 font-medium text-gray-900 dark:text-gray-100 focus:border-[#D4AF37] outline-none"
+                      >
+                        {Object.values(SEGMENTS).map(seg => (
+                          <option key={seg.id} value={seg.id}>
+                            {seg.name}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <SegmentIcon iconName={shopPreset.icon} className="w-3.5 h-3.5" style={{ color: shopPreset.defaultColors.primary }} />
+                        <span className="text-[10px] font-bold" style={{ color: shopPreset.defaultColors.primary }}>
+                          {shopPreset.terms.business}
+                        </span>
+                      </div>
                     </td>
                     <td className="p-4">
                       <div className="flex flex-col gap-1">

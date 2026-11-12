@@ -24,14 +24,16 @@ import Profile from './pages/admin/Profile';
 import BookingSite from './pages/admin/BookingSite';
 import MasterAdmin from './pages/admin/MasterAdmin';
 import ErrorBoundary from './components/ErrorBoundary';
+import { BusinessConfigProvider } from './context/BusinessConfigContext';
 
 export default function App() {
   return (
     // @ts-ignore
     <ThemeProvider attribute="class" defaultTheme="light">
       <ErrorBoundary>
-        <BrowserRouter>
-          <Routes>
+        <BusinessConfigProvider>
+          <BrowserRouter>
+            <Routes>
             {/* Public Routes */}
             <Route path="/" element={<Navigate to="/admin" replace />} />
             <Route path="/b/:slug" element={<PublicLayout />}>
@@ -47,17 +49,18 @@ export default function App() {
               <Route path="services" element={<Services />} />
               <Route path="clients" element={<Clients />} />
               <Route path="finances" element={<Finances />} />
-              <Route path="packages" element={<Packages />} />
+              <Route path="packages" element={<Navigate to="/admin/services" replace />} />
               <Route path="profile" element={<Profile />} />
               <Route path="campaigns" element={<Campaigns />} />
-              <Route path="notifications" element={<Notifications />} />
-              <Route path="booking-site" element={<BookingSite />} />
+              <Route path="notifications" element={<Navigate to="/admin/campaigns" replace />} />
+              <Route path="booking-site" element={<Navigate to="/admin/profile" replace />} />
               <Route path="master" element={<MasterAdmin />} />
               <Route path="settings" element={<Settings />} />
             </Route>
           </Routes>
         </BrowserRouter>
-      </ErrorBoundary>
+      </BusinessConfigProvider>
+    </ErrorBoundary>
     </ThemeProvider>
   );
 }

@@ -1,11 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { ExternalLink, Copy, Check, Globe, Smartphone, QrCode, Share2 } from 'lucide-react';
+import { ExternalLink, Copy, Check, Globe, Smartphone, QrCode, Share2, Sparkles } from 'lucide-react';
 import { slugify } from '../../lib/slugify';
+import { useBusinessConfig } from '../../hooks/useBusinessConfig';
+import { SegmentIcon } from '../../components/SegmentIcon';
+import QRCodeCard from '../../components/QRCodeCard';
 
 export default function BookingSite() {
   const [shop, setShop] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
+  const { terms, segmentPreset } = useBusinessConfig();
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -41,9 +45,15 @@ export default function BookingSite() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Seu Site de Agendamento</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1">Este é o link que você deve enviar para seus clientes</p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Seu Site de Agendamento</h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">Este é o link público personalizado para seus {terms.clientPlural.toLowerCase()}</p>
+        </div>
+        <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 shadow-sm self-start">
+          <SegmentIcon iconName={segmentPreset.icon} className="w-4 h-4 text-[#D4AF37]" />
+          <span>Layout: {segmentPreset.name}</span>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -115,35 +125,19 @@ export default function BookingSite() {
 
         {/* QR Code Card */}
         <div className="space-y-6">
-           <div className="bg-white dark:bg-zinc-900 p-8 rounded-3xl border border-gray-200 dark:border-zinc-800 shadow-sm text-center">
-              <div className="w-12 h-12 bg-black dark:bg-[#D4AF37] rounded-2xl flex items-center justify-center mx-auto mb-6 text-white dark:text-black shadow-lg">
-                 <QrCode className="w-6 h-6" />
-              </div>
-              <h3 className="text-xl font-bold text-gray-900 dark:text-gray-100 mb-2">QR Code da Loja</h3>
-              <p className="text-sm text-gray-500 dark:text-gray-400 mb-8">Imprima e coloque em sua bancada ou na vitrine da barbearia.</p>
-              
-              <div className="bg-white p-4 rounded-2xl inline-block border-4 border-gray-50 mb-8 shadow-inner">
-                 <img 
-                    src={`https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(bookingUrl)}`} 
-                    alt="QR Code"
-                    className="w-48 h-48"
-                 />
-              </div>
-
-              <button 
-                onClick={() => window.print()}
-                className="w-full py-4 bg-gray-100 dark:bg-zinc-800 rounded-2xl text-gray-900 dark:text-white font-bold hover:bg-gray-200 dark:hover:bg-zinc-700 transition-colors"
-              >
-                 Salvar para Imprimir
-              </button>
-           </div>
+           <QRCodeCard
+             bookingUrl={bookingUrl}
+             shopName={shop?.name || terms.business}
+             primaryColor={shop?.primary_color || segmentPreset.defaultColors.primary || '#D4AF37'}
+             businessTerm={terms.business}
+           />
 
            <div className="bg-blue-50 dark:bg-blue-900/10 p-6 rounded-3xl border border-blue-100 dark:border-blue-900/30">
               <h4 className="font-bold text-blue-900 dark:text-blue-400 mb-2 flex items-center gap-2">
-                 Dica de Marketing
+                 Dica de Produtividade
               </h4>
               <p className="text-xs text-blue-800/70 dark:text-blue-500/70 leading-relaxed">
-                 Barbeiros que oferecem agendamento online aumentam sua produtividade em até 40% pois não perdem tempo atendendo telefone durante o serviço.
+                 {terms.professionalPlural} que oferecem agendamento online aumentam sua produtividade em até 40% pois não perdem tempo atendendo telefone durante o {terms.service.toLowerCase()}.
               </p>
            </div>
         </div>

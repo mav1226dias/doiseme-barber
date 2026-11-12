@@ -1,8 +1,9 @@
-// watch triggered
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Upload, Users, UserPlus, Trash2 } from 'lucide-react';
+import { Search, Plus, Upload, Users, UserPlus, Trash2, Brain, FileText, Sparkles } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
+import { getSegment } from '../../lib/segments';
+import PatientRecordModal from '../../components/PatientRecordModal';
 
 export default function Clients() {
   const [clients, setClients] = useState<any[]>([]);
@@ -10,6 +11,8 @@ export default function Clients() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [segment, setSegment] = useState('barbershop');
+  const [selectedClientForRecord, setSelectedClientForRecord] = useState<any | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // New Client Form
@@ -36,6 +39,15 @@ export default function Clients() {
 
   useEffect(() => {
     fetchClients();
+    const token = localStorage.getItem('token');
+    fetch('/api/admin/shop-info', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data?.segment) setSegment(data.segment);
+      })
+      .catch(console.error);
   }, []);
 
   useEffect(() => {
@@ -272,12 +284,18 @@ export default function Clients() {
     }
   };
 
+  const currentPreset = getSegment(segment);
+
   return (
     <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Clientes</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">Gerencie a sua base de contatos</p>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">
+            {currentPreset.terms.clientPlural}
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
+            Gerencie a base de {currentPreset.terms.clientPlural.toLowerCase()} da sua {currentPreset.terms.business.toLowerCase()}
+          </p>
         </div>
         
         <div className="flex flex-wrap gap-3">
@@ -285,7 +303,7 @@ export default function Clients() {
             onClick={() => setIsModalOpen(true)}
             className="flex items-center gap-2 bg-black dark:bg-zinc-100 text-white dark:text-black px-4 py-2 rounded-xl font-medium hover:bg-gray-800 dark:hover:bg-white transition-colors"
           >
-            <UserPlus className="w-4 h-4" /> Cadastrar Novo
+            <UserPlus className="w-4 h-4" /> Novo {currentPreset.terms.client}
           </button>
           
           <div>
@@ -351,22 +369,64 @@ export default function Clients() {
                     </th>
                     <th className="p-4">Nome</th>
                     <th className="p-4">Telefone</th>
+                    <th className="p-4 text-center">
+                      {segment === 'aesthetics' || segment === 'lash_design' || segment === 'beauty_salon'
+                        ? 'Ficha Estética & Retoques' 
+                        : segment === 'psychology' 
+                        ? 'Prontuário & Evoluções' 
+                        : 'Prontuário / Ficha'}
+                    </th>
                     <th className="p-4 text-right">Ações</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-zinc-800">
-                  {filteredClients.map(c => (
-                    <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-zinc-800/50 transition-colors">
-                      <td className="p-4 text-center">
-                        <input 
-                          type="checkbox" 
-                          checked={selectedIds.includes(c.id)}
-                          onChange={() => handleSelectOne(c.id)}
-                          className="rounded w-4 h-4 text-[#D4AF37] focus:ring-[#D4AF37] cursor-pointer"
-                        />
-                      </td>
-                      <td className="p-4 font-medium text-gray-900 dark:text-gray-100">{c.name || 'Sem nome'}</td>
-                      <td className="p-4 text-gray-600 dark:text-gray-300 font-mono">{c.phone}</td>
+                  {filteredClients.map(c => {
+                    const isAesthetics = segment === 'aesthetics' || segment === 'lash_design' || segment === 'beauty_salon';
+                    return (
+                      <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-zinc-800/50 transition-colors">
+                        <td className="p-4 text-center">
+                          <input 
+                            type="checkbox" 
+                            checked={selectedIds.includes(c.id)}
+                            onChange={() => handleSelectOne(c.id)}
+                            className="rounded w-4 h-4 text-[#D4AF37] focus:ring-[#D4AF37] cursor-pointer"
+                          />
+                        </td>
+                        <td className="p-4 font-medium text-gray-900 dark:text-gray-100">
+                          <button 
+                            onClick={() => setSelectedClientForRecord(c)}
+                            className="hover:text-[#C47C62] dark:hover:text-[#E0A98B] font-bold transition-colors text-left"
+                            title="Abrir ficha da cliente"
+                          >
+                            {c.name || 'Sem nome'}
+                          </button>
+                        </td>
+                        <td className="p-4 text-gray-600 dark:text-gray-300 font-mono text-xs">{c.phone}</td>
+                        <td className="p-4 text-center">
+                          <button
+                            onClick={() => setSelectedClientForRecord(c)}
+                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all shadow-sm active:scale-95 ${
+                              isAesthetics
+                                ? 'bg-[#E0A98B]/15 text-[#C47C62] dark:text-[#E0A98B] border border-[#E0A98B]/30 hover:bg-[#E0A98B]/25'
+                                : segment === 'psychology'
+                                ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/50'
+                                : 'bg-gray-100 dark:bg-zinc-800 text-gray-800 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-zinc-700'
+                            }`}
+                          >
+                            {isAesthetics ? (
+                              <Sparkles className="w-3.5 h-3.5 text-[#C47C62] dark:text-[#E0A98B]" />
+                            ) : (
+                              <Brain className="w-3.5 h-3.5 text-indigo-500" />
+                            )}
+                            <span>
+                              {isAesthetics 
+                                ? 'Ficha Estética' 
+                                : segment === 'psychology' 
+                                ? 'Prontuário Clínico' 
+                                : 'Ficha & Anotações'}
+                            </span>
+                          </button>
+                        </td>
                       <td className="p-4 text-right">
                         <button 
                           disabled={loading}
@@ -378,7 +438,8 @@ export default function Clients() {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                  );
+                })}
                 </tbody>
               </table>
             </div>
@@ -396,11 +457,15 @@ export default function Clients() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
           <div className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl border border-gray-100 dark:border-zinc-800">
             <div className="p-6 border-b border-gray-100 dark:border-zinc-800">
-              <h2 className="text-xl font-bold font-serif text-gray-900 dark:text-gray-100">Cadastrar Cliente</h2>
+              <h2 className="text-xl font-bold font-serif text-gray-900 dark:text-gray-100">
+                Cadastrar {currentPreset.terms.client}
+              </h2>
             </div>
             <form onSubmit={handleManualAdd} className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Nome do Cliente</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Nome do(a) {currentPreset.terms.client}
+                </label>
                 <input 
                   type="text" 
                   required
@@ -440,6 +505,17 @@ export default function Clients() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Patient Clinical Record Modal */}
+      {selectedClientForRecord && (
+        <PatientRecordModal
+          clientId={selectedClientForRecord.id}
+          clientName={selectedClientForRecord.name || 'Paciente'}
+          clientPhone={selectedClientForRecord.phone || ''}
+          segment={segment}
+          onClose={() => setSelectedClientForRecord(null)}
+        />
       )}
 
     </div>

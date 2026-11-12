@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Users, DollarSign, Calendar as CalendarIcon, Filter, TrendingDown, Wallet } from 'lucide-react';
+import { Users, DollarSign, Calendar as CalendarIcon, Filter, TrendingDown, Wallet, Sparkles } from 'lucide-react';
+import { useBusinessConfig } from '../../hooks/useBusinessConfig';
 
 export default function Dashboard() {
+  const { terms, segmentPreset } = useBusinessConfig();
   const [stats, setStats] = useState({
     totalAppointments: 0,
     totalRevenue: 0,
@@ -57,8 +59,15 @@ export default function Dashboard() {
     <div className="space-y-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Dashboard</h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">Visão geral do seu negócio</p>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Dashboard</h1>
+            <span className="text-xs px-2.5 py-1 rounded-full font-semibold bg-[#D4AF37]/10 text-[#D4AF37] border border-[#D4AF37]/20">
+              {segmentPreset.name}
+            </span>
+          </div>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
+            Visão geral da sua {terms.business.toLowerCase()} e métricas de desempenho
+          </p>
         </div>
         <div className="flex items-center gap-3 bg-white dark:bg-zinc-900 p-2 rounded-xl border border-gray-200 dark:border-zinc-800 shadow-sm">
           <Filter className="w-5 h-5 text-gray-400 ml-2" />
@@ -127,7 +136,9 @@ export default function Dashboard() {
       </div>
 
       <div className="bg-white dark:bg-zinc-900 p-4 sm:p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm overflow-hidden">
-        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6 font-serif">Atendimentos por Profissional</h3>
+        <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4 sm:mb-6 font-serif">
+          Atendimentos por {terms.professional}
+        </h3>
         <div className="space-y-3 sm:space-y-4">
           {(stats.appointmentsByBarber || []).map((barber, i) => (
             <div key={i} className="flex items-center justify-between p-4 bg-gray-50 dark:bg-zinc-800/50 rounded-xl">
@@ -138,7 +149,7 @@ export default function Dashboard() {
                 <span className="font-medium text-gray-900 dark:text-gray-100">{barber.name}</span>
               </div>
               <div className="flex flex-col items-end">
-                <div className="font-bold text-gray-900 dark:text-gray-100">{barber.count} agendamentos</div>
+                <div className="font-bold text-gray-900 dark:text-gray-100">{barber.count} {terms.servicePlural.toLowerCase()}</div>
                 <div className="text-xs text-green-600 dark:text-green-400">R$ {barber.revenue?.toFixed(2)}</div>
               </div>
             </div>

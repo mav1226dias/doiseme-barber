@@ -1,9 +1,27 @@
 // watch triggered
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Users, Scissors, Calendar, Bell, LogOut, Menu, X, Sun, Moon, Settings, Wallet, Package, Palette, Globe, Megaphone, Shield } from 'lucide-react';
+import { 
+  LayoutDashboard, 
+  Users, 
+  UserCheck, 
+  Scissors, 
+  Calendar, 
+  LogOut, 
+  Menu, 
+  X, 
+  Sun, 
+  Moon, 
+  Settings, 
+  Wallet, 
+  Globe, 
+  Megaphone, 
+  Shield 
+} from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
 import RealTimeNotifications from '../components/RealTimeNotifications';
+import { getSegment } from '../lib/segments';
+import { SegmentIcon } from '../components/SegmentIcon';
 
 export default function AdminLayout() {
   const navigate = useNavigate();
@@ -14,6 +32,8 @@ export default function AdminLayout() {
   const [mounted, setMounted] = useState(false);
   const [isMaster, setIsMaster] = useState(false);
   const [isImpersonating, setIsImpersonating] = useState(false);
+  const [shopSegment, setShopSegment] = useState('barbershop');
+  const [shopName, setShopName] = useState('');
 
   useEffect(() => {
     setMounted(true);
@@ -56,6 +76,17 @@ export default function AdminLayout() {
         if (payload.isImpersonating) {
           setIsImpersonating(true);
         }
+
+        // Load shop info to get the segment
+        fetch('/api/admin/shop-info', {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+          .then(res => res.json())
+          .then(data => {
+            if (data?.segment) setShopSegment(data.segment);
+            if (data?.name) setShopName(data.name);
+          })
+          .catch(err => console.error('[ADMIN_LAYOUT_SHOP_INFO_ERR]', err));
       } catch (e) {
         console.error("Token inválido ou corrompido", e);
         localStorage.removeItem('token');
@@ -84,23 +115,42 @@ export default function AdminLayout() {
     navigate('/admin/login');
   };
 
-  const navItems = [
-    { path: '/admin', icon: LayoutDashboard, label: 'Dashboard' },
-    { path: '/admin/agenda', icon: Calendar, label: 'Agenda' },
-    { path: '/admin/barbers', icon: Users, label: 'Profissionais' },
-    { path: '/admin/services', icon: Scissors, label: 'Serviços' },
-    { path: '/admin/clients', icon: Users, label: 'Clientes' },
-    { path: '/admin/finances', icon: Wallet, label: 'Financeiro' },
-    { path: '/admin/packages', icon: Package, label: 'Pacotes' },
-    { path: '/admin/profile', icon: Users, label: 'Perfil' },
-    { path: '/admin/campaigns', icon: Megaphone, label: 'Campanhas' },
-    { path: '/admin/notifications', icon: Bell, label: 'Notificações' },
-    { path: '/admin/booking-site', icon: Globe, label: 'Site de Agendamento' },
-    { path: '/admin/settings', icon: Settings, label: 'Configurações' },
+  const currentPreset = getSegment(shopSegment);
+
+  const navSections = [
+    {
+      title: 'Principal',
+      items: [
+        { path: '/admin', icon: LayoutDashboard, label: 'Dashboard' },
+        { path: '/admin/agenda', icon: Calendar, label: 'Agenda' },
+        { path: '/admin/clients', icon: Users, label: currentPreset.terms.clientPlural },
+      ]
+    },
+    {
+      title: 'Atendimento & Catálogo',
+      items: [
+        { path: '/admin/barbers', icon: UserCheck, label: currentPreset.terms.professionalPlural },
+        { path: '/admin/services', icon: Scissors, label: currentPreset.terms.servicePlural },
+      ]
+    },
+    {
+      title: 'Gestão & Presença',
+      items: [
+        { path: '/admin/finances', icon: Wallet, label: 'Financeiro' },
+        { path: '/admin/campaigns', icon: Megaphone, label: 'Marketing & Mensagens' },
+        { path: '/admin/profile', icon: Globe, label: 'Meu Site & Perfil' },
+        { path: '/admin/settings', icon: Settings, label: 'Configurações' },
+      ]
+    }
   ];
 
   if (isMaster) {
-    navItems.push({ path: '/admin/master', icon: Shield, label: 'Painel Master' });
+    navSections.push({
+      title: 'Administração',
+      items: [
+        { path: '/admin/master', icon: Shield, label: 'Painel Master' }
+      ]
+    });
   }
 
   return (
@@ -108,9 +158,12 @@ export default function AdminLayout() {
       
       {/* Mobile Top Bar */}
       <div className="md:hidden bg-white dark:bg-zinc-900 h-16 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between px-4 sticky top-0 z-40 w-full shadow-sm">
-        <div className="flex items-center">
-          <Scissors className="w-6 h-6 text-black dark:text-[#D4AF37] mr-2" />
-          <span className="font-bold text-xl tracking-wider uppercase font-serif">Doiseme</span>
+        <div className="flex items-center gap-2">
+          <SegmentIcon iconName={currentPreset.icon} className="w-6 h-6 text-black dark:text-[#D4AF37]" />
+          <div>
+            <span className="font-bold text-lg tracking-wider uppercase font-serif">Doiseme</span>
+            <span className="text-[10px] block text-gray-500 dark:text-gray-400 font-sans tracking-normal leading-none font-medium truncate max-w-[140px]">{currentPreset.name.split(' ')[0]}</span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {mounted && (
@@ -146,48 +199,60 @@ export default function AdminLayout() {
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
       `}>
         <div className="h-16 hidden md:flex items-center justify-between px-6 border-b border-gray-200 dark:border-zinc-800">
-          <div className="flex items-center">
-            <Scissors className="w-6 h-6 text-[#D4AF37] mr-2" />
-            <span className="font-bold text-xl tracking-wider uppercase font-serif">Doiseme</span>
+          <div className="flex items-center gap-2">
+            <SegmentIcon iconName={currentPreset.icon} className="w-6 h-6 text-[#D4AF37]" />
+            <div>
+              <span className="font-bold text-lg tracking-wider uppercase font-serif">Doiseme</span>
+              <span className="text-[10px] block text-gray-400 font-sans leading-none truncate max-w-[120px]">{currentPreset.name}</span>
+            </div>
           </div>
           {mounted && (
             <button
               onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
               className="p-2 text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-white transition-colors rounded-lg"
             >
-              {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
           )}
         </div>
         
-        <nav className="flex-1 py-6 px-4 space-y-2 overflow-y-auto">
-          {navItems.map((item) => {
-            const Icon = item.icon;
-            const isActive = location.pathname === item.path;
-            return (
-              <Link
-                key={item.path}
-                to={item.path}
-                className={`flex items-center gap-3 px-4 py-3.5 rounded-xl transition-colors ${
-                  isActive 
-                    ? 'bg-black text-white dark:bg-[#D4AF37] dark:text-black shadow-md' 
-                    : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-zinc-800'
-                }`}
-              >
-                <Icon className={`w-5 h-5 ${isActive ? 'text-[#D4AF37] dark:text-black' : ''}`} />
-                <span className="font-medium text-sm">{item.label}</span>
-              </Link>
-            );
-          })}
+        <nav className="flex-1 py-4 px-3 space-y-5 overflow-y-auto">
+          {navSections.map((section, idx) => (
+            <div key={idx} className="space-y-1">
+              <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-zinc-500">
+                {section.title}
+              </div>
+              <div className="space-y-1">
+                {section.items.map((item) => {
+                  const Icon = item.icon;
+                  const isActive = location.pathname === item.path;
+                  return (
+                    <Link
+                      key={item.path}
+                      to={item.path}
+                      className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl transition-all text-xs ${
+                        isActive 
+                          ? 'bg-black text-white dark:bg-[#D4AF37] dark:text-black shadow-sm font-bold' 
+                          : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-zinc-800/80 hover:text-gray-900 dark:hover:text-white font-medium'
+                      }`}
+                    >
+                      <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-[#D4AF37] dark:text-black' : 'text-gray-500 dark:text-gray-400'}`} />
+                      <span className="truncate">{item.label}</span>
+                    </Link>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </nav>
 
         <div className="p-4 border-t border-gray-200 dark:border-zinc-800 bg-gray-50/50 dark:bg-zinc-900/50">
           <button 
             onClick={handleLogout}
-            className="flex items-center justify-center gap-3 px-4 py-3.5 w-full text-red-600 dark:text-red-400 font-medium bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-900/50 rounded-xl transition-colors"
+            className="flex items-center justify-center gap-3 px-4 py-3 w-full text-red-600 dark:text-red-400 font-bold bg-red-50 dark:bg-red-950/30 hover:bg-red-100 dark:hover:bg-red-900/50 rounded-xl transition-colors text-xs"
           >
-            <LogOut className="w-5 h-5" />
-            <span className="text-sm">Sair do Painel</span>
+            <LogOut className="w-4 h-4" />
+            <span>Sair do Painel</span>
           </button>
         </div>
       </aside>

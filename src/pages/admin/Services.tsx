@@ -1,9 +1,11 @@
 import { useState, useEffect, FormEvent } from 'react';
-import { Plus, Scissors, Trash2 } from 'lucide-react';
+import { Plus, Scissors, Trash2, Sparkles } from 'lucide-react';
+import { getSegment } from '../../lib/segments';
 
 export default function Services() {
   const [services, setServices] = useState<any[]>([]);
   const [formData, setFormData] = useState({ name: '', duration: '', price: '' });
+  const [segment, setSegment] = useState('barbershop');
 
   const fetchServices = () => {
     const token = localStorage.getItem('token');
@@ -28,6 +30,15 @@ export default function Services() {
 
   useEffect(() => {
     fetchServices();
+    const token = localStorage.getItem('token');
+    fetch('/api/admin/shop-info', {
+      headers: { 'Authorization': `Bearer ${token}` }
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data?.segment) setSegment(data.segment);
+      })
+      .catch(console.error);
   }, []);
 
   const handleAdd = async (e: FormEvent) => {
@@ -70,12 +81,53 @@ export default function Services() {
     }
   };
 
+  const currentPreset = getSegment(segment);
+
+  const handleApplySuggested = (suggested: { name: string; durationMinutes: number; price: number }) => {
+    setFormData({
+      name: suggested.name,
+      duration: suggested.durationMinutes.toString(),
+      price: suggested.price.toString()
+    });
+  };
+
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">Serviços</h1>
-        <p className="text-gray-500 dark:text-gray-400 mt-1">Gerencie os serviços oferecidos</p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">
+            {currentPreset.terms.servicePlural}
+          </h1>
+          <p className="text-gray-500 dark:text-gray-400 mt-1">
+            Gerencie o catálogo de {currentPreset.terms.servicePlural.toLowerCase()} da sua {currentPreset.terms.business.toLowerCase()}
+          </p>
+        </div>
+        <span className="text-xs px-3 py-1.5 rounded-full font-semibold bg-[#D4AF37]/10 text-[#D4AF37] self-start sm:self-auto border border-[#D4AF37]/20">
+          Nicho: {currentPreset.name}
+        </span>
       </div>
+
+      {/* Sugestões do Nicho */}
+      {currentPreset.suggestedServices && currentPreset.suggestedServices.length > 0 && (
+        <div className="bg-[#D4AF37]/5 border border-[#D4AF37]/20 rounded-2xl p-4">
+          <div className="flex items-center gap-2 mb-2 text-xs font-bold text-[#D4AF37] uppercase tracking-wider">
+            <Sparkles className="w-4 h-4" /> Sugestões comuns para {currentPreset.name} (clique para preencher)
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {currentPreset.suggestedServices.map(item => (
+              <button
+                key={item.name}
+                type="button"
+                onClick={() => handleApplySuggested(item)}
+                className="text-xs bg-white dark:bg-zinc-800 hover:bg-[#D4AF37]/10 border border-gray-200 dark:border-zinc-700 hover:border-[#D4AF37] px-3 py-1.5 rounded-lg text-gray-700 dark:text-gray-200 transition-colors flex items-center gap-1.5"
+              >
+                <span>{item.name}</span>
+                <span className="text-gray-400">({item.durationMinutes} min • R${item.price})</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm">
         <form onSubmit={handleAdd} className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
@@ -83,14 +135,14 @@ export default function Services() {
             type="text" 
             value={formData.name}
             onChange={e => setFormData({ ...formData, name: e.target.value })}
-            placeholder="Nome do serviço"
+            placeholder={`Nome do ${currentPreset.terms.service.toLowerCase()}`}
             className="border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl p-3 outline-none focus:border-black dark:focus:border-gray-500 transition-colors placeholder:text-gray-400 dark:placeholder:text-gray-500"
           />
           <input 
             type="number" 
             value={formData.duration}
             onChange={e => setFormData({ ...formData, duration: e.target.value })}
-            placeholder="Duração (min)"
+            placeholder="Duração (minutos)"
             className="border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl p-3 outline-none focus:border-black dark:focus:border-gray-500 transition-colors placeholder:text-gray-400 dark:placeholder:text-gray-500"
           />
           <input 

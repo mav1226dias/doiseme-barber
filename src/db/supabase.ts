@@ -14,11 +14,15 @@ const getEnv = (key: string) => {
   return value;
 };
 
-const supabaseUrl = getEnv('VITE_SUPABASE_URL') || 'https://omirtjuxuornolywneak.supabase.co';
-const supabaseKey = getEnv('VITE_SUPABASE_ANON_KEY') || 'sb_publishable_-7JstKYe52SoEA59qlELMA_dZf-w5V5';
+const supabaseUrl = 
+  getEnv('SUPABASE_URL') || 
+  getEnv('VITE_SUPABASE_URL') || 
+  'https://omirtjuxuornolywneak.supabase.co';
 
-if (typeof process !== 'undefined' && (!getEnv('VITE_SUPABASE_URL') || !getEnv('VITE_SUPABASE_ANON_KEY'))) {
-  console.warn('[Supabase] Credenciais não encontradas no ambiente. Usando fallback.');
-}
+const supabaseKey = 
+  getEnv('SUPABASE_ANON_KEY') || 
+  getEnv('VITE_SUPABASE_ANON_KEY') || 
+  'sb_publishable_-7JstKYe52SoEA59qlELMA_dZf-w5V5';
 
 export const supabase = createClient(supabaseUrl, supabaseKey);
+
