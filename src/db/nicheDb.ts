@@ -2,21 +2,45 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 
-const dataDir = path.resolve(process.cwd(), 'data');
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
+const isVercelRuntime = process.env.VERCEL === '1' || Boolean(process.env.VERCEL_ENV);
+const dataDir = isVercelRuntime
+  ? path.join('/tmp', 'doiseme-data')
+  : path.resolve(process.cwd(), 'data');
+
+const noopStatement = {
+  all: () => [],
+  get: () => undefined,
+  run: () => ({ changes: 0 })
+};
+
+let db: any;
+
+try {
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  const uploadsDir = path.join(dataDir, 'uploads');
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+  }
+
+  const dbPath = path.join(dataDir, 'niche_records.db');
+  db = new Database(dbPath);
+  // Enable WAL mode for high concurrency
+  db.pragma('journal_mode = WAL');
+} catch (err) {
+  console.warn('[NICHE_DB_INIT_WARN] Falling back to in-memory SQLite:', (err as any)?.message || err);
+  try {
+    db = new Database(':memory:');
+  } catch {
+    db = {
+      pragma: () => {},
+      exec: () => {},
+      prepare: () => noopStatement
+    };
+  }
 }
-
-const uploadsDir = path.join(dataDir, 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-const dbPath = path.join(dataDir, 'niche_records.db');
-const db = new Database(dbPath);
-
-// Enable WAL mode for high concurrency
-db.pragma('journal_mode = WAL');
 
 // Initialize tables
 db.exec(`
@@ -1160,6 +1184,69 @@ export const nicheDb = {
 
   getAllSaasPayments(): any[] {
     return db.prepare(`SELECT * FROM saas_payments ORDER BY created_at DESC LIMIT 50`).all() as any[];
+  },
+
+  deleteClientsData(barbershopId: string, clientIds: string[]): void {
+    const cleanIds = Array.from(new Set(clientIds.map(id => String(id || '').trim()).filter(Boolean)));
+    if (cleanIds.length === 0) return;
+    const placeholders = cleanIds.map(() => '?').join(',');
+    const clientTables = [
+      'client_clinical_notes',
+      'patient_anamnesis',
+      'aesthetics_anamnesis',
+      'aesthetics_photos',
+      'aesthetics_touchups',
+      'client_pets',
+      'client_vehicles',
+      'client_style_preferences',
+      'client_fitness_assessments',
+      'client_tattoo_records'
+    ];
+    for (const table of clientTables) {
+      try {
+        db.prepare(`DELETE FROM ${table} WHERE barbershop_id = ? AND client_id IN (${placeholders})`).run(
+          barbershopId,
+          ...cleanIds
+        );
+      } catch {
+        // Ignore if table has no rows or schema differs
+      }
+    }
+  },
+
+  deleteShopData(barbershopId: string, userIds: string[] = []): void {
+    const shopTables = [
+      'client_clinical_notes',
+      'patient_anamnesis',
+      'aesthetics_anamnesis',
+      'aesthetics_photos',
+      'aesthetics_touchups',
+      'client_pets',
+      'client_vehicles',
+      'client_style_preferences',
+      'client_fitness_assessments',
+      'client_tattoo_records',
+      'entity_photos',
+      'barber_metadata',
+      'saas_payments'
+    ];
+    for (const table of shopTables) {
+      try {
+        db.prepare(`DELETE FROM ${table} WHERE barbershop_id = ?`).run(barbershopId);
+      } catch {
+        // Ignore non-critical cleanup errors
+      }
+    }
+
+    const cleanUserIds = Array.from(new Set(userIds.map(id => String(id || '').trim()).filter(Boolean)));
+    if (cleanUserIds.length > 0) {
+      try {
+        const placeholders = cleanUserIds.map(() => '?').join(',');
+        db.prepare(`DELETE FROM password_reset_tokens WHERE user_id IN (${placeholders})`).run(...cleanUserIds);
+      } catch {
+        // Ignore non-critical cleanup errors
+      }
+    }
   },
 
   getAllForMigration(): Record<string, any[]> {

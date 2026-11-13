@@ -52,6 +52,8 @@ export default function MasterAdmin() {
   const [saasPayments, setSaasPayments] = useState<any[]>([]);
   const [approvingPaymentId, setApprovingPaymentId] = useState<string | null>(null);
   const [showAllPayments, setShowAllPayments] = useState(false);
+  const [shopToDelete, setShopToDelete] = useState<any | null>(null);
+  const [deletingShopId, setDeletingShopId] = useState<string | null>(null);
   
   const [newShop, setNewShop] = useState({
     name: '',
@@ -477,6 +479,39 @@ export default function MasterAdmin() {
       toast.error('Erro de conexão com o servidor');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleConfirmDeleteShop = async () => {
+    if (!shopToDelete) return;
+    const target = shopToDelete;
+    const token = localStorage.getItem('token');
+    setDeletingShopId(target.id);
+    try {
+      const res = await fetch(`/api/admin/master/shops/${encodeURIComponent(target.id)}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      let data: any = null;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await res.json();
+      }
+
+      if (!res.ok) {
+        toast.error(data?.error || 'Não foi possível excluir o estabelecimento');
+        return;
+      }
+
+      setShops((prev) => prev.filter((s) => s.id !== target.id));
+      setShopToDelete(null);
+      toast.success(`Estabelecimento "${target.name}" excluído permanentemente!`);
+      await Promise.all([fetchMasterData(), fetchBillingConfigAndPayments()]);
+    } catch {
+      toast.error('Erro de conexão ao excluir estabelecimento');
+    } finally {
+      setDeletingShopId(null);
     }
   };
 
@@ -1142,9 +1177,18 @@ export default function MasterAdmin() {
                           {shop.is_blocked ? <Unlock className="w-4 h-4" /> : <Lock className="w-4 h-4" />}
                         </button>
                         <button 
-                          className="p-2 text-gray-400 hover:text-red-500 transition-colors"
-                          title="Excluir"
-                          onClick={() => toast.error('Exclusão desativada por segurança.')}
+                          type="button"
+                          disabled={shop.id === 'shop-1' || deletingShopId === shop.id}
+                          className={`p-2 rounded-lg transition-colors ${
+                            shop.id === 'shop-1'
+                              ? 'text-gray-300 dark:text-zinc-700 cursor-not-allowed'
+                              : 'text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30'
+                          }`}
+                          title={shop.id === 'shop-1' ? 'Estabelecimento raiz protegido' : 'Excluir estabelecimento'}
+                          onClick={() => {
+                            if (shop.id === 'shop-1') return;
+                            setShopToDelete(shop);
+                          }}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -1177,6 +1221,49 @@ export default function MasterAdmin() {
           </p>
         </div>
       </div>
+
+      {/* Delete Establishment Confirmation Modal */}
+      {shopToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl w-full max-w-md overflow-hidden shadow-2xl border border-gray-200 dark:border-zinc-800">
+            <div className="p-6 flex items-start gap-4">
+              <div className="w-12 h-12 rounded-2xl bg-red-500/10 text-red-600 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                  Excluir Estabelecimento?
+                </h3>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                  Você está prestes a excluir <strong>{shopToDelete.name}</strong> (<span className="font-mono text-xs">/b/{shopToDelete.slug}</span>).
+                </p>
+                <p className="text-xs text-red-600 dark:text-red-400 mt-2 font-medium">
+                  Esta ação é irreversível e apagará usuários, profissionais, serviços, clientes, agendamentos, histórico financeiro e cobranças vinculadas a esta loja.
+                </p>
+              </div>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 dark:bg-zinc-800/50 border-t border-gray-100 dark:border-zinc-800 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={Boolean(deletingShopId)}
+                onClick={() => setShopToDelete(null)}
+                className="px-4 py-2.5 rounded-xl text-sm font-medium bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(deletingShopId)}
+                onClick={handleConfirmDeleteShop}
+                className="px-5 py-2.5 rounded-xl text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                <Trash2 className="w-4 h-4" />
+                {deletingShopId === shopToDelete.id ? 'Excluindo...' : 'Excluir Permanentemente'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

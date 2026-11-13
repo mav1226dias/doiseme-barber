@@ -3,6 +3,8 @@ import {
   Target, Plus, MessageCircle, Trash2, Calendar, 
   Bell, AlertCircle, Megaphone, Users, Clock, Send, Sparkles 
 } from 'lucide-react';
+import { toast } from 'sonner';
+import ConfirmModal from '../../components/ConfirmModal';
 
 export default function Campaigns() {
   const [activeTab, setActiveTab] = useState<'campaigns' | 'notifications'>('campaigns');
@@ -13,6 +15,8 @@ export default function Campaigns() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [activeCampaign, setActiveCampaign] = useState<any | null>(null);
+  const [deleteCampaignId, setDeleteCampaignId] = useState<string | null>(null);
+  const [deletingCampaign, setDeletingCampaign] = useState(false);
 
   // Form State
   const [name, setName] = useState('');
@@ -109,15 +113,32 @@ export default function Campaigns() {
     setLoading(false);
   };
 
-  const handleDelete = async (id: string) => {
-    if (!window.confirm('Tem certeza? A campanha será apagada (isto não afeta as mensagens já enviadas).')) return;
+  const handleDelete = (id: string) => {
+    setDeleteCampaignId(id);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteCampaignId) return;
+    setDeletingCampaign(true);
     const token = localStorage.getItem('token');
-    await fetch(`/api/admin/campaigns/${id}`, {
-      method: 'DELETE',
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    if (activeCampaign && activeCampaign.id === id) setActiveCampaign(null);
-    fetchCampaignsAndClients();
+    try {
+      const res = await fetch(`/api/admin/campaigns/${deleteCampaignId}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        if (activeCampaign && activeCampaign.id === deleteCampaignId) setActiveCampaign(null);
+        setDeleteCampaignId(null);
+        toast.success('Campanha apagada');
+        fetchCampaignsAndClients();
+      } else {
+        toast.error('Erro ao apagar campanha');
+      }
+    } catch {
+      toast.error('Erro de conexão ao apagar campanha');
+    } finally {
+      setDeletingCampaign(false);
+    }
   };
 
   const getNotificationData = (messageStr: string) => {
@@ -514,6 +535,16 @@ export default function Campaigns() {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        open={Boolean(deleteCampaignId)}
+        title="Apagar campanha?"
+        description="Tem certeza? A campanha será apagada do painel (isso não afeta mensagens já enviadas)."
+        confirmLabel="Apagar Campanha"
+        loading={deletingCampaign}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => !deletingCampaign && setDeleteCampaignId(null)}
+      />
     </div>
   );
 }

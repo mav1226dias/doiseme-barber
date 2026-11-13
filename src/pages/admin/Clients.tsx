@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Plus, Upload, Users, UserPlus, Trash2, Brain, FileText, Sparkles } from 'lucide-react';
+import { Search, Upload, Users, UserPlus, Trash2, Brain, Sparkles, AlertTriangle, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
+import { toast } from 'sonner';
 import { getSegment } from '../../lib/segments';
 import PatientRecordModal from '../../components/PatientRecordModal';
 
@@ -13,6 +14,8 @@ export default function Clients() {
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [segment, setSegment] = useState('barbershop');
   const [selectedClientForRecord, setSelectedClientForRecord] = useState<any | null>(null);
+  const [deleteConfirmIds, setDeleteConfirmIds] = useState<string[] | null>(null);
+  const [pendingImportClients, setPendingImportClients] = useState<{ name: string; phone: string }[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // New Client Form
@@ -54,31 +57,52 @@ export default function Clients() {
     setSelectedIds([]);
   }, [searchTerm]);
 
-  const handleDelete = async (ids: string[]) => {
-    if (!window.confirm(`Tem certeza que deseja excluir ${ids.length} cliente(s)? Esta ação excluirá os contatos e seus históricos de agendamentos.`)) return;
-    
+  const handleDelete = (ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    setDeleteConfirmIds(ids);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteConfirmIds || deleteConfirmIds.length === 0) return;
+    const idsToDelete = [...deleteConfirmIds];
     setLoading(true);
     const token = localStorage.getItem('token');
-    
+
     try {
-      const res = await fetch('/api/admin/clients', {
-        method: 'DELETE',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ ids })
-      });
-      
+      const isSingle = idsToDelete.length === 1;
+      const res = await fetch(
+        isSingle ? `/api/admin/clients/${encodeURIComponent(idsToDelete[0])}` : '/api/admin/clients/delete',
+        {
+          method: isSingle ? 'DELETE' : 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: isSingle ? undefined : JSON.stringify({ ids: idsToDelete })
+        }
+      );
+
+      let data: any = null;
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        data = await res.json();
+      }
+
       if (res.ok) {
-        setSelectedIds([]);
+        setClients((prev) => prev.filter((c) => !idsToDelete.includes(c.id)));
+        setSelectedIds((prev) => prev.filter((id) => !idsToDelete.includes(id)));
+        setDeleteConfirmIds(null);
+        toast.success(
+          idsToDelete.length === 1
+            ? 'Cliente excluído com sucesso!'
+            : `${idsToDelete.length} clientes excluídos com sucesso!`
+        );
         fetchClients();
       } else {
-        const err = await res.json();
-        alert(err.error || 'Erro ao excluir clientes.');
+        toast.error(data?.error || 'Erro ao excluir clientes.');
       }
-    } catch (e) {
-      alert('Erro de rede ao excluir.');
+    } catch {
+      toast.error('Erro de rede ao excluir clientes.');
     } finally {
       setLoading(false);
     }
@@ -98,19 +122,59 @@ export default function Clients() {
         body: JSON.stringify({ name: newName, phone: newPhone.replace(/\D/g, '') })
       });
       if (res.ok) {
-        alert('Cliente adicionado com sucesso!');
+        toast.success('Cliente adicionado com sucesso!');
         setIsModalOpen(false);
         setNewName('');
         setNewPhone('');
         fetchClients();
       } else {
         const error = await res.json();
-        alert(error.error || 'Erro ao adicionar cliente');
+        toast.error(error.error || 'Erro ao adicionar cliente');
       }
-    } catch (err) {
-      alert('Erro ao adicionar cliente');
+    } catch {
+      toast.error('Erro ao adicionar cliente');
     }
     setLoading(false);
+  };
+
+  const handleConfirmImport = async () => {
+    if (!pendingImportClients || pendingImportClients.length === 0) return;
+    setLoading(true);
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch('/api/admin/clients/batch', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ clients: pendingImportClients })
+      });
+      if (!res.ok) {
+        let msg = `Erro do servidor (Status ${res.status})`;
+        try {
+          const errData = await res.json();
+          msg = errData.error || msg;
+        } catch {
+          // keep default message
+        }
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      if (data.success) {
+        toast.success(`${data.count} cliente(s) importado(s) com sucesso!`);
+        setPendingImportClients(null);
+        fetchClients();
+      } else {
+        toast.error('Erro na importação.');
+      }
+    } catch (err: any) {
+      console.error(err);
+      toast.error(`Falha na importação: ${err.message}`);
+    } finally {
+      setLoading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -122,54 +186,12 @@ export default function Clients() {
     const processData = (parsedClients: {name: string, phone: string}[]) => {
       const validClients = parsedClients.filter(c => c.phone && c.phone.length > 5);
       if (validClients.length === 0) {
-        alert('Nenhum cliente válido encontrado. Verifique se o arquivo contém nome e telefone (ou apenas telefone).');
+        toast.error('Nenhum cliente válido encontrado. Verifique se o arquivo contém nome e telefone.');
         if (fileInputRef.current) fileInputRef.current.value = '';
         return;
       }
 
-      if (window.confirm(`Foram encontrados ${validClients.length} contatos. Deseja importar?`)) {
-        setLoading(true);
-        const token = localStorage.getItem('token');
-        fetch('/api/admin/clients/batch', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ clients: validClients })
-        })
-          .then(async res => {
-            if (!res.ok) {
-              let msg = 'Erro no servidor.';
-              try {
-                const errData = await res.json();
-                msg = errData.error || msg;
-              } catch(e) {
-                msg = `Erro do servidor (Status ${res.status})`;
-              }
-              throw new Error(msg);
-            }
-            return res.json();
-          })
-          .then(data => {
-            if (data.success) {
-              alert(`${data.count} clientes importados com sucesso!`);
-              fetchClients();
-            } else {
-              alert('Erro na importação.');
-            }
-          })
-          .catch(err => {
-            console.error(err);
-            alert(`Falha na importação: ${err.message}`);
-          })
-          .finally(() => {
-            setLoading(false);
-            if (fileInputRef.current) fileInputRef.current.value = '';
-          });
-      } else {
-        if (fileInputRef.current) fileInputRef.current.value = '';
-      }
+      setPendingImportClients(validClients);
     };
 
     if (ext === 'xlsx' || ext === 'xls') {
@@ -256,7 +278,7 @@ export default function Clients() {
       };
       reader.readAsText(file);
     } else {
-      alert('Formato não suportado. Use .xlsx, .csv ou .vcf.');
+      toast.error('Formato não suportado. Use .xlsx, .csv ou .vcf.');
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -503,6 +525,95 @@ export default function Clients() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmIds && deleteConfirmIds.length > 0 && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl border border-gray-200 dark:border-zinc-800">
+            <div className="p-6 flex items-start gap-4">
+              <div className="w-11 h-11 rounded-xl bg-red-500/10 text-red-600 dark:text-red-400 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                  {deleteConfirmIds.length === 1
+                    ? `Excluir ${currentPreset.terms.client.toLowerCase()}?`
+                    : `Excluir ${deleteConfirmIds.length} ${currentPreset.terms.clientPlural.toLowerCase()}?`}
+                </h2>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                  {deleteConfirmIds.length === 1
+                    ? `Tem certeza que deseja excluir "${clients.find(c => c.id === deleteConfirmIds[0])?.name || 'este contato'}"? `
+                    : `Tem certeza que deseja excluir os ${deleteConfirmIds.length} registros selecionados? `}
+                  Esta ação apagará o contato, histórico de agendamentos e fichas vinculadas permanentemente.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => !loading && setDeleteConfirmIds(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 dark:bg-zinc-800/50 border-t border-gray-100 dark:border-zinc-800 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => setDeleteConfirmIds(null)}
+                className="px-4 py-2.5 rounded-xl text-sm font-medium bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={handleConfirmDelete}
+                className="px-5 py-2.5 rounded-xl text-sm font-bold bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                <Trash2 className="w-4 h-4" />
+                {loading ? 'Excluindo...' : 'Excluir Definitivamente'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import Confirmation Modal */}
+      {pendingImportClients && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl border border-gray-200 dark:border-zinc-800">
+            <div className="p-6">
+              <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                Confirmar Importação
+              </h2>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1.5">
+                Foram encontrados <strong>{pendingImportClients.length}</strong> contato(s) válidos no arquivo. Deseja importar para a sua base?
+              </p>
+            </div>
+            <div className="px-6 py-4 bg-gray-50 dark:bg-zinc-800/50 border-t border-gray-100 dark:border-zinc-800 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  setPendingImportClients(null);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                }}
+                className="px-4 py-2.5 rounded-xl text-sm font-medium bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={handleConfirmImport}
+                className="px-5 py-2.5 rounded-xl text-sm font-bold bg-[#D4AF37] text-white hover:bg-[#b0912e] transition-colors disabled:opacity-50"
+              >
+                {loading ? 'Importando...' : 'Importar Agora'}
+              </button>
+            </div>
           </div>
         </div>
       )}

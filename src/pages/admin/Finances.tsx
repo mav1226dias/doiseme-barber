@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Plus, Trash2, TrendingUp, TrendingDown, DollarSign, Wallet, Calendar, Printer, User, FileText, Filter } from 'lucide-react';
+import { toast } from 'sonner';
+import ConfirmModal from '../../components/ConfirmModal';
 
 const CATEGORIES = [
   { id: 'rent', label: 'Aluguel' },
@@ -13,6 +15,8 @@ const CATEGORIES = [
 export default function Finances() {
   const [expenses, setExpenses] = useState<any[]>([]);
   const [barbers, setBarbers] = useState<any[]>([]);
+  const [deleteExpenseId, setDeleteExpenseId] = useState<string | null>(null);
+  const [deletingExpense, setDeletingExpense] = useState(false);
   
   const [dateRange, setDateRange] = useState({
     start: new Date(new Date().setDate(1)).toISOString().split('T')[0], // 1st of current month
@@ -127,16 +131,31 @@ export default function Finances() {
     } catch (e) { console.error(e); }
   };
 
-  const handleDeleteExpense = async (id: string) => {
-    if (!confirm('Excluir esta despesa?')) return;
+  const handleDeleteExpense = (id: string) => {
+    setDeleteExpenseId(id);
+  };
+
+  const handleConfirmDeleteExpense = async () => {
+    if (!deleteExpenseId) return;
+    setDeletingExpense(true);
     const token = localStorage.getItem('token');
     try {
-      await fetch(`/api/admin/expenses/${id}`, {
+      const res = await fetch(`/api/admin/expenses/${deleteExpenseId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      fetchFinances();
-    } catch (e) { console.error(e); }
+      if (res.ok) {
+        toast.success('Despesa excluída');
+        setDeleteExpenseId(null);
+        fetchFinances();
+      } else {
+        toast.error('Erro ao excluir despesa');
+      }
+    } catch {
+      toast.error('Erro de rede ao excluir despesa');
+    } finally {
+      setDeletingExpense(false);
+    }
   };
 
   const handlePrint = () => {
@@ -493,6 +512,16 @@ export default function Finances() {
           </div>
         </div>
       </div>
+
+      <ConfirmModal
+        open={Boolean(deleteExpenseId)}
+        title="Excluir lançamento?"
+        description="Tem certeza que deseja excluir esta despesa/lançamento financeiro?"
+        confirmLabel="Excluir"
+        loading={deletingExpense}
+        onConfirm={handleConfirmDeleteExpense}
+        onCancel={() => !deletingExpense && setDeleteExpenseId(null)}
+      />
     </div>
   );
 }

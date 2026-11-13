@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Calendar as CalendarIcon, Clock, User, Scissors, Check, X, ShieldAlert, Plus, Brain, Sparkles } from 'lucide-react';
+import { toast } from 'sonner';
 import PatientRecordModal from '../../components/PatientRecordModal';
+import ConfirmModal from '../../components/ConfirmModal';
 
 export default function Agenda() {
   const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
@@ -16,6 +18,8 @@ export default function Agenda() {
   const [isApptModalOpen, setIsApptModalOpen] = useState(false);
   const [isBlockModalOpen, setIsBlockModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [pendingStatusUpdate, setPendingStatusUpdate] = useState<{ id: string; status: string } | null>(null);
+  const [updatingStatus, setUpdatingStatus] = useState(false);
 
   // New Appt form
   const [newAppt, setNewAppt] = useState({
@@ -82,15 +86,32 @@ export default function Agenda() {
       .catch(console.error);
   }, [date]);
 
-  const updateStatus = async (id: string, status: string) => {
-    if (!window.confirm(`Tem certeza que deseja ${status === 'cancelled' ? 'cancelar' : status === 'blocked' ? 'bloquear' : 'concluir'} este horário?`)) return;
+  const updateStatus = (id: string, status: string) => {
+    setPendingStatusUpdate({ id, status });
+  };
+
+  const handleConfirmStatusUpdate = async () => {
+    if (!pendingStatusUpdate) return;
+    setUpdatingStatus(true);
     const token = localStorage.getItem('token');
-    await fetch(`/api/admin/appointments/${id}/status`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ status })
-    });
-    fetchAppointments();
+    try {
+      const res = await fetch(`/api/admin/appointments/${pendingStatusUpdate.id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ status: pendingStatusUpdate.status })
+      });
+      if (res.ok) {
+        toast.success('Status atualizado!');
+        setPendingStatusUpdate(null);
+        fetchAppointments();
+      } else {
+        toast.error('Erro ao atualizar horário.');
+      }
+    } catch {
+      toast.error('Erro de rede ao atualizar horário.');
+    } finally {
+      setUpdatingStatus(false);
+    }
   };
 
   const handleCreateAppointment = async (e: React.FormEvent) => {
@@ -388,6 +409,29 @@ export default function Agenda() {
           onClose={() => setSelectedClientForRecord(null)}
         />
       )}
+
+      <ConfirmModal
+        open={Boolean(pendingStatusUpdate)}
+        title={
+          pendingStatusUpdate?.status === 'cancelled'
+            ? 'Cancelar horário?'
+            : pendingStatusUpdate?.status === 'blocked'
+            ? 'Bloquear horário?'
+            : 'Concluir atendimento?'
+        }
+        description={`Tem certeza que deseja ${
+          pendingStatusUpdate?.status === 'cancelled'
+            ? 'cancelar'
+            : pendingStatusUpdate?.status === 'blocked'
+            ? 'bloquear'
+            : 'concluir'
+        } este horário?`}
+        confirmLabel="Confirmar"
+        variant={pendingStatusUpdate?.status === 'completed' ? 'warning' : 'danger'}
+        loading={updatingStatus}
+        onConfirm={handleConfirmStatusUpdate}
+        onCancel={() => !updatingStatus && setPendingStatusUpdate(null)}
+      />
     </div>
   );
 }

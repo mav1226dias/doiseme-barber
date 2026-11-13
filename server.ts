@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import nodeCrypto from 'crypto';
@@ -23,25 +22,125 @@ if (!process.env.JWT_SECRET) {
 const app = express();
 app.set('trust proxy', 1);
 
-async function startServer() {
-  const PORT = 3000;
+const isVercel = process.env.VERCEL === '1' || Boolean(process.env.VERCEL_ENV);
+const uploadsBaseDir = isVercel
+  ? path.join('/tmp', 'doiseme-data', 'uploads')
+  : path.join(process.cwd(), 'data', 'uploads');
 
-  // Test DB connection on startup
-  try {
-    const { data: test, error: testError } = await supabase
-      .from('barbershops')
-      .select('id, name')
-      .limit(1);
+let startupSyncPromise: Promise<void> | null = null;
 
-    if (testError) {
-      console.warn('[DB_INIT_CHECK] Initial check note:', testError.message);
-    } else {
-      console.log('[DB_INIT_CHECK] Supabase connected successfully. Found shop:', test?.[0]?.name || 'none');
+async function ensureStartupSync() {
+  if (startupSyncPromise) return startupSyncPromise;
+  startupSyncPromise = (async () => {
+    try {
+      const { data: test, error: testError } = await supabase
+        .from('barbershops')
+        .select('id, name')
+        .limit(1);
+
+      if (testError) {
+        console.warn('[DB_INIT_CHECK] Initial check note:', testError.message);
+      } else {
+        console.log('[DB_INIT_CHECK] Supabase connected successfully. Found shop:', test?.[0]?.name || 'none');
+      }
+    } catch (err: any) {
+      console.warn('[DB_INIT_CHECK] Note during startup check:', err.message);
     }
-  } catch (err: any) {
-    console.warn('[DB_INIT_CHECK] Note during startup check:', err.message);
-  }
 
+    try {
+      console.log('[STARTUP] Ensuring root shop & syncing Master users...');
+      const { data: rootShop } = await supabase
+        .from('barbershops')
+        .select('id')
+        .eq('id', 'shop-1')
+        .maybeSingle();
+
+      if (!rootShop) {
+        const { error: rootShopErr } = await supabase.from('barbershops').insert({
+          id: 'shop-1',
+          name: 'Doiseme System',
+          slug: 'doiseme',
+          segment: 'barbershop',
+          is_blocked: false
+        });
+        if (rootShopErr) {
+          console.warn('[STARTUP] Could not create root shop-1:', rootShopErr.message);
+        } else {
+          console.log('[STARTUP] Root shop-1 created.');
+        }
+      }
+
+      const masterUsers = [
+        { email: 'marcusdoiseme@doiseme.com', name: 'Marcus Doiseme', pass: 'Luna2025' },
+        { email: 'admin@doiseme.com', name: 'Admin Doiseme', pass: 'admin123' },
+        { email: 'marcusdias2014mv@gmail.com', name: 'Marcus Dias', pass: 'admin123' }
+      ];
+
+      for (const u of masterUsers) {
+        const { data: existingUser, error: checkErr } = await supabase
+          .from('users')
+          .select('id')
+          .ilike('email', u.email)
+          .maybeSingle();
+
+        if (checkErr) {
+          if (checkErr.message?.includes('fetch failed') || (checkErr as any).message?.includes('ENOTFOUND')) {
+            console.error('\n[CRITICAL ERROR] 🚨 SUPABASE PROJECT PAUSED OR UNREACHABLE 🚨');
+            console.error('The application cannot connect to Supabase (ENOTFOUND).');
+            console.error('This usually happens when your Supabase Free Tier project is paused due to inactivity.');
+            console.error('Please log in to your Supabase dashboard and restore your project.');
+            break;
+          }
+          console.error(`[STARTUP] Error checking master user ${u.email}:`, checkErr);
+          continue;
+        }
+
+        if (existingUser) {
+          const { error } = await supabase.from('users').update({ role: 'master' }).eq('id', existingUser.id);
+          if (!error) console.log(`[STARTUP] Updated ${u.email} to master.`);
+        } else {
+          console.log(`[STARTUP] Creating master user: ${u.email}`);
+          const passwordHash = await bcrypt.hash(u.pass, 10);
+          const { error } = await supabase.from('users').insert({
+            id: crypto.randomUUID(),
+            barbershop_id: 'shop-1',
+            name: u.name,
+            email: u.email,
+            password_hash: passwordHash,
+            role: 'master'
+          });
+          if (error) console.error(`[STARTUP] Failed to create ${u.email}:`, error);
+        }
+      }
+
+      // Seed initial Mercado Pago App Payment Link if mp_payment_links not yet saved
+      try {
+        const existingLinksRaw = await cloudNicheDb.getPlatformSetting('mp_payment_links');
+        if (!existingLinksRaw) {
+          await cloudNicheDb.setPlatformSetting(
+            'mp_payment_links',
+            JSON.stringify({ essencial: 'https://mpago.la/2GNFS1S' })
+          );
+          console.log('[STARTUP] Seeded default Essencial Mercado Pago link.');
+        }
+      } catch (linkSeedErr) {
+        console.warn('[STARTUP_MP_LINK_SEED_WARN]', linkSeedErr);
+      }
+    } catch (e: any) {
+      if (e?.message?.includes('fetch failed') || e?.message?.includes('ENOTFOUND')) {
+        console.error('\n[CRITICAL ERROR] 🚨 SUPABASE PROJECT PAUSED OR UNREACHABLE 🚨');
+        console.error('The application cannot connect to Supabase (ENOTFOUND).');
+        console.error(`URL attempted: ${process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL}\n`);
+      } else {
+        console.error('[STARTUP_SYNC_FAILED]', e);
+      }
+    }
+  })();
+  return startupSyncPromise;
+}
+
+async function startServer() {
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Security Headers
   app.use(helmet({ contentSecurityPolicy: false })); // Disabled CSP to avoid breaking React dev server inline scripts
@@ -50,7 +149,7 @@ async function startServer() {
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
-  app.use('/uploads', express.static(path.join(process.cwd(), 'data', 'uploads')));
+  app.use('/uploads', express.static(uploadsBaseDir));
 
   // API Routes
   const api = express.Router();
@@ -156,7 +255,15 @@ async function startServer() {
     if (envUrl && envUrl !== 'MY_APP_URL') return envUrl;
     const origin = req.headers?.origin?.trim().replace(/\/+$/, '');
     if (origin) return origin;
-    return `${req.protocol}://${req.get('host')}`;
+    const host = req.get('host');
+    if (host) return `${req.protocol}://${host}`;
+    if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+      return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+    }
+    if (process.env.VERCEL_URL) {
+      return `https://${process.env.VERCEL_URL}`;
+    }
+    return 'http://localhost:3000';
   };
 
   const maskEmail = (email: string) => {
@@ -396,29 +503,27 @@ async function startServer() {
 
       console.warn('[SERVER_UPLOAD_SUPABASE_WARN] Falling back to local storage:', error.message);
       
-      // Fallback: save to local data/uploads/
+      // Fallback: save to local uploads dir (/tmp on Vercel, data/uploads locally)
       const cleanName = path.basename(filePath).replace(/[^a-zA-Z0-9._-]/g, '_');
       const safeFileName = `${Date.now()}-${cleanName}`;
-      const localUploadDir = path.join(process.cwd(), 'data', 'uploads');
-      if (!fs.existsSync(localUploadDir)) {
-        fs.mkdirSync(localUploadDir, { recursive: true });
+      if (!fs.existsSync(uploadsBaseDir)) {
+        fs.mkdirSync(uploadsBaseDir, { recursive: true });
       }
-      const targetDiskPath = path.join(localUploadDir, safeFileName);
+      const targetDiskPath = path.join(uploadsBaseDir, safeFileName);
       fs.writeFileSync(targetDiskPath, buffer);
       
       return res.json({ publicUrl: `/uploads/${safeFileName}` });
     } catch (e: any) {
       console.error('[SERVER_UPLOAD_CATCH]', e);
-      // Even in catch, try writing to local disk
+      // Even in catch, try writing to writable uploads dir
       try {
         const buffer = Buffer.from(content, 'base64');
         const cleanName = path.basename(filePath).replace(/[^a-zA-Z0-9._-]/g, '_');
         const safeFileName = `${Date.now()}-${cleanName}`;
-        const localUploadDir = path.join(process.cwd(), 'data', 'uploads');
-        if (!fs.existsSync(localUploadDir)) {
-          fs.mkdirSync(localUploadDir, { recursive: true });
+        if (!fs.existsSync(uploadsBaseDir)) {
+          fs.mkdirSync(uploadsBaseDir, { recursive: true });
         }
-        fs.writeFileSync(path.join(localUploadDir, safeFileName), buffer);
+        fs.writeFileSync(path.join(uploadsBaseDir, safeFileName), buffer);
         return res.json({ publicUrl: `/uploads/${safeFileName}` });
       } catch (diskErr: any) {
         return res.status(500).json({ error: diskErr.message || 'Erro interno no upload' });
@@ -1182,7 +1287,17 @@ async function startServer() {
       }
       
       if (!user) {
-        console.warn(`[LOGIN WARN] User not found: ${cleanEmail}`);
+        const { count: visibleUsersCount } = await supabase
+          .from('users')
+          .select('id', { count: 'exact', head: true });
+        console.warn(
+          `[LOGIN WARN] User not found: ${cleanEmail} | visibleUsers=${visibleUsersCount ?? 'unknown'} | hasServiceRoleKey=${hasServiceRoleKey}`
+        );
+        if (!hasServiceRoleKey && (visibleUsersCount ?? 0) === 0) {
+          return res.status(401).json({
+            error: 'Nenhum usuário visível no banco. Verifique SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variáveis de ambiente do servidor.'
+          });
+        }
         return res.status(401).json({ error: 'Usuário não encontrado ou credenciais inválidas' });
       }
 
@@ -2217,42 +2332,99 @@ async function startServer() {
     }
   });
 
+  const deleteClientsForShop = async (barbershopId: string, rawIds: unknown[]) => {
+    const cleanIds = Array.from(
+      new Set((rawIds || []).map((id) => String(id || '').trim()).filter(Boolean))
+    );
+    if (cleanIds.length === 0) {
+      return { count: 0 };
+    }
+
+    console.log(`[DELETE_CLIENTS] Attempting to delete ${cleanIds.length} client(s) for shop ${barbershopId}`);
+
+    // 1. Delete associated appointments first to satisfy FK constraints
+    const { error: apptErr } = await supabase
+      .from('appointments')
+      .delete()
+      .in('client_id', cleanIds)
+      .eq('barbershop_id', barbershopId);
+
+    if (apptErr) {
+      console.error('[DELETE_CLIENTS_APPOINTMENTS_ERR]', apptErr);
+      throw new Error(`Erro ao remover agendamentos do cliente: ${apptErr.message}`);
+    }
+
+    // 2. Delete associated clinical/niche records across cloud & local fallback
+    await cloudNicheDb.deleteClientsData(barbershopId, cleanIds);
+
+    // 3. Delete client records themselves
+    const { data: deletedRows, error } = await supabase
+      .from('clients')
+      .delete()
+      .in('id', cleanIds)
+      .eq('barbershop_id', barbershopId)
+      .select('id');
+
+    if (error) {
+      console.error('[DELETE_CLIENTS_ERR]', error);
+      throw error;
+    }
+
+    const deletedCount = Array.isArray(deletedRows) ? deletedRows.length : cleanIds.length;
+    console.log(`[DELETE_CLIENTS_SUCCESS] Excluded ${deletedCount} client(s).`);
+    return { count: deletedCount };
+  };
+
   api.delete('/admin/clients', authenticateToken, async (req: any, res) => {
-    const { ids } = req.body;
+    const queryIds =
+      typeof req.query?.ids === 'string'
+        ? req.query.ids.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : [];
+    const ids = Array.isArray(req.body?.ids) && req.body.ids.length > 0 ? req.body.ids : queryIds;
+
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'Nenhum cliente selecionado' });
     }
-    
+
     try {
-      console.log(`[DELETE_CLIENTS] Attempting to delete ${ids.length} clients for shop ${req.user.barbershopId}`);
-      
-      // First delete associated appointments to clear Foreign Key constraints before deleting clients
-      const { error: apptErr } = await supabase
-        .from('appointments')
-        .delete()
-        .in('client_id', ids)
-        .eq('barbershop_id', req.user.barbershopId);
-
-      if (apptErr) {
-        console.warn('[DELETE_CLIENTS_APPOINTMENTS_ERR]', apptErr);
-      }
-
-      const { error } = await supabase
-        .from('clients')
-        .delete()
-        .in('id', ids)
-        .eq('barbershop_id', req.user.barbershopId);
-        
-      if (error) {
-        console.error('[DELETE_CLIENTS_ERR]', error);
-        throw error;
-      }
-      
-      console.log(`[DELETE_CLIENTS_SUCCESS] Excluded ${ids.length} clients.`);
-      res.json({ success: true, count: ids.length });
+      const result = await deleteClientsForShop(req.user.barbershopId, ids);
+      res.json({ success: true, count: result.count });
     } catch (error: any) {
       console.error('[DELETE_CLIENTS_CRASH]', error);
-      res.status(500).json({ error: 'Erro ao excluir clientes', details: error.message });
+      res.status(500).json({ error: error.message || 'Erro ao excluir clientes', details: error.message });
+    }
+  });
+
+  api.post('/admin/clients/delete', authenticateToken, async (req: any, res) => {
+    const ids = req.body?.ids;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Nenhum cliente selecionado' });
+    }
+
+    try {
+      const result = await deleteClientsForShop(req.user.barbershopId, ids);
+      res.json({ success: true, count: result.count });
+    } catch (error: any) {
+      console.error('[POST_DELETE_CLIENTS_CRASH]', error);
+      res.status(500).json({ error: error.message || 'Erro ao excluir clientes', details: error.message });
+    }
+  });
+
+  api.delete('/admin/clients/:id', authenticateToken, async (req: any, res) => {
+    const id = String(req.params.id || '').trim();
+    if (!id) {
+      return res.status(400).json({ error: 'ID do cliente inválido' });
+    }
+
+    try {
+      const result = await deleteClientsForShop(req.user.barbershopId, [id]);
+      if (result.count === 0) {
+        return res.status(404).json({ error: 'Cliente não encontrado neste estabelecimento' });
+      }
+      res.json({ success: true, count: result.count });
+    } catch (error: any) {
+      console.error('[DELETE_SINGLE_CLIENT_CRASH]', error);
+      res.status(500).json({ error: error.message || 'Erro ao excluir cliente', details: error.message });
     }
   });
 
@@ -3233,6 +3405,92 @@ async function startServer() {
     }
   });
 
+  // Delete an entire shop and all dependent data (Master only)
+  const handleDeleteShopMaster = async (req: any, res: any) => {
+    const { id } = req.params;
+    try {
+      if (!id || id === 'shop-1') {
+        return res.status(400).json({ error: 'O estabelecimento raiz do sistema não pode ser excluído.' });
+      }
+      if (req.user?.barbershopId === id) {
+        return res.status(400).json({ error: 'Você não pode excluir o estabelecimento ao qual está conectado.' });
+      }
+
+      const { data: targetShop, error: shopCheckErr } = await supabase
+        .from('barbershops')
+        .select('id, name, slug')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (shopCheckErr) throw shopCheckErr;
+      if (!targetShop) {
+        return res.status(404).json({ error: 'Estabelecimento não encontrado.' });
+      }
+
+      const { data: shopUsers, error: usersFetchErr } = await supabase
+        .from('users')
+        .select('id, role')
+        .eq('barbershop_id', id);
+
+      if (usersFetchErr) throw usersFetchErr;
+      if ((shopUsers || []).some((u: any) => u.role === 'master')) {
+        return res.status(400).json({ error: 'Não é permitido excluir um estabelecimento que possui usuário Master.' });
+      }
+
+      const userIds = (shopUsers || []).map((u: any) => u.id);
+      console.log(`[MASTER_DELETE_SHOP] Deleting shop "${targetShop.name}" (${id}) and all child records...`);
+
+      // 1. Delete niche/cloud/local records (notes, anamnesis, photos, touchups, pets, vehicles, saas_payments, reset tokens)
+      await cloudNicheDb.deleteShopData(id, userIds);
+
+      // 2. Delete core tables in strict foreign-key dependency order
+      const deleteByShopId = async (table: string, ignoreMissing = false) => {
+        const { error } = await supabase
+          .from(table)
+          .delete()
+          .eq('barbershop_id', id);
+        if (error) {
+          const msg = String(error.message || '').toLowerCase();
+          if (ignoreMissing && (error.code === 'PGRST205' || error.code === '42P01' || msg.includes('does not exist'))) {
+            return;
+          }
+          throw new Error(`Falha ao limpar ${table}: ${error.message}`);
+        }
+      };
+
+      await deleteByShopId('notifications', true);
+      await deleteByShopId('appointments');
+      await deleteByShopId('finances');
+      await deleteByShopId('client_packages', true);
+      await deleteByShopId('clients');
+      await deleteByShopId('services');
+      await deleteByShopId('barbers');
+      await deleteByShopId('shop_settings');
+      await deleteByShopId('users');
+
+      // 3. Finally delete the barbershop row itself
+      const { data: deletedShop, error: shopDelErr } = await supabase
+        .from('barbershops')
+        .delete()
+        .eq('id', id)
+        .select('id');
+
+      if (shopDelErr) throw shopDelErr;
+      if (!deletedShop || deletedShop.length === 0) {
+        return res.status(404).json({ error: 'Estabelecimento não pôde ser removido ou já foi excluído.' });
+      }
+
+      console.log(`[MASTER_DELETE_SHOP_SUCCESS] Deleted "${targetShop.name}" (${id}).`);
+      res.json({ success: true, deletedId: id, deletedName: targetShop.name });
+    } catch (e: any) {
+      console.error('[MASTER_DELETE_SHOP_ERR]', e);
+      res.status(500).json({ error: e.message || 'Erro ao excluir estabelecimento', details: e.message });
+    }
+  };
+
+  api.delete('/admin/master/shops/:id', authenticateToken, requireMaster, handleDeleteShopMaster);
+  api.post('/admin/master/shops/:id/delete', authenticateToken, requireMaster, handleDeleteShopMaster);
+
   // Update Support WhatsApp (Master only)
   api.post('/admin/master/support-contact', authenticateToken, requireMaster, async (req, res) => {
     try {
@@ -4196,97 +4454,34 @@ async function startServer() {
     res.status(404).json({ error: `Rota API não encontrada: ${req.method} ${req.originalUrl}` });
   });
 
-  // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath, { maxAge: '1d' }));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
+  // Static assets & Vite dev middleware (only outside Vercel serverless)
+  if (!isVercel) {
+    if (process.env.NODE_ENV !== 'production') {
+      const { createServer: createViteServer } = await import('vite');
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      app.use(vite.middlewares);
+    } else {
+      const distPath = path.join(process.cwd(), 'dist');
+      app.use(express.static(distPath, { maxAge: '1d' }));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    }
 
-  // Final server setup
-  if (process.env.VERCEL !== '1') {
     app.listen(PORT, '0.0.0.0', async () => {
       console.log(`Server running on http://localhost:${PORT}`);
-      
-      // ENSURE MASTER USERS ON STARTUP
-      try {
-        console.log('[STARTUP] Syncing Master users...');
-        const masterUsers = [
-          { email: 'marcusdoiseme@doiseme.com', name: 'Marcus Doiseme', pass: 'Luna2025' },
-          { email: 'admin@doiseme.com', name: 'Admin Doiseme', pass: 'admin123' },
-          { email: 'marcusdias2014mv@gmail.com', name: 'Marcus Dias', pass: 'admin123' }
-        ];
-
-        for (const u of masterUsers) {
-          const { data: existingUser, error: checkErr } = await supabase.from('users').select('id').eq('email', u.email).maybeSingle();
-          
-          if (checkErr) {
-            if (checkErr.message?.includes('fetch failed') || (checkErr as any).message?.includes('ENOTFOUND')) {
-              console.error('\n[CRITICAL ERROR] 🚨 SUPABASE PROJECT PAUSED OR UNREACHABLE 🚨');
-              console.error('The application cannot connect to Supabase (ENOTFOUND).');
-              console.error('This usually happens when your Supabase Free Tier project is paused due to inactivity.');
-              console.error('Please log in to your Supabase dashboard and restore your project.');
-              break; // Stop trying if we can't even connect
-            }
-            console.error(`[STARTUP] Error checking master user ${u.email}:`, checkErr);
-            continue;
-          }
-
-          if (existingUser) {
-            const { error } = await supabase.from('users').update({ role: 'master' }).eq('email', u.email);
-            if (!error) console.log(`[STARTUP] Updated ${u.email} to master.`);
-          } else {
-            console.log(`[STARTUP] Creating master user: ${u.email}`);
-            const passwordHash = await bcrypt.hash(u.pass, 10);
-            const { error } = await supabase.from('users').insert({
-              id: crypto.randomUUID(),
-              barbershop_id: 'shop-1', // Ensure shop-1 exists as well
-              name: u.name,
-              email: u.email,
-              password_hash: passwordHash,
-              role: 'master'
-            });
-            if (error) console.error(`[STARTUP] Failed to create ${u.email}:`, error);
-          }
-        }
-
-        // Seed initial Mercado Pago App Payment Link if mp_payment_links not yet saved
-        try {
-          const existingLinksRaw = await cloudNicheDb.getPlatformSetting('mp_payment_links');
-          if (!existingLinksRaw) {
-            await cloudNicheDb.setPlatformSetting(
-              'mp_payment_links',
-              JSON.stringify({ essencial: 'https://mpago.la/2GNFS1S' })
-            );
-            console.log('[STARTUP] Seeded default Essencial Mercado Pago link.');
-          }
-        } catch (linkSeedErr) {
-          console.warn('[STARTUP_MP_LINK_SEED_WARN]', linkSeedErr);
-        }
-      } catch (e: any) {
-        if (e?.message?.includes('fetch failed') || e?.message?.includes('ENOTFOUND')) {
-          console.error('\n[CRITICAL ERROR] 🚨 SUPABASE PROJECT PAUSED OR UNREACHABLE 🚨');
-          console.error('The application cannot connect to Supabase (ENOTFOUND).');
-          console.error('This usually happens when your Supabase Free Tier project is paused due to inactivity.');
-          console.error('Please log in to your Supabase dashboard and restore your project.');
-          console.error(`URL attempted: ${process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL}\n`);
-        } else {
-          console.error('[STARTUP_SYNC_FAILED]', e);
-        }
-      }
+      await ensureStartupSync();
     });
+  } else {
+    // On Vercel cold start, ensure shop-1 & Master users sync safely once routes are mounted
+    await ensureStartupSync();
   }
 }
 
-startServer();
+export const serverReady = startServer();
 
 export default app;
 // end

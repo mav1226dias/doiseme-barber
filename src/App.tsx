@@ -6,6 +6,7 @@
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from 'next-themes';
+import { Toaster } from 'sonner';
 import PublicLayout from './layouts/PublicLayout';
 import AdminLayout from './layouts/AdminLayout';
 import Landing from './pages/public/Landing';
@@ -35,6 +36,7 @@ export default function App() {
   return (
     // @ts-ignore
     <ThemeProvider attribute="class" defaultTheme="light">
+      <Toaster richColors position="top-right" />
       <ErrorBoundary>
         <BusinessConfigProvider>
           <BrowserRouter>

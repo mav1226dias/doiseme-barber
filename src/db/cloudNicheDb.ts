@@ -1015,5 +1015,80 @@ export const cloudNicheDb = {
       throw error;
     }
     return data || [];
+  },
+
+  async deleteClientsData(barbershopId: string, clientIds: string[]): Promise<void> {
+    const cleanIds = Array.from(new Set(clientIds.map(id => String(id || '').trim()).filter(Boolean)));
+    if (cleanIds.length === 0) return;
+
+    const clientTables = [
+      'client_clinical_notes',
+      'patient_anamnesis',
+      'aesthetics_anamnesis',
+      'aesthetics_photos',
+      'aesthetics_touchups',
+      'client_pets',
+      'client_vehicles',
+      'client_style_preferences',
+      'client_fitness_assessments',
+      'client_tattoo_records'
+    ];
+
+    for (const table of clientTables) {
+      const { error } = await supabaseAdmin
+        .from(table)
+        .delete()
+        .eq('barbershop_id', barbershopId)
+        .in('client_id', cleanIds);
+
+      if (error && !isTableMissingOrUnmigrated(error)) {
+        console.warn(`[CLOUD_DB_CLIENT_CLEANUP_WARN] ${table}:`, error.message);
+      }
+    }
+
+    nicheDb.deleteClientsData(barbershopId, cleanIds);
+  },
+
+  async deleteShopData(barbershopId: string, userIds: string[] = []): Promise<void> {
+    const shopTables = [
+      'client_clinical_notes',
+      'patient_anamnesis',
+      'aesthetics_anamnesis',
+      'aesthetics_photos',
+      'aesthetics_touchups',
+      'client_pets',
+      'client_vehicles',
+      'client_style_preferences',
+      'client_fitness_assessments',
+      'client_tattoo_records',
+      'entity_photos',
+      'barber_metadata',
+      'saas_payments'
+    ];
+
+    for (const table of shopTables) {
+      const { error } = await supabaseAdmin
+        .from(table)
+        .delete()
+        .eq('barbershop_id', barbershopId);
+
+      if (error && !isTableMissingOrUnmigrated(error)) {
+        console.warn(`[CLOUD_DB_SHOP_CLEANUP_WARN] ${table}:`, error.message);
+      }
+    }
+
+    const cleanUserIds = Array.from(new Set(userIds.map(id => String(id || '').trim()).filter(Boolean)));
+    if (cleanUserIds.length > 0) {
+      const { error } = await supabaseAdmin
+        .from('password_reset_tokens')
+        .delete()
+        .in('user_id', cleanUserIds);
+
+      if (error && !isTableMissingOrUnmigrated(error)) {
+        console.warn('[CLOUD_DB_SHOP_CLEANUP_WARN] password_reset_tokens:', error.message);
+      }
+    }
+
+    nicheDb.deleteShopData(barbershopId, cleanUserIds);
   }
 };

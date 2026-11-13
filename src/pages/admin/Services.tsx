@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, FormEvent } from 'react';
 import { Plus, Scissors, Trash2, Sparkles, Camera, Edit2, X, Loader2 } from 'lucide-react';
 import { getSegment } from '../../lib/segments';
 import { SegmentIcon } from '../../components/SegmentIcon';
+import ConfirmModal from '../../components/ConfirmModal';
 import { toast } from 'sonner';
 
 interface ServiceItem {
@@ -28,6 +29,8 @@ export default function Services() {
 
   const [segment, setSegment] = useState('barbershop');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deleteServiceId, setDeleteServiceId] = useState<string | null>(null);
+  const [deletingService, setDeletingService] = useState(false);
 
   const fetchServices = () => {
     const token = localStorage.getItem('token');
@@ -211,23 +214,31 @@ export default function Services() {
     }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Tem certeza que deseja excluir este serviço?')) return;
+  const handleDelete = (id: string) => {
+    setDeleteServiceId(id);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteServiceId) return;
+    setDeletingService(true);
     const token = localStorage.getItem('token');
     try {
-      const res = await fetch(`/api/admin/services/${id}`, {
+      const res = await fetch(`/api/admin/services/${deleteServiceId}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (res.ok) {
         toast.success('Serviço excluído');
+        setDeleteServiceId(null);
         fetchServices();
       } else {
         const err = await res.json();
         toast.error(err.error || 'Erro ao excluir serviço.');
       }
-    } catch (e) {
+    } catch {
       toast.error('Erro de rede ao excluir.');
+    } finally {
+      setDeletingService(false);
     }
   };
 
@@ -553,6 +564,16 @@ export default function Services() {
           )}
         </div>
       </div>
+
+      <ConfirmModal
+        open={Boolean(deleteServiceId)}
+        title="Excluir serviço?"
+        description="Tem certeza que deseja excluir este serviço? Agendamentos vinculados a ele também serão removidos."
+        confirmLabel="Excluir Serviço"
+        loading={deletingService}
+        onConfirm={handleConfirmDelete}
+        onCancel={() => !deletingService && setDeleteServiceId(null)}
+      />
     </div>
   );
 }
