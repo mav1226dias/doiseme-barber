@@ -1,6 +1,6 @@
-import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { createRequire } from 'node:module';
 
 const isVercelRuntime = process.env.VERCEL === '1' || Boolean(process.env.VERCEL_ENV);
 const dataDir = isVercelRuntime
@@ -13,32 +13,35 @@ const noopStatement = {
   run: () => ({ changes: 0 })
 };
 
-let db: any;
+const noopDb = {
+  pragma: () => {},
+  exec: () => {},
+  prepare: () => noopStatement
+};
 
-try {
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
+let db: any = noopDb;
 
-  const uploadsDir = path.join(dataDir, 'uploads');
-  if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir, { recursive: true });
-  }
-
-  const dbPath = path.join(dataDir, 'niche_records.db');
-  db = new Database(dbPath);
-  // Enable WAL mode for high concurrency
-  db.pragma('journal_mode = WAL');
-} catch (err) {
-  console.warn('[NICHE_DB_INIT_WARN] Falling back to in-memory SQLite:', (err as any)?.message || err);
+if (!isVercelRuntime) {
   try {
-    db = new Database(':memory:');
-  } catch {
-    db = {
-      pragma: () => {},
-      exec: () => {},
-      prepare: () => noopStatement
-    };
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    const uploadsDir = path.join(dataDir, 'uploads');
+    if (!fs.existsSync(uploadsDir)) {
+      fs.mkdirSync(uploadsDir, { recursive: true });
+    }
+
+    const require = createRequire(import.meta.url);
+    const sqlitePkg = ['better', 'sqlite3'].join('-');
+    const Database = require(sqlitePkg);
+    const dbPath = path.join(dataDir, 'niche_records.db');
+    db = new Database(dbPath);
+    // Enable WAL mode for high concurrency
+    db.pragma('journal_mode = WAL');
+  } catch (err) {
+    console.warn('[NICHE_DB_INIT_WARN] Using no-op fallback SQLite:', (err as any)?.message || err);
+    db = noopDb;
   }
 }
 

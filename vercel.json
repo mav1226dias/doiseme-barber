@@ -5,8 +5,7 @@
   "outputDirectory": "dist",
   "functions": {
     "api/index.ts": {
-      "includeFiles": "supabase_niche_migration.sql",
-      "maxDuration": 30
+      "includeFiles": "supabase_niche_migration.sql"
     }
   },
   "rewrites": [

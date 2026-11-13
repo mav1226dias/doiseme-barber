@@ -1,4 +1,4 @@
-import app, { serverReady } from '../server';
+import app, { ensureStartupSync, serverReady } from '../server.js';
 
 export const config = {
   api: {
@@ -17,10 +17,21 @@ export default async function handler(req: any, res: any) {
       const cleanSubPath = vpath.replace(/^\/+/, '');
       req.url = `/api/${cleanSubPath}${qs ? `?${qs}` : ''}`;
     }
-  } catch {
-    // Keep original req.url if URL parsing fails
-  }
 
-  await serverReady;
-  return app(req, res);
+    await serverReady;
+    await ensureStartupSync();
+    return app(req, res);
+  } catch (err: any) {
+    console.error('[VERCEL_HANDLER_ERROR]', err);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          error: 'Erro interno na API serverless',
+          details: err?.message || String(err)
+        })
+      );
+    }
+  }
 }

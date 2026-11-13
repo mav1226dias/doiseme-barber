@@ -1,4 +1,4 @@
-import { supabaseAdmin } from './supabaseAdmin';
+import { supabaseAdmin } from './supabaseAdmin.js';
 import {
   nicheDb,
   ClinicalNote,
@@ -11,7 +11,7 @@ import {
   ClientStylePreference,
   ClientFitnessAssessment,
   ClientTattooRecord
-} from './nicheDb';
+} from './nicheDb.js';
 
 const warnedTables = new Set<string>();
 

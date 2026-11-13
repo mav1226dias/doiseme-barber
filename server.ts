@@ -10,9 +10,9 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import QRCode from 'qrcode';
 
-import { supabaseAdmin as supabase, hasServiceRoleKey } from './src/db/supabaseAdmin';
-import { cloudNicheDb } from './src/db/cloudNicheDb';
-import { getSegment } from './src/lib/segments';
+import { supabaseAdmin as supabase, hasServiceRoleKey } from './src/db/supabaseAdmin.js';
+import { cloudNicheDb } from './src/db/cloudNicheDb.js';
+import { getSegment } from './src/lib/segments.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-for-doiseme';
 if (!process.env.JWT_SECRET) {
@@ -29,7 +29,7 @@ const uploadsBaseDir = isVercel
 
 let startupSyncPromise: Promise<void> | null = null;
 
-async function ensureStartupSync() {
+export async function ensureStartupSync() {
   if (startupSyncPromise) return startupSyncPromise;
   startupSyncPromise = (async () => {
     try {
@@ -231,6 +231,7 @@ async function startServer() {
     message: { error: 'Muitas tentativas de login. Tente novamente mais tarde.' },
     standardHeaders: true,
     legacyHeaders: false,
+    validate: false,
   });
 
   const registerLimiter = rateLimit({
@@ -239,6 +240,7 @@ async function startServer() {
     message: { error: 'Muitas tentativas de cadastro. Aguarde alguns minutos e tente novamente.' },
     standardHeaders: true,
     legacyHeaders: false,
+    validate: false,
   });
 
   const RESERVED_SLUGS = new Set([
@@ -4457,7 +4459,8 @@ async function startServer() {
   // Static assets & Vite dev middleware (only outside Vercel serverless)
   if (!isVercel) {
     if (process.env.NODE_ENV !== 'production') {
-      const { createServer: createViteServer } = await import('vite');
+      const vitePkg = ['vi', 'te'].join('');
+      const { createServer: createViteServer } = await import(/* @vite-ignore */ vitePkg);
       const vite = await createViteServer({
         server: { middlewareMode: true },
         appType: 'spa',
@@ -4475,9 +4478,6 @@ async function startServer() {
       console.log(`Server running on http://localhost:${PORT}`);
       await ensureStartupSync();
     });
-  } else {
-    // On Vercel cold start, ensure shop-1 & Master users sync safely once routes are mounted
-    await ensureStartupSync();
   }
 }
 
