@@ -1,20 +1,24 @@
+import 'dotenv/config';
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
+import nodeCrypto from 'crypto';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
-import dotenv from 'dotenv';
+import QRCode from 'qrcode';
 
-dotenv.config();
-
-import { supabase } from './src/db/supabase';
-import { nicheDb } from './src/db/nicheDb';
+import { supabaseAdmin as supabase, hasServiceRoleKey } from './src/db/supabaseAdmin';
+import { cloudNicheDb } from './src/db/cloudNicheDb';
+import { getSegment } from './src/lib/segments';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-for-doiseme';
+if (!process.env.JWT_SECRET) {
+  console.warn('[SECURITY] JWT_SECRET não definido nas variáveis de ambiente. Usando chave padrão apenas para desenvolvimento.');
+}
 
 const app = express();
 app.set('trust proxy', 1);
@@ -121,15 +125,56 @@ async function startServer() {
 </urlset>`);
   });
 
-  // Rate limiting for login - simplified to respect trust proxy
+  // Rate limiting for login & public auth endpoints
   const loginLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 mins
-    max: 10,
+    max: 15,
     message: { error: 'Muitas tentativas de login. Tente novamente mais tarde.' },
     standardHeaders: true,
     legacyHeaders: false,
-    // When trust proxy is true, req.ip will be the client IP
   });
+
+  const registerLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: { error: 'Muitas tentativas de cadastro. Aguarde alguns minutos e tente novamente.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  const RESERVED_SLUGS = new Set([
+    'admin', 'api', 'login', 'cadastro', 'register', 'signup',
+    'recuperar-senha', 'redefinir-senha', 'master', 'b', 'doiseme',
+    'suporte', 'app', 'www', 'public', 'health', 'seed'
+  ]);
+
+  const hashResetToken = (rawToken: string) =>
+    nodeCrypto.createHash('sha256').update(rawToken).digest('hex');
+
+  const getAppBaseUrl = (req: any) => {
+    const envUrl = process.env.APP_URL?.trim().replace(/\/+$/, '');
+    if (envUrl && envUrl !== 'MY_APP_URL') return envUrl;
+    const origin = req.headers?.origin?.trim().replace(/\/+$/, '');
+    if (origin) return origin;
+    return `${req.protocol}://${req.get('host')}`;
+  };
+
+  const maskEmail = (email: string) => {
+    const [local, domain] = email.split('@');
+    if (!local || !domain) return email;
+    const visible = local.slice(0, Math.min(2, local.length));
+    return `${visible}${'*'.repeat(Math.max(2, local.length - visible.length))}@${domain}`;
+  };
+
+  const normalizeSupportWhatsapp = (raw?: string | null): string => {
+    if (!raw) return '';
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) return '';
+    if (digits.length === 10 || digits.length === 11) {
+      return `55${digits}`;
+    }
+    return digits;
+  };
 
   // Auth Middleware
   const authenticateToken = async (req: any, res: any, next: any) => {
@@ -156,7 +201,7 @@ async function startServer() {
 
       // Skip extra checks for master admin unless they are NOT impersonating
       if (user.role !== 'master' && user.barbershopId) {
-        const { data: shop, error } = await supabase
+        const { data: shop } = await supabase
           .from('barbershops')
           .select('is_blocked, expires_at')
           .eq('id', user.barbershopId)
@@ -167,7 +212,17 @@ async function startServer() {
             return res.status(403).json({ error: 'Sua conta está bloqueada pelo administrador.' });
           }
           if (shop.expires_at && new Date(shop.expires_at) < new Date()) {
-            return res.status(403).json({ error: 'Seu período de teste ou assinatura expirou.' });
+            const pathAllowedWhenExpired =
+              req.path === '/admin/shop-info' ||
+              req.path.startsWith('/admin/billing') ||
+              req.path === '/public/support-contact';
+            if (!pathAllowedWhenExpired) {
+              return res.status(403).json({
+                error: 'Seu período de teste ou assinatura expirou.',
+                subscriptionExpired: true
+              });
+            }
+            req.subscriptionExpired = true;
           }
         }
       }
@@ -187,7 +242,7 @@ async function startServer() {
     const isAuthorized = userEmail && authorizedEmails.includes(userEmail);
     const isMasterRole = req.user?.role === 'master';
 
-    if (isMasterRole || isAuthorized) {
+    if (isMasterRole && isAuthorized) {
       next();
     } else {
       console.warn(`[SECURITY_ALERT] Non-authorized Master attempt: ${req.user?.email} (Role: ${req.user?.role})`);
@@ -225,9 +280,8 @@ async function startServer() {
       .replace(/-+$/, '');
   };
 
-  // DEBUG: List all shops for internal diagnostics
-  api.get('/admin/debug/shops', authenticateToken, async (req: any, res) => {
-    // Only allow some email or just anyone with a valid token for now since it's dev
+  // DEBUG: List all shops for internal diagnostics (Master only)
+  api.get('/admin/debug/shops', authenticateToken, requireMaster, async (req: any, res) => {
     try {
       const { data, error } = await supabase.from('barbershops').select('id, name, slug, is_blocked');
       if (error) console.warn('[DEBUG_DB_SCAN_WARN]', error.message);
@@ -305,7 +359,7 @@ async function startServer() {
     }
   });
 
-  // Upload proxy to Supabase
+  // Upload proxy to Supabase Storage (scoped per tenant)
   api.post('/admin/upload', authenticateToken, async (req: any, res) => {
     const { filePath, content, contentType } = req.body;
     const BUCKET_NAME = 'barbearias-assets';
@@ -314,12 +368,21 @@ async function startServer() {
       return res.status(400).json({ error: 'Faltando dados de upload' });
     }
 
+    // Scope upload path by barbershopId to prevent cross-tenant overwrites
+    const sanitizedPath = String(filePath)
+      .replace(/\.\./g, '')
+      .replace(/^\/+/, '');
+    const tenantPrefix = `shops/${req.user.barbershopId}/`;
+    const scopedFilePath = sanitizedPath.startsWith('shops/')
+      ? sanitizedPath
+      : `${tenantPrefix}${sanitizedPath}`;
+
     try {
       const buffer = Buffer.from(content, 'base64');
       
-      const { data, error } = await supabase.storage
+      const { error } = await supabase.storage
         .from(BUCKET_NAME)
-        .upload(filePath, buffer, {
+        .upload(scopedFilePath, buffer, {
           contentType: contentType || 'image/png',
           upsert: true
         });
@@ -327,7 +390,7 @@ async function startServer() {
       if (!error) {
         const { data: { publicUrl } } = supabase.storage
           .from(BUCKET_NAME)
-          .getPublicUrl(filePath);
+          .getPublicUrl(scopedFilePath);
         return res.json({ publicUrl });
       }
 
@@ -411,7 +474,7 @@ async function startServer() {
       if (error) throw error;
       
       const barberIds = (shopBarbers || []).map(b => b.id.toString());
-      const photosMap = nicheDb.getEntityPhotosMap(barberIds);
+      const photosMap = await cloudNicheDb.getEntityPhotosMap(barberIds);
 
       // Map to camelCase for the frontend including assigned serviceIds and photoUrl
       res.json((shopBarbers || []).map(b => ({
@@ -441,7 +504,7 @@ async function startServer() {
       if (error) throw error;
       
       const serviceIds = (shopServices || []).map(s => s.id.toString());
-      const photosMap = nicheDb.getEntityPhotosMap(serviceIds);
+      const photosMap = await cloudNicheDb.getEntityPhotosMap(serviceIds);
 
       res.json((shopServices || []).map(s => ({
         id: s.id,
@@ -758,11 +821,347 @@ async function startServer() {
     }
   });
 
+  // Check if slug is available for self-service signup
+  api.get('/auth/check-slug/:slug', async (req, res) => {
+    try {
+      const cleanSlug = standardizeSlug(req.params.slug || '');
+      if (!cleanSlug || cleanSlug.length < 3) {
+        return res.json({
+          available: false,
+          normalizedSlug: cleanSlug || '',
+          reason: 'O link deve ter pelo menos 3 caracteres.'
+        });
+      }
+      if (RESERVED_SLUGS.has(cleanSlug)) {
+        return res.json({
+          available: false,
+          normalizedSlug: cleanSlug,
+          reason: 'Este link é reservado pelo sistema.'
+        });
+      }
+
+      const { data: existingShop, error } = await supabase
+        .from('barbershops')
+        .select('id')
+        .eq('slug', cleanSlug)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      return res.json({
+        available: !existingShop,
+        normalizedSlug: cleanSlug,
+        reason: existingShop ? 'Este link já está em uso por outro estabelecimento.' : undefined
+      });
+    } catch (error: any) {
+      console.error('[CHECK_SLUG_ERR]', error);
+      return res.status(500).json({ available: false, error: 'Erro ao verificar disponibilidade do link' });
+    }
+  });
+
+  // Self-service shop + owner registration (14-day free trial)
+  api.post('/auth/register', registerLimiter, async (req, res) => {
+    const {
+      businessName,
+      ownerName,
+      slug,
+      email,
+      phone,
+      segment,
+      password,
+      confirmPassword,
+      seedStarterServices = true,
+      createOwnerAsProfessional = true
+    } = req.body;
+
+    if (!businessName || !ownerName || !slug || !email || !password) {
+      return res.status(400).json({ error: 'Preencha todos os campos obrigatórios.' });
+    }
+
+    const cleanBusinessName = String(businessName).trim();
+    const cleanOwnerName = String(ownerName).trim();
+    const cleanEmail = String(email).trim().toLowerCase();
+    const cleanPhone = phone ? String(phone).trim() : '';
+    const cleanSlug = standardizeSlug(String(slug));
+
+    if (cleanBusinessName.length < 2) {
+      return res.status(400).json({ error: 'O nome do estabelecimento deve ter pelo menos 2 caracteres.' });
+    }
+    if (cleanOwnerName.length < 2) {
+      return res.status(400).json({ error: 'Informe seu nome completo.' });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'Informe um e-mail válido.' });
+    }
+    if (!cleanSlug || cleanSlug.length < 3) {
+      return res.status(400).json({ error: 'O link personalizado deve ter pelo menos 3 caracteres válidos.' });
+    }
+    if (RESERVED_SLUGS.has(cleanSlug)) {
+      return res.status(400).json({ error: 'Este link personalizado é reservado. Escolha outro.' });
+    }
+    if (String(password).length < 6) {
+      return res.status(400).json({ error: 'A senha deve ter no mínimo 6 caracteres.' });
+    }
+    if (confirmPassword !== undefined && password !== confirmPassword) {
+      return res.status(400).json({ error: 'As senhas não coincidem.' });
+    }
+
+    try {
+      const { data: existingSlug, error: slugErr } = await supabase
+        .from('barbershops')
+        .select('id')
+        .eq('slug', cleanSlug)
+        .maybeSingle();
+
+      if (slugErr) throw slugErr;
+      if (existingSlug) {
+        return res.status(400).json({ error: 'Este link personalizado já está em uso. Escolha outro.' });
+      }
+
+      const { data: existingUser, error: emailErr } = await supabase
+        .from('users')
+        .select('id')
+        .ilike('email', cleanEmail)
+        .maybeSingle();
+
+      if (emailErr) throw emailErr;
+      if (existingUser) {
+        return res.status(400).json({ error: 'Este e-mail já está cadastrado. Faça login ou recupere sua senha.' });
+      }
+
+      const preset = getSegment(segment);
+      const shopId = crypto.randomUUID();
+      const userId = crypto.randomUUID();
+      const trialDays = 7;
+      const trialExpiresAt = new Date(Date.now() + trialDays * 24 * 60 * 60 * 1000).toISOString();
+
+      const shopPayload: Record<string, any> = {
+        id: shopId,
+        name: cleanBusinessName,
+        slug: cleanSlug,
+        segment: preset.id,
+        whatsapp: cleanPhone || null,
+        phone: cleanPhone || null,
+        primary_color: preset.defaultColors.primary,
+        secondary_color: preset.defaultColors.secondary,
+        is_blocked: false,
+        expires_at: trialExpiresAt
+      };
+
+      let { error: shopInsertErr } = await supabase.from('barbershops').insert(shopPayload);
+      if (shopInsertErr && shopInsertErr.message?.includes('column')) {
+        delete shopPayload.segment;
+        const retryShop = await supabase.from('barbershops').insert(shopPayload);
+        shopInsertErr = retryShop.error;
+      }
+      if (shopInsertErr) throw shopInsertErr;
+
+      // Initialize default business hours
+      const { error: settingsErr } = await supabase.from('shop_settings').insert({
+        id: crypto.randomUUID(),
+        barbershop_id: shopId,
+        config: DEFAULT_SETTINGS
+      });
+      if (settingsErr) {
+        console.warn('[REGISTER_SETTINGS_WARN]', settingsErr.message);
+      }
+
+      // Create admin user (rollback shop if user creation fails)
+      const passwordHash = await bcrypt.hash(password, 10);
+      const { error: userInsertErr } = await supabase.from('users').insert({
+        id: userId,
+        barbershop_id: shopId,
+        name: cleanOwnerName,
+        email: cleanEmail,
+        password_hash: passwordHash,
+        role: 'admin'
+      });
+
+      if (userInsertErr) {
+        await supabase.from('shop_settings').delete().eq('barbershop_id', shopId);
+        await supabase.from('barbershops').delete().eq('id', shopId);
+        throw userInsertErr;
+      }
+
+      // Optional: Create owner as first active professional so booking link works immediately
+      let createdBarberId: string | null = null;
+      if (createOwnerAsProfessional) {
+        createdBarberId = crypto.randomUUID();
+        const { error: barberErr } = await supabase.from('barbers').insert({
+          id: createdBarberId,
+          barbershop_id: shopId,
+          name: cleanOwnerName,
+          active: true
+        });
+        if (barberErr) {
+          console.warn('[REGISTER_BARBER_WARN]', barberErr.message);
+          createdBarberId = null;
+        }
+      }
+
+      // Optional: Seed starter services for the chosen niche
+      if (seedStarterServices && preset.suggestedServices.length > 0) {
+        const servicesPayload = preset.suggestedServices.slice(0, 4).map((srv) => ({
+          id: crypto.randomUUID(),
+          barbershop_id: shopId,
+          name: srv.name,
+          duration_minutes: srv.durationMinutes,
+          price: srv.price,
+          active: true
+        }));
+        const { error: srvErr } = await supabase.from('services').insert(servicesPayload);
+        if (srvErr) {
+          console.warn('[REGISTER_SERVICES_WARN]', srvErr.message);
+        }
+      }
+
+      const token = jwt.sign(
+        {
+          id: userId,
+          barbershopId: shopId,
+          role: 'admin',
+          email: cleanEmail
+        },
+        JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+
+      console.log(`[REGISTER SUCCESS] New tenant created: ${cleanBusinessName} (/b/${cleanSlug}) by ${cleanEmail}`);
+
+      return res.status(201).json({
+        success: true,
+        token,
+        trialDays,
+        user: {
+          id: userId,
+          name: cleanOwnerName,
+          email: cleanEmail,
+          role: 'admin',
+          barbershopId: shopId
+        },
+        shop: {
+          id: shopId,
+          name: cleanBusinessName,
+          slug: cleanSlug,
+          segment: preset.id,
+          expires_at: trialExpiresAt
+        }
+      });
+    } catch (error: any) {
+      console.error('[REGISTER_ERROR]', error);
+      return res.status(500).json({ error: 'Erro ao criar estabelecimento. Tente novamente.', details: error.message });
+    }
+  });
+
+  // Public Support WhatsApp contact for password recovery & account help
+  api.get('/public/support-contact', async (_req, res) => {
+    try {
+      const saved = await cloudNicheDb.getPlatformSetting('support_whatsapp');
+      const raw = saved || process.env.SUPPORT_WHATSAPP || '';
+      const whatsapp = normalizeSupportWhatsapp(raw);
+      return res.json({
+        configured: Boolean(whatsapp),
+        whatsapp,
+        raw: saved || process.env.SUPPORT_WHATSAPP || ''
+      });
+    } catch (error: any) {
+      console.error('[SUPPORT_CONTACT_GET_ERR]', error);
+      return res.status(500).json({ configured: false, whatsapp: '' });
+    }
+  });
+
+  // Verify reset token validity
+  api.get('/auth/verify-reset-token', async (req, res) => {
+    const rawToken = String(req.query.token || '').trim();
+    if (!rawToken || rawToken.length < 20) {
+      return res.status(400).json({ valid: false, error: 'Link de redefinição inválido.' });
+    }
+
+    try {
+      const tokenHash = hashResetToken(rawToken);
+      const record = await cloudNicheDb.getPasswordResetTokenByHash(tokenHash);
+
+      if (!record) {
+        return res.status(400).json({ valid: false, error: 'Link de redefinição não encontrado ou inválido.' });
+      }
+      if (record.used_at) {
+        return res.status(400).json({ valid: false, error: 'Este link já foi utilizado. Solicite uma nova recuperação.' });
+      }
+      if (new Date(record.expires_at) < new Date()) {
+        return res.status(400).json({ valid: false, error: 'Este link expirou (validade de 30 minutos). Solicite um novo.' });
+      }
+
+      return res.json({
+        valid: true,
+        emailMasked: maskEmail(record.email)
+      });
+    } catch (error: any) {
+      console.error('[VERIFY_RESET_TOKEN_ERR]', error);
+      return res.status(500).json({ valid: false, error: 'Erro ao validar link de redefinição.' });
+    }
+  });
+
+  // Reset Password using token
+  api.post('/auth/reset-password', async (req, res) => {
+    const { token, newPassword, confirmPassword } = req.body;
+    const rawToken = String(token || '').trim();
+
+    if (!rawToken || !newPassword) {
+      return res.status(400).json({ error: 'Token e nova senha são obrigatórios.' });
+    }
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres.' });
+    }
+    if (confirmPassword !== undefined && newPassword !== confirmPassword) {
+      return res.status(400).json({ error: 'As senhas não coincidem.' });
+    }
+
+    try {
+      const tokenHash = hashResetToken(rawToken);
+      const record = await cloudNicheDb.getPasswordResetTokenByHash(tokenHash);
+
+      if (!record) {
+        return res.status(400).json({ error: 'Link de redefinição inválido.' });
+      }
+      if (record.used_at) {
+        return res.status(400).json({ error: 'Este link já foi utilizado.' });
+      }
+      if (new Date(record.expires_at) < new Date()) {
+        return res.status(400).json({ error: 'Este link expirou. Solicite uma nova recuperação.' });
+      }
+
+      const newHash = await bcrypt.hash(newPassword, 10);
+      let { error: updateErr } = await supabase
+        .from('users')
+        .update({ password_hash: newHash, updated_at: new Date().toISOString() })
+        .eq('id', record.user_id);
+
+      if (updateErr && updateErr.message?.includes('updated_at')) {
+        const retryUpdate = await supabase
+          .from('users')
+          .update({ password_hash: newHash })
+          .eq('id', record.user_id);
+        updateErr = retryUpdate.error;
+      }
+
+      if (updateErr) throw updateErr;
+
+      await cloudNicheDb.markPasswordResetTokenUsed(record.id);
+      console.log(`[PASSWORD_RESET_SUCCESS] Senha redefinida para ${record.email}`);
+
+      return res.json({ success: true, message: 'Senha redefinida com sucesso! Você já pode fazer login.' });
+    } catch (error: any) {
+      console.error('[RESET_PASSWORD_ERR]', error);
+      return res.status(500).json({ error: 'Erro ao redefinir senha.' });
+    }
+  });
+
   api.post('/auth/login', loginLimiter, async (req, res) => {
     const { email, password } = req.body;
-    console.log(`[LOGIN ATTEMPT] Email: ${email}`);
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    console.log(`[LOGIN ATTEMPT] Email: ${cleanEmail}`);
     
-    if (!email || !password) {
+    if (!cleanEmail || !password) {
       return res.status(400).json({ error: 'Email e senha são obrigatórios' });
     }
 
@@ -770,7 +1169,7 @@ async function startServer() {
       const { data: user, error } = await supabase
         .from('users')
         .select('*')
-        .eq('email', email)
+        .ilike('email', cleanEmail)
         .maybeSingle(); // Better than .single() to avoid 406 on no rows
         
       if (error) {
@@ -783,10 +1182,11 @@ async function startServer() {
       }
       
       if (!user) {
-        console.warn(`[LOGIN WARN] User not found: ${email}`);
+        console.warn(`[LOGIN WARN] User not found: ${cleanEmail}`);
         return res.status(401).json({ error: 'Usuário não encontrado ou credenciais inválidas' });
       }
 
+      let subscriptionExpired = false;
       // Check shop status if NOT a master user
       if (user.role !== 'master') {
         const { data: shop } = await supabase
@@ -797,12 +1197,12 @@ async function startServer() {
 
         if (shop) {
           if (shop.is_blocked) {
-            return res.status(403).json({ error: 'Esta barbearia está bloqueada. Entre em contato com o administrador.' });
+            return res.status(403).json({ error: 'Este estabelecimento está bloqueado. Entre em contato com o suporte.' });
           }
           if (shop.expires_at) {
             const expiryDate = new Date(shop.expires_at);
             if (expiryDate < new Date()) {
-              return res.status(403).json({ error: 'O prazo de utilização desta barbearia expirou.' });
+              subscriptionExpired = true;
             }
           }
         }
@@ -810,11 +1210,11 @@ async function startServer() {
 
       const valid = await bcrypt.compare(password, user.password_hash);
       if (!valid) {
-        console.warn(`[LOGIN WARN] Invalid password for ${email}`);
+        console.warn(`[LOGIN WARN] Invalid password for ${cleanEmail}`);
         return res.status(401).json({ error: 'Senha incorreta' });
       }
 
-      console.log(`[LOGIN SUCCESS] User authenticated: ${email} (Role: ${user.role})`);
+      console.log(`[LOGIN SUCCESS] User authenticated: ${user.email} (Role: ${user.role}, Expired: ${subscriptionExpired})`);
       const token = jwt.sign({ 
         id: user.id, 
         barbershopId: user.barbershop_id, 
@@ -824,6 +1224,7 @@ async function startServer() {
       
       res.json({ 
         token, 
+        subscriptionExpired,
         user: { 
           id: user.id, 
           name: user.name, 
@@ -1009,7 +1410,7 @@ async function startServer() {
       const totalAppointments = allAppointments?.length || 0;
       
       const barberIds = (allBarbers || []).map(b => b.id.toString());
-      const barbersMetaMap = nicheDb.getBarbersMetadataMap(barberIds);
+      const barbersMetaMap = await cloudNicheDb.getBarbersMetadataMap(barberIds);
       const enrichedBarbers = (allBarbers || []).map(b => ({
         ...b,
         commission_percentage: barbersMetaMap[b.id]?.commission_percentage ?? b.commission_percentage ?? 50
@@ -1415,8 +1816,8 @@ async function startServer() {
       if (error) throw error;
 
       const barberIds = (barbersList || []).map((b: any) => b.id.toString());
-      const photosMap = nicheDb.getEntityPhotosMap(barberIds);
-      const metaMap = nicheDb.getBarbersMetadataMap(barberIds);
+      const photosMap = await cloudNicheDb.getEntityPhotosMap(barberIds);
+      const metaMap = await cloudNicheDb.getBarbersMetadataMap(barberIds);
 
       res.json((barbersList || []).map((b: any) => ({
         ...b,
@@ -1458,14 +1859,14 @@ async function startServer() {
 
       if (error) throw error;
 
-      // Persist commission in nicheDb
+      // Persist commission
       if (commission_percentage !== undefined) {
-        nicheDb.upsertBarberMetadata(id, req.user.barbershopId, Number(commission_percentage));
+        await cloudNicheDb.upsertBarberMetadata(id, req.user.barbershopId, Number(commission_percentage));
       }
 
-      // Persist photo safely in nicheDb
+      // Persist photo safely
       if (finalPhoto) {
-        nicheDb.upsertEntityPhoto(id, req.user.barbershopId, 'barber', finalPhoto);
+        await cloudNicheDb.upsertEntityPhoto(id, req.user.barbershopId, 'barber', finalPhoto);
       }
 
       res.json({ success: true, id, photo_url: finalPhoto });
@@ -1509,14 +1910,14 @@ async function startServer() {
         if (error) throw error;
       }
 
-      // Save commission_percentage in nicheDb
+      // Save commission_percentage
       if (commission_percentage !== undefined) {
-        nicheDb.upsertBarberMetadata(req.params.id, req.user.barbershopId, Number(commission_percentage));
+        await cloudNicheDb.upsertBarberMetadata(req.params.id, req.user.barbershopId, Number(commission_percentage));
       }
 
-      // Update photo in nicheDb if provided
+      // Update photo if provided
       if (photo_url !== undefined || photoUrl !== undefined) {
-        nicheDb.upsertEntityPhoto(req.params.id, req.user.barbershopId, 'barber', photo_url ?? photoUrl);
+        await cloudNicheDb.upsertEntityPhoto(req.params.id, req.user.barbershopId, 'barber', photo_url ?? photoUrl);
       }
 
       res.json({ success: true });
@@ -1536,7 +1937,7 @@ async function startServer() {
       if (error) throw error;
       
       const serviceIds = (servicesList || []).map((s: any) => s.id.toString());
-      const photosMap = nicheDb.getEntityPhotosMap(serviceIds);
+      const photosMap = await cloudNicheDb.getEntityPhotosMap(serviceIds);
 
       res.json((servicesList || []).map(s => ({
         id: s.id,
@@ -1569,9 +1970,9 @@ async function startServer() {
       });
       if (error) throw error;
 
-      // Save photo in nicheDb
+      // Save photo
       if (finalImage) {
-        nicheDb.upsertEntityPhoto(id, req.user.barbershopId, 'service', finalImage);
+        await cloudNicheDb.upsertEntityPhoto(id, req.user.barbershopId, 'service', finalImage);
       }
 
       res.json({ success: true, id, image_url: finalImage });
@@ -1599,7 +2000,7 @@ async function startServer() {
       }
 
       if (image_url !== undefined || imageUrl !== undefined || photo_url !== undefined) {
-        nicheDb.upsertEntityPhoto(req.params.id, req.user.barbershopId, 'service', image_url ?? imageUrl ?? photo_url);
+        await cloudNicheDb.upsertEntityPhoto(req.params.id, req.user.barbershopId, 'service', image_url ?? imageUrl ?? photo_url);
       }
 
       res.json({ success: true });
@@ -1873,10 +2274,10 @@ async function startServer() {
       }
 
       // 2. Fetch clinical notes
-      const notes = nicheDb.getNotesByClient(barbershopId, clientId);
+      const notes = await cloudNicheDb.getNotesByClient(barbershopId, clientId);
 
       // 3. Fetch anamnesis
-      const anamnesis = nicheDb.getAnamnesis(barbershopId, clientId);
+      const anamnesis = await cloudNicheDb.getAnamnesis(barbershopId, clientId);
 
       // 4. Fetch client appointments history
       const { data: appts } = await supabase
@@ -1939,7 +2340,7 @@ async function startServer() {
 
     try {
       const id = crypto.randomUUID();
-      const newNote = nicheDb.createNote({
+      const newNote = await cloudNicheDb.createNote({
         id,
         barbershop_id: barbershopId,
         client_id: clientId,
@@ -1976,7 +2377,7 @@ async function startServer() {
     } = req.body;
 
     try {
-      const updated = nicheDb.updateNote(noteId, barbershopId, {
+      const updated = await cloudNicheDb.updateNote(noteId, barbershopId, {
         title,
         content,
         session_date,
@@ -2003,7 +2404,7 @@ async function startServer() {
     const noteId = req.params.noteId;
 
     try {
-      const deleted = nicheDb.deleteNote(noteId, barbershopId);
+      const deleted = await cloudNicheDb.deleteNote(noteId, barbershopId);
       if (!deleted) {
         return res.status(404).json({ error: 'Anotação não encontrada' });
       }
@@ -2028,7 +2429,7 @@ async function startServer() {
     } = req.body;
 
     try {
-      const anamnesis = nicheDb.upsertAnamnesis({
+      const anamnesis = await cloudNicheDb.upsertAnamnesis({
         client_id: clientId,
         barbershop_id: barbershopId,
         chief_complaint,
@@ -2053,9 +2454,9 @@ async function startServer() {
     const barbershopId = req.user.barbershopId;
 
     try {
-      const anamnesis = nicheDb.getAestheticsAnamnesis(barbershopId, clientId);
-      const photos = nicheDb.getAestheticsPhotos(barbershopId, clientId);
-      const touchups = nicheDb.getAestheticsTouchups(barbershopId, clientId);
+      const anamnesis = await cloudNicheDb.getAestheticsAnamnesis(barbershopId, clientId);
+      const photos = await cloudNicheDb.getAestheticsPhotos(barbershopId, clientId);
+      const touchups = await cloudNicheDb.getAestheticsTouchups(barbershopId, clientId);
 
       res.json({
         anamnesis: anamnesis || {
@@ -2092,7 +2493,7 @@ async function startServer() {
     } = req.body;
 
     try {
-      const anamnesis = nicheDb.upsertAestheticsAnamnesis({
+      const anamnesis = await cloudNicheDb.upsertAestheticsAnamnesis({
         client_id: clientId,
         barbershop_id: barbershopId,
         skin_phototype,
@@ -2123,7 +2524,7 @@ async function startServer() {
 
     try {
       const id = crypto.randomUUID();
-      const photoRecord = nicheDb.addAestheticsPhoto({
+      const photoRecord = await cloudNicheDb.addAestheticsPhoto({
         id,
         barbershop_id: barbershopId,
         client_id: clientId,
@@ -2146,7 +2547,7 @@ async function startServer() {
     const photoId = req.params.photoId;
 
     try {
-      const deleted = nicheDb.deleteAestheticsPhoto(photoId, barbershopId);
+      const deleted = await cloudNicheDb.deleteAestheticsPhoto(photoId, barbershopId);
       if (!deleted) return res.status(404).json({ error: 'Registro fotográfico não encontrado' });
       res.json({ success: true });
     } catch (error: any) {
@@ -2166,7 +2567,7 @@ async function startServer() {
 
     try {
       const id = crypto.randomUUID();
-      const touchup = nicheDb.createAestheticsTouchup({
+      const touchup = await cloudNicheDb.createAestheticsTouchup({
         id,
         barbershop_id: barbershopId,
         client_id: clientId,
@@ -2195,7 +2596,7 @@ async function startServer() {
     }
 
     try {
-      const updated = nicheDb.updateAestheticsTouchupStatus(touchupId, barbershopId, status);
+      const updated = await cloudNicheDb.updateAestheticsTouchupStatus(touchupId, barbershopId, status);
       if (!updated) return res.status(404).json({ error: 'Alerta de retorno não encontrado' });
       res.json({ success: true });
     } catch (error: any) {
@@ -2209,7 +2610,7 @@ async function startServer() {
     const touchupId = req.params.touchupId;
 
     try {
-      const deleted = nicheDb.deleteAestheticsTouchup(touchupId, barbershopId);
+      const deleted = await cloudNicheDb.deleteAestheticsTouchup(touchupId, barbershopId);
       if (!deleted) return res.status(404).json({ error: 'Alerta não encontrado' });
       res.json({ success: true });
     } catch (error: any) {
@@ -2224,7 +2625,7 @@ async function startServer() {
     const barbershopId = req.user.barbershopId;
 
     try {
-      const pets = nicheDb.getPets(barbershopId, clientId);
+      const pets = await cloudNicheDb.getPets(barbershopId, clientId);
       res.json({ pets });
     } catch (error: any) {
       console.error('[PETS_GET_ERR]', error);
@@ -2243,7 +2644,7 @@ async function startServer() {
 
     try {
       const id = crypto.randomUUID();
-      const pet = nicheDb.createPet({
+      const pet = await cloudNicheDb.createPet({
         id,
         barbershop_id: barbershopId,
         client_id: clientId,
@@ -2270,7 +2671,7 @@ async function startServer() {
     const petId = req.params.petId;
 
     try {
-      const deleted = nicheDb.deletePet(petId, barbershopId);
+      const deleted = await cloudNicheDb.deletePet(petId, barbershopId);
       if (!deleted) return res.status(404).json({ error: 'Pet não encontrado' });
       res.json({ success: true });
     } catch (error: any) {
@@ -2285,7 +2686,7 @@ async function startServer() {
     const barbershopId = req.user.barbershopId;
 
     try {
-      const vehicles = nicheDb.getVehicles(barbershopId, clientId);
+      const vehicles = await cloudNicheDb.getVehicles(barbershopId, clientId);
       res.json({ vehicles });
     } catch (error: any) {
       console.error('[VEHICLES_GET_ERR]', error);
@@ -2304,7 +2705,7 @@ async function startServer() {
 
     try {
       const id = crypto.randomUUID();
-      const vehicle = nicheDb.createVehicle({
+      const vehicle = await cloudNicheDb.createVehicle({
         id,
         barbershop_id: barbershopId,
         client_id: clientId,
@@ -2332,7 +2733,7 @@ async function startServer() {
     const vehicleId = req.params.vehicleId;
 
     try {
-      const deleted = nicheDb.deleteVehicle(vehicleId, barbershopId);
+      const deleted = await cloudNicheDb.deleteVehicle(vehicleId, barbershopId);
       if (!deleted) return res.status(404).json({ error: 'Veículo não encontrado' });
       res.json({ success: true });
     } catch (error: any) {
@@ -2347,7 +2748,7 @@ async function startServer() {
     const barbershopId = req.user.barbershopId;
 
     try {
-      const preferences = nicheDb.getStylePreferences(barbershopId, clientId);
+      const preferences = await cloudNicheDb.getStylePreferences(barbershopId, clientId);
       res.json({
         preferences: preferences || {
           hair_cut_style: '',
@@ -2371,7 +2772,7 @@ async function startServer() {
     const { hair_cut_style, beard_style, blade_sizes, hair_color_formula, shampoo_preference, aftershave_allergies, notes } = req.body;
 
     try {
-      const preferences = nicheDb.upsertStylePreferences({
+      const preferences = await cloudNicheDb.upsertStylePreferences({
         client_id: clientId,
         barbershop_id: barbershopId,
         hair_cut_style,
@@ -2396,7 +2797,7 @@ async function startServer() {
     const barbershopId = req.user.barbershopId;
 
     try {
-      const assessments = nicheDb.getFitnessAssessments(barbershopId, clientId);
+      const assessments = await cloudNicheDb.getFitnessAssessments(barbershopId, clientId);
       res.json({ assessments });
     } catch (error: any) {
       console.error('[FITNESS_GET_ERR]', error);
@@ -2415,7 +2816,7 @@ async function startServer() {
 
     try {
       const id = crypto.randomUUID();
-      const assessment = nicheDb.createFitnessAssessment({
+      const assessment = await cloudNicheDb.createFitnessAssessment({
         id,
         barbershop_id: barbershopId,
         client_id: clientId,
@@ -2448,7 +2849,7 @@ async function startServer() {
     const assessmentId = req.params.assessmentId;
 
     try {
-      const deleted = nicheDb.deleteFitnessAssessment(assessmentId, barbershopId);
+      const deleted = await cloudNicheDb.deleteFitnessAssessment(assessmentId, barbershopId);
       if (!deleted) return res.status(404).json({ error: 'Avaliação não encontrada' });
       res.json({ success: true });
     } catch (error: any) {
@@ -2463,7 +2864,7 @@ async function startServer() {
     const barbershopId = req.user.barbershopId;
 
     try {
-      const records = nicheDb.getTattooRecords(barbershopId, clientId);
+      const records = await cloudNicheDb.getTattooRecords(barbershopId, clientId);
       res.json({ records });
     } catch (error: any) {
       console.error('[TATTOO_GET_ERR]', error);
@@ -2482,7 +2883,7 @@ async function startServer() {
 
     try {
       const id = crypto.randomUUID();
-      const record = nicheDb.createTattooRecord({
+      const record = await cloudNicheDb.createTattooRecord({
         id,
         barbershop_id: barbershopId,
         client_id: clientId,
@@ -2510,7 +2911,7 @@ async function startServer() {
     const recordId = req.params.recordId;
 
     try {
-      const deleted = nicheDb.deleteTattooRecord(recordId, barbershopId);
+      const deleted = await cloudNicheDb.deleteTattooRecord(recordId, barbershopId);
       if (!deleted) return res.status(404).json({ error: 'Registro não encontrado' });
       res.json({ success: true });
     } catch (error: any) {
@@ -2794,9 +3195,907 @@ async function startServer() {
     }
   });
 
+  // Generate password reset link for any shop's admin (Master only)
+  api.post('/admin/master/shops/:id/reset-link', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { data: adminUsers, error: userErr } = await supabase
+        .from('users')
+        .select('id, email, name, role')
+        .eq('barbershop_id', id)
+        .order('created_at', { ascending: true });
+
+      if (userErr) throw userErr;
+      const targetUser = (adminUsers || []).find((u: any) => u.role === 'admin') || adminUsers?.[0];
+      if (!targetUser) {
+        return res.status(404).json({ error: 'Nenhum usuário administrador encontrado para este estabelecimento.' });
+      }
+
+      await cloudNicheDb.invalidateUserResetTokens(targetUser.id);
+      const rawToken = nodeCrypto.randomBytes(32).toString('hex');
+      const tokenHash = hashResetToken(rawToken);
+      const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
+      await cloudNicheDb.createPasswordResetToken({
+        id: crypto.randomUUID(),
+        user_id: targetUser.id,
+        email: targetUser.email,
+        token_hash: tokenHash,
+        expires_at: expiresAt,
+        created_at: new Date().toISOString()
+      });
+
+      const resetUrl = `${getAppBaseUrl(req)}/admin/redefinir-senha?token=${rawToken}`;
+      res.json({ success: true, resetUrl, adminEmail: targetUser.email });
+    } catch (e: any) {
+      console.error('[MASTER_RESET_LINK_ERR]', e);
+      res.status(500).json({ error: 'Erro ao gerar link de redefinição de senha', details: e.message });
+    }
+  });
+
+  // Update Support WhatsApp (Master only)
+  api.post('/admin/master/support-contact', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const normalized = normalizeSupportWhatsapp(req.body?.whatsapp);
+      if (!normalized || normalized.length < 10) {
+        return res.status(400).json({ error: 'Informe um número de WhatsApp válido com DDD (ex: 5511999999999).' });
+      }
+      await cloudNicheDb.setPlatformSetting('support_whatsapp', normalized);
+      res.json({ success: true, whatsapp: normalized });
+    } catch (e: any) {
+      console.error('[MASTER_SUPPORT_CONTACT_ERR]', e);
+      res.status(500).json({ error: 'Erro ao salvar WhatsApp do suporte', details: e.message });
+    }
+  });
+
+  // Cloud Persistence & Security Diagnostics (Master only)
+  api.get('/admin/master/cloud-status', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const cloudStatus = await cloudNicheDb.checkCloudStatus();
+      res.json({
+        ...cloudStatus,
+        security: {
+          hasJwtSecret: Boolean(process.env.JWT_SECRET),
+          hasServiceRoleKey,
+          nodeEnv: process.env.NODE_ENV || 'development'
+        }
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao verificar status da nuvem', details: e.message });
+    }
+  });
+
+  api.get('/admin/master/migration-sql', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const sqlPath = path.join(process.cwd(), 'supabase_niche_migration.sql');
+      if (!fs.existsSync(sqlPath)) {
+        return res.status(404).json({ error: 'Arquivo de migração não encontrado' });
+      }
+      const sql = fs.readFileSync(sqlPath, 'utf-8');
+      res.json({ sql });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao ler script SQL', details: e.message });
+    }
+  });
+
+  api.post('/admin/master/migrate-niche-to-cloud', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const summary = await cloudNicheDb.migrateAllLocalToSupabase();
+      res.json({ success: true, ...summary });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao migrar registros locais para o Supabase', details: e.message });
+    }
+  });
+
+  // --- SAAS PLANS, BILLING & MERCADO PAGO ---
+  const SAAS_PLANS = [
+    {
+      id: 'essencial',
+      name: 'Agenda Individual',
+      subtitle: 'Ideal para quem trabalha sozinho (1 profissional)',
+      monthlyPrice: 59.90,
+      annualPrice: 479.00,
+      highlighted: false,
+      badge: '1 Profissional',
+      features: [
+        '1 profissional ativo na agenda',
+        'Link exclusivo de agendamento (/b/sua-marca)',
+        'Cadastro de clientes e histórico completo',
+        'Agenda inteligente sem conflitos de horário'
+      ]
+    },
+    {
+      id: 'profissional',
+      name: 'Plano Pro',
+      subtitle: 'Perfeito para equipes de 1 a 3 funcionários',
+      monthlyPrice: 99.90,
+      annualPrice: 859.00,
+      highlighted: false,
+      badge: 'Equipe 1 a 3',
+      features: [
+        'Até 4 profissionais ativos (dono + equipe)',
+        'Cálculo automático de comissões',
+        'Controle financeiro diário e despesas',
+        'Prontuários, anamnese e fotos do seu nicho'
+      ]
+    },
+    {
+      id: 'premium',
+      name: 'Plano Completo',
+      subtitle: 'Retenção, pacotes e lucro sem limites',
+      monthlyPrice: 119.90,
+      annualPrice: 997.00,
+      highlighted: true,
+      badge: 'Melhor Custo-Benefício',
+      features: [
+        'Profissionais e serviços ilimitados',
+        'Campanhas de reativação p/ trazer clientes sumidos',
+        'Pacotes de sessões e combos recorrentes',
+        'Vitrine VIP (logo, banner e paleta personalizada)',
+        'Implantação assistida + Suporte VIP no WhatsApp'
+      ]
+    }
+  ];
+
+  const getMpAccessToken = async (): Promise<string> => {
+    const saved = await cloudNicheDb.getPlatformSetting('mp_access_token');
+    return (saved || process.env.MP_ACCESS_TOKEN || '').trim();
+  };
+
+  const getPlatformPixKey = async (): Promise<string> => {
+    const saved = await cloudNicheDb.getPlatformSetting('pix_key');
+    return (saved || process.env.MP_PIX_KEY || '').trim();
+  };
+
+  const getPlatformPixProfile = async () => {
+    const [pixKey, receiverName, receiverCity] = await Promise.all([
+      getPlatformPixKey(),
+      cloudNicheDb.getPlatformSetting('pix_receiver_name'),
+      cloudNicheDb.getPlatformSetting('pix_receiver_city')
+    ]);
+    return {
+      pixKey,
+      receiverName: (receiverName || 'DOISEME PRO').trim(),
+      receiverCity: (receiverCity || 'SAO PAULO').trim()
+    };
+  };
+
+  const getMpPaymentLinks = async (): Promise<Record<string, string>> => {
+    const raw = await cloudNicheDb.getPlatformSetting('mp_payment_links');
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return typeof parsed === 'object' && parsed ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+
+  // Official Banco Central PIX BR Code (EMVCo + CRC16-CCITT)
+  const formatTlv = (id: string, value: string): string => {
+    const len = String(value.length).padStart(2, '0');
+    return `${id}${len}${value}`;
+  };
+
+  const sanitizePixAscii = (text: string, maxLen: number): string => {
+    return text
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9 ]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toUpperCase()
+      .slice(0, maxLen);
+  };
+
+  const normalizePixKeyForBrCode = (rawKey: string): string => {
+    const trimmed = rawKey.trim();
+    if (!trimmed) return '';
+    if (trimmed.includes('@')) return trimmed.toLowerCase();
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)) {
+      return trimmed.toLowerCase();
+    }
+    if (trimmed.startsWith('+')) {
+      return '+' + trimmed.replace(/\D/g, '');
+    }
+    if (trimmed.includes('(') || trimmed.includes(')')) {
+      const digits = trimmed.replace(/\D/g, '');
+      return digits.startsWith('55') ? `+${digits}` : `+55${digits}`;
+    }
+    const digitsOnly = trimmed.replace(/\D/g, '');
+    if (digitsOnly.length === 13 && digitsOnly.startsWith('55')) {
+      return `+${digitsOnly}`;
+    }
+    if (digitsOnly.length === 11 || digitsOnly.length === 14) {
+      return digitsOnly;
+    }
+    return trimmed;
+  };
+
+  const crc16Ccitt = (payload: string): string => {
+    let crc = 0xffff;
+    for (let i = 0; i < payload.length; i++) {
+      crc ^= payload.charCodeAt(i) << 8;
+      for (let j = 0; j < 8; j++) {
+        if ((crc & 0x8000) !== 0) {
+          crc = ((crc << 1) ^ 0x1021) & 0xffff;
+        } else {
+          crc = (crc << 1) & 0xffff;
+        }
+      }
+    }
+    return crc.toString(16).toUpperCase().padStart(4, '0');
+  };
+
+  const generatePixBrCode = (params: {
+    pixKey: string;
+    receiverName: string;
+    receiverCity: string;
+    amount: number;
+    txid?: string;
+  }): string => {
+    const normalizedKey = normalizePixKeyForBrCode(params.pixKey);
+    const name = sanitizePixAscii(params.receiverName, 25) || 'DOISEME PRO';
+    const city = sanitizePixAscii(params.receiverCity, 15) || 'SAO PAULO';
+    const amountStr = Number(params.amount).toFixed(2);
+    const txid = (params.txid || 'DOISEMEPRO').replace(/[^a-zA-Z0-9]/g, '').slice(0, 25) || 'DOISEMEPRO';
+
+    const merchantAccount = formatTlv('00', 'br.gov.bcb.pix') + formatTlv('01', normalizedKey);
+    const additionalData = formatTlv('05', txid);
+
+    const payloadWithoutCrc =
+      formatTlv('00', '01') +
+      formatTlv('26', merchantAccount) +
+      formatTlv('52', '0000') +
+      formatTlv('53', '986') +
+      formatTlv('54', amountStr) +
+      formatTlv('58', 'BR') +
+      formatTlv('59', name) +
+      formatTlv('60', city) +
+      formatTlv('62', additionalData) +
+      '6304';
+
+    return payloadWithoutCrc + crc16Ccitt(payloadWithoutCrc);
+  };
+
+  const maskSecretToken = (token: string): string => {
+    if (!token) return '';
+    if (token.length <= 14) return '••••••••••••';
+    return `${token.slice(0, 10)}••••••${token.slice(-4)}`;
+  };
+
+  const approveSaasPaymentIdempotently = async (paymentId: string, mpPaymentId?: string | null) => {
+    const payment = await cloudNicheDb.getSaasPaymentById(paymentId);
+    if (!payment) return { ok: false, reason: 'not_found' as const };
+
+    if (payment.status === 'approved') {
+      if (mpPaymentId && !payment.mp_payment_id) {
+        await cloudNicheDb.updateSaasPayment(payment.id, { mp_payment_id: mpPaymentId });
+      }
+      const { data: shop } = await supabase
+        .from('barbershops')
+        .select('expires_at')
+        .eq('id', payment.barbershop_id)
+        .maybeSingle();
+      return { ok: true, alreadyApproved: true, newExpiresAt: shop?.expires_at || null, payment };
+    }
+
+    const { data: shop } = await supabase
+      .from('barbershops')
+      .select('expires_at, is_blocked')
+      .eq('id', payment.barbershop_id)
+      .maybeSingle();
+
+    const now = Date.now();
+    const currentExpiry = shop?.expires_at ? new Date(shop.expires_at).getTime() : 0;
+    const baseTime = currentExpiry > now ? currentExpiry : now;
+    const daysAdded = Number(payment.days_added) || (payment.billing_cycle === 'annual' ? 365 : 30);
+    const newExpiresAt = new Date(baseTime + daysAdded * 24 * 60 * 60 * 1000).toISOString();
+
+    const { error: shopErr } = await supabase
+      .from('barbershops')
+      .update({ expires_at: newExpiresAt, is_blocked: false })
+      .eq('id', payment.barbershop_id);
+    if (shopErr) throw shopErr;
+
+    const paidAt = new Date().toISOString();
+    await cloudNicheDb.updateSaasPayment(payment.id, {
+      status: 'approved',
+      mp_payment_id: mpPaymentId || payment.mp_payment_id || null,
+      paid_at: paidAt
+    });
+
+    return {
+      ok: true,
+      alreadyApproved: false,
+      newExpiresAt,
+      payment: { ...payment, status: 'approved', paid_at: paidAt, mp_payment_id: mpPaymentId || payment.mp_payment_id }
+    };
+  };
+
+  // Public SaaS Plans list (Landing Page & Subscription page)
+  api.get('/public/plans', (_req, res) => {
+    res.json({ plans: SAAS_PLANS, trialDays: 7 });
+  });
+
+  // Admin Billing Status & Payment History
+  api.get('/admin/billing/status', authenticateToken, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { data: shop, error } = await supabase
+        .from('barbershops')
+        .select('id, name, slug, segment, is_blocked, expires_at, created_at')
+        .eq('id', shopId)
+        .maybeSingle();
+      if (error) throw error;
+
+      const [payments, mpToken, pixProfile, mpLinks, savedWhatsapp] = await Promise.all([
+        cloudNicheDb.getSaasPaymentsByShop(shopId),
+        getMpAccessToken(),
+        getPlatformPixProfile(),
+        getMpPaymentLinks(),
+        cloudNicheDb.getPlatformSetting('support_whatsapp')
+      ]);
+
+      const supportWhatsapp = normalizeSupportWhatsapp(savedWhatsapp || process.env.SUPPORT_WHATSAPP || '');
+      const isExpired = Boolean(shop?.expires_at && new Date(shop.expires_at) < new Date());
+
+      res.json({
+        shop,
+        isExpired,
+        plans: SAAS_PLANS,
+        payments,
+        mpConfigured: Boolean(mpToken),
+        pixKeyConfigured: Boolean(pixProfile.pixKey),
+        pixKey: pixProfile.pixKey || null,
+        mpLinks,
+        supportWhatsapp
+      });
+    } catch (e: any) {
+      console.error('[BILLING_STATUS_ERR]', e);
+      res.status(500).json({ error: 'Erro ao carregar status da assinatura', details: e.message });
+    }
+  });
+
+  // Create Mercado Pago Checkout Pro Preference
+  api.post('/admin/billing/checkout', authenticateToken, async (req: any, res) => {
+    try {
+      const { planId, billingCycle } = req.body;
+      const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
+      const plan = SAAS_PLANS.find((p) => p.id === planId);
+      if (!plan) {
+        return res.status(400).json({ error: 'Plano selecionado inválido.' });
+      }
+
+      const mpToken = await getMpAccessToken();
+      if (!mpToken) {
+        return res.status(400).json({
+          error: 'Mercado Pago ainda não configurado no Painel Master. Utilize a opção de pagamento via PIX.'
+        });
+      }
+
+      const amount = cycle === 'annual' ? plan.annualPrice : plan.monthlyPrice;
+      const daysAdded = cycle === 'annual' ? 365 : 30;
+      const paymentId = `pay_${crypto.randomUUID()}`;
+      const nowIso = new Date().toISOString();
+      const baseUrl = getAppBaseUrl(req);
+      const isHttps = baseUrl.startsWith('https://');
+
+      await cloudNicheDb.createSaasPayment({
+        id: paymentId,
+        barbershop_id: req.user.barbershopId,
+        plan_id: plan.id,
+        plan_name: plan.name,
+        amount,
+        billing_cycle: cycle,
+        payment_method: 'mercadopago_checkout',
+        external_reference: paymentId,
+        status: 'pending',
+        days_added: daysAdded,
+        created_at: nowIso,
+        updated_at: nowIso
+      });
+
+      const preferenceBody: any = {
+        items: [
+          {
+            id: `${plan.id}_${cycle}`,
+            title: `DoisemePRO - Plano ${plan.name} (${cycle === 'annual' ? 'Anual' : 'Mensal'})`,
+            quantity: 1,
+            currency_id: 'BRL',
+            unit_price: Number(amount.toFixed(2))
+          }
+        ],
+        external_reference: paymentId,
+        back_urls: {
+          success: `${baseUrl}/admin/assinatura?payment=success&ref=${paymentId}`,
+          failure: `${baseUrl}/admin/assinatura?payment=failure&ref=${paymentId}`,
+          pending: `${baseUrl}/admin/assinatura?payment=pending&ref=${paymentId}`
+        },
+        statement_descriptor: 'DOISEMEPRO'
+      };
+
+      if (req.user?.email) {
+        preferenceBody.payer = { email: req.user.email };
+      }
+      if (isHttps) {
+        preferenceBody.auto_return = 'approved';
+        preferenceBody.notification_url = `${baseUrl}/api/webhooks/mercadopago`;
+      }
+
+      const mpResponse = await fetch('https://api.mercadopago.com/checkout/preferences', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${mpToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(preferenceBody)
+      });
+
+      const mpData: any = await mpResponse.json();
+      if (!mpResponse.ok) {
+        console.error('[MP_CHECKOUT_ERR]', mpData);
+        await cloudNicheDb.updateSaasPayment(paymentId, { status: 'failed' });
+        return res.status(400).json({
+          error: mpData?.message || 'Não foi possível criar o link de pagamento no Mercado Pago. Verifique o Access Token no Painel Master.'
+        });
+      }
+
+      await cloudNicheDb.updateSaasPayment(paymentId, {
+        mp_preference_id: mpData.id || null
+      });
+
+      return res.json({
+        paymentId,
+        preferenceId: mpData.id,
+        checkoutUrl: mpData.init_point || mpData.sandbox_init_point
+      });
+    } catch (e: any) {
+      console.error('[BILLING_CHECKOUT_ERR]', e);
+      res.status(500).json({ error: 'Erro ao iniciar checkout no Mercado Pago', details: e.message });
+    }
+  });
+
+  // Create Instant PIX via Mercado Pago API OR Official Banco Central BR Code (using Chave PIX)
+  api.post('/admin/billing/pix', authenticateToken, async (req: any, res) => {
+    try {
+      const { planId, billingCycle } = req.body;
+      const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
+      const plan = SAAS_PLANS.find((p) => p.id === planId);
+      if (!plan) {
+        return res.status(400).json({ error: 'Plano selecionado inválido.' });
+      }
+
+      const [mpToken, pixProfile, savedWhatsapp] = await Promise.all([
+        getMpAccessToken(),
+        getPlatformPixProfile(),
+        cloudNicheDb.getPlatformSetting('support_whatsapp')
+      ]);
+
+      const amount = cycle === 'annual' ? plan.annualPrice : plan.monthlyPrice;
+      const daysAdded = cycle === 'annual' ? 365 : 30;
+      const paymentId = `pix_${crypto.randomUUID()}`;
+      const nowIso = new Date().toISOString();
+      const supportWhatsapp = normalizeSupportWhatsapp(savedWhatsapp || process.env.SUPPORT_WHATSAPP || '');
+
+      const buildBrCodeResponse = async () => {
+        const txid = paymentId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 20);
+        const brCode = generatePixBrCode({
+          pixKey: pixProfile.pixKey,
+          receiverName: pixProfile.receiverName,
+          receiverCity: pixProfile.receiverCity,
+          amount,
+          txid
+        });
+        const dataUrl = await QRCode.toDataURL(brCode, { width: 320, margin: 2 });
+        const qrCodeBase64 = dataUrl.replace(/^data:image\/png;base64,/, '');
+
+        return {
+          mode: 'brcode_pix',
+          paymentId,
+          amount,
+          planName: plan.name,
+          billingCycle: cycle,
+          pixKey: pixProfile.pixKey,
+          qrCode: brCode,
+          qrCodeBase64,
+          supportWhatsapp
+        };
+      };
+
+      if (mpToken) {
+        await cloudNicheDb.createSaasPayment({
+          id: paymentId,
+          barbershop_id: req.user.barbershopId,
+          plan_id: plan.id,
+          plan_name: plan.name,
+          amount,
+          billing_cycle: cycle,
+          payment_method: 'mercadopago_pix',
+          external_reference: paymentId,
+          status: 'pending',
+          days_added: daysAdded,
+          created_at: nowIso,
+          updated_at: nowIso
+        });
+
+        const baseUrl = getAppBaseUrl(req);
+        const payerEmail = req.user?.email || `assinatura+${req.user.barbershopId}@doiseme.com`;
+        const pixPayload: any = {
+          transaction_amount: Number(amount.toFixed(2)),
+          description: `DoisemePRO - Plano ${plan.name} (${cycle === 'annual' ? 'Anual' : 'Mensal'})`,
+          payment_method_id: 'pix',
+          external_reference: paymentId,
+          payer: {
+            email: payerEmail,
+            first_name: 'Assinante',
+            last_name: 'DoisemePRO'
+          }
+        };
+        if (baseUrl.startsWith('https://')) {
+          pixPayload.notification_url = `${baseUrl}/api/webhooks/mercadopago`;
+        }
+
+        const mpRes = await fetch('https://api.mercadopago.com/v1/payments', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${mpToken}`,
+            'Content-Type': 'application/json',
+            'X-Idempotency-Key': paymentId
+          },
+          body: JSON.stringify(pixPayload)
+        });
+
+        const mpData: any = await mpRes.json();
+        if (mpRes.ok && mpData?.point_of_interaction?.transaction_data?.qr_code) {
+          const tx = mpData.point_of_interaction.transaction_data;
+          await cloudNicheDb.updateSaasPayment(paymentId, {
+            mp_payment_id: String(mpData.id)
+          });
+
+          return res.json({
+            mode: 'mercadopago_pix',
+            paymentId,
+            mpPaymentId: String(mpData.id),
+            amount,
+            planName: plan.name,
+            billingCycle: cycle,
+            qrCode: tx.qr_code,
+            qrCodeBase64: tx.qr_code_base64 || null,
+            ticketUrl: tx.ticket_url || null
+          });
+        }
+
+        console.warn('[MP_PIX_WARN]', mpData?.message || mpData);
+        if (!pixProfile.pixKey) {
+          await cloudNicheDb.updateSaasPayment(paymentId, { status: 'failed' });
+          return res.status(400).json({
+            error: mpData?.message || 'Não foi possível gerar o PIX pelo Mercado Pago. Cadastre sua Chave PIX no Painel Master.'
+          });
+        }
+
+        await cloudNicheDb.updateSaasPayment(paymentId, { payment_method: 'pix_manual' });
+        return res.json(await buildBrCodeResponse());
+      }
+
+      if (pixProfile.pixKey) {
+        await cloudNicheDb.createSaasPayment({
+          id: paymentId,
+          barbershop_id: req.user.barbershopId,
+          plan_id: plan.id,
+          plan_name: plan.name,
+          amount,
+          billing_cycle: cycle,
+          payment_method: 'pix_manual',
+          external_reference: paymentId,
+          status: 'pending',
+          days_added: daysAdded,
+          created_at: nowIso,
+          updated_at: nowIso
+        });
+
+        return res.json(await buildBrCodeResponse());
+      }
+
+      return res.status(400).json({
+        error: 'Nenhuma Chave PIX foi cadastrada no Painel Master ainda.'
+      });
+    } catch (e: any) {
+      console.error('[BILLING_PIX_ERR]', e);
+      res.status(500).json({ error: 'Erro ao gerar pagamento PIX', details: e.message });
+    }
+  });
+
+  // Register intent when tenant uses a Mercado Pago App Payment Link (created from mobile app)
+  api.post('/admin/billing/link-intent', authenticateToken, async (req: any, res) => {
+    try {
+      const { planId } = req.body;
+      const plan = SAAS_PLANS.find((p) => p.id === planId);
+      if (!plan) {
+        return res.status(400).json({ error: 'Plano selecionado inválido.' });
+      }
+
+      const links = await getMpPaymentLinks();
+      const paymentUrl = links[plan.id];
+      if (!paymentUrl) {
+        return res.status(400).json({ error: 'Link de pagamento não configurado para este plano.' });
+      }
+
+      // App Payment Links have a fixed monthly price
+      const cycle = 'monthly';
+      const amount = plan.monthlyPrice;
+      const daysAdded = 30;
+      const paymentId = `lnk_${crypto.randomUUID()}`;
+      const nowIso = new Date().toISOString();
+
+      await cloudNicheDb.createSaasPayment({
+        id: paymentId,
+        barbershop_id: req.user.barbershopId,
+        plan_id: plan.id,
+        plan_name: plan.name,
+        amount,
+        billing_cycle: cycle,
+        payment_method: 'mercadopago_link',
+        external_reference: paymentId,
+        status: 'pending',
+        days_added: daysAdded,
+        created_at: nowIso,
+        updated_at: nowIso
+      });
+
+      return res.json({ paymentId, paymentUrl, amount, planName: plan.name });
+    } catch (e: any) {
+      console.error('[BILLING_LINK_INTENT_ERR]', e);
+      res.status(500).json({ error: 'Erro ao registrar link de pagamento', details: e.message });
+    }
+  });
+
+  // Verify / Poll a Payment Status
+  api.post('/admin/billing/verify/:paymentId', authenticateToken, async (req: any, res) => {
+    try {
+      const payment = await cloudNicheDb.getSaasPaymentById(req.params.paymentId);
+      if (!payment) {
+        return res.status(404).json({ error: 'Pagamento não encontrado.' });
+      }
+      if (req.user.role !== 'master' && payment.barbershop_id !== req.user.barbershopId) {
+        return res.status(403).json({ error: 'Acesso negado.' });
+      }
+
+      if (payment.status === 'approved') {
+        const { data: shop } = await supabase
+          .from('barbershops')
+          .select('expires_at')
+          .eq('id', payment.barbershop_id)
+          .maybeSingle();
+        return res.json({ status: 'approved', newExpiresAt: shop?.expires_at || null });
+      }
+
+      const mpToken = await getMpAccessToken();
+      if (!mpToken) {
+        return res.json({
+          status: payment.status,
+          message: 'Pagamento aguardando confirmação manual do administrador.'
+        });
+      }
+
+      let mpPayment: any = null;
+      if (payment.mp_payment_id) {
+        const r = await fetch(`https://api.mercadopago.com/v1/payments/${payment.mp_payment_id}`, {
+          headers: { 'Authorization': `Bearer ${mpToken}` }
+        });
+        if (r.ok) mpPayment = await r.json();
+      } else {
+        const r = await fetch(
+          `https://api.mercadopago.com/v1/payments/search?external_reference=${encodeURIComponent(payment.external_reference)}&sort=date_created&criteria=desc`,
+          { headers: { 'Authorization': `Bearer ${mpToken}` } }
+        );
+        if (r.ok) {
+          const searchData: any = await r.json();
+          const results = searchData?.results || [];
+          mpPayment = results.find((item: any) => item.status === 'approved') || results[0] || null;
+        }
+      }
+
+      if (mpPayment?.status === 'approved') {
+        const refMatches = !mpPayment.external_reference || mpPayment.external_reference === payment.external_reference;
+        const paidAmountOk = Number(mpPayment.transaction_amount || 0) + 0.01 >= Number(payment.amount);
+        const currencyOk = !mpPayment.currency_id || mpPayment.currency_id === 'BRL';
+        if (refMatches && paidAmountOk && currencyOk) {
+          const result = await approveSaasPaymentIdempotently(payment.id, String(mpPayment.id));
+          return res.json({ status: 'approved', newExpiresAt: result.newExpiresAt });
+        }
+        console.warn('[BILLING_VERIFY_MISMATCH]', {
+          paymentId: payment.id,
+          expectedAmount: payment.amount,
+          mpAmount: mpPayment.transaction_amount,
+          expectedRef: payment.external_reference,
+          mpRef: mpPayment.external_reference
+        });
+      }
+
+      return res.json({
+        status: mpPayment?.status || payment.status,
+        message: 'Pagamento ainda pendente de confirmação no Mercado Pago.'
+      });
+    } catch (e: any) {
+      console.error('[BILLING_VERIFY_ERR]', e);
+      res.status(500).json({ error: 'Erro ao verificar pagamento', details: e.message });
+    }
+  });
+
+  // Mercado Pago Webhook (Public, validates directly against MP API)
+  api.post('/webhooks/mercadopago', async (req, res) => {
+    try {
+      const rawPaymentId =
+        req.body?.data?.id ||
+        req.body?.id ||
+        req.query?.['data.id'] ||
+        req.query?.id;
+
+      const eventType = req.body?.type || req.body?.topic || req.query?.topic;
+      const mpPaymentId = rawPaymentId ? String(rawPaymentId).trim() : '';
+      if (!mpPaymentId || !/^\d+$/.test(mpPaymentId) || (eventType && !String(eventType).includes('payment'))) {
+        return res.status(200).json({ received: true });
+      }
+
+      const mpToken = await getMpAccessToken();
+      if (!mpToken) {
+        return res.status(200).json({ received: true, skipped: 'no_mp_token' });
+      }
+
+      const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${mpPaymentId}`, {
+        headers: { 'Authorization': `Bearer ${mpToken}` }
+      });
+      if (!mpRes.ok) {
+        return res.status(200).json({ received: true });
+      }
+
+      const mpData: any = await mpRes.json();
+      if (mpData?.status === 'approved' && mpData?.external_reference) {
+        const localPayment = await cloudNicheDb.getSaasPaymentById(String(mpData.external_reference));
+        if (localPayment) {
+          const paidAmountOk = Number(mpData.transaction_amount || 0) + 0.01 >= Number(localPayment.amount);
+          const currencyOk = !mpData.currency_id || mpData.currency_id === 'BRL';
+          if (paidAmountOk && currencyOk) {
+            await approveSaasPaymentIdempotently(localPayment.id, String(mpData.id));
+            console.log(`[MP_WEBHOOK_APPROVED] Payment ${localPayment.id} approved automatically.`);
+          } else {
+            console.warn('[MP_WEBHOOK_AMOUNT_MISMATCH]', localPayment.id, mpData.transaction_amount, localPayment.amount);
+          }
+        }
+      }
+
+      return res.status(200).json({ received: true });
+    } catch (e) {
+      console.error('[MP_WEBHOOK_ERR]', e);
+      return res.status(200).json({ received: true });
+    }
+  });
+
+  // Master Gateway Config & Payments Management
+  api.get('/admin/master/billing-config', authenticateToken, requireMaster, async (_req, res) => {
+    try {
+      const [mpToken, pixProfile, mpLinks] = await Promise.all([
+        getMpAccessToken(),
+        getPlatformPixProfile(),
+        getMpPaymentLinks()
+      ]);
+      res.json({
+        mpConfigured: Boolean(mpToken),
+        mpTokenMasked: maskSecretToken(mpToken),
+        pixKey: pixProfile.pixKey,
+        pixReceiverName: pixProfile.receiverName,
+        pixReceiverCity: pixProfile.receiverCity,
+        mpLinks
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao carregar configuração de pagamentos', details: e.message });
+    }
+  });
+
+  api.post('/admin/master/billing-config', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { mpAccessToken, pixKey, pixReceiverName, pixReceiverCity, mpLinks } = req.body;
+
+      if (typeof mpAccessToken === 'string' && mpAccessToken.trim()) {
+        const cleanToken = mpAccessToken.trim();
+        if (!cleanToken.startsWith('APP_USR-') && !cleanToken.startsWith('TEST-')) {
+          return res.status(400).json({
+            error: 'Access Token inválido. O token do Mercado Pago começa com APP_USR- ou TEST-.'
+          });
+        }
+        await cloudNicheDb.setPlatformSetting('mp_access_token', cleanToken);
+      }
+
+      if (typeof pixKey === 'string') {
+        await cloudNicheDb.setPlatformSetting('pix_key', pixKey.trim());
+      }
+      if (typeof pixReceiverName === 'string') {
+        await cloudNicheDb.setPlatformSetting('pix_receiver_name', pixReceiverName.trim() || 'DOISEME PRO');
+      }
+      if (typeof pixReceiverCity === 'string') {
+        await cloudNicheDb.setPlatformSetting('pix_receiver_city', pixReceiverCity.trim() || 'SAO PAULO');
+      }
+      if (mpLinks && typeof mpLinks === 'object') {
+        const cleanedLinks: Record<string, string> = {};
+        for (const key of ['essencial', 'profissional', 'premium']) {
+          if (typeof mpLinks[key] === 'string' && mpLinks[key].trim()) {
+            const rawUrl = mpLinks[key].trim();
+            try {
+              const parsed = new URL(rawUrl);
+              if (parsed.protocol !== 'https:') {
+                return res.status(400).json({ error: `O link do plano ${key} deve começar com https://.` });
+              }
+              cleanedLinks[key] = parsed.toString();
+            } catch {
+              return res.status(400).json({ error: `Link inválido para o plano ${key}.` });
+            }
+          }
+        }
+        await cloudNicheDb.setPlatformSetting('mp_payment_links', JSON.stringify(cleanedLinks));
+      }
+
+      const [updatedToken, updatedProfile, updatedLinks] = await Promise.all([
+        getMpAccessToken(),
+        getPlatformPixProfile(),
+        getMpPaymentLinks()
+      ]);
+      res.json({
+        success: true,
+        mpConfigured: Boolean(updatedToken),
+        mpTokenMasked: maskSecretToken(updatedToken),
+        pixKey: updatedProfile.pixKey,
+        pixReceiverName: updatedProfile.receiverName,
+        pixReceiverCity: updatedProfile.receiverCity,
+        mpLinks: updatedLinks
+      });
+    } catch (e: any) {
+      console.error('[MASTER_BILLING_CONFIG_ERR]', e);
+      res.status(500).json({ error: 'Erro ao salvar configuração de pagamentos', details: e.message });
+    }
+  });
+
+  api.get('/admin/master/payments', authenticateToken, requireMaster, async (_req, res) => {
+    try {
+      const payments = await cloudNicheDb.getAllSaasPayments();
+      const { data: shops } = await supabase.from('barbershops').select('id, name, slug');
+      const shopMap = new Map((shops || []).map((s: any) => [s.id, s]));
+
+      const enriched = payments.map((p: any) => ({
+        ...p,
+        shopName: shopMap.get(p.barbershop_id)?.name || p.barbershop_id,
+        shopSlug: shopMap.get(p.barbershop_id)?.slug || ''
+      }));
+
+      res.json({ payments: enriched });
+    } catch (e: any) {
+      console.error('[MASTER_PAYMENTS_ERR]', e);
+      res.status(500).json({ error: 'Erro ao listar pagamentos SaaS', details: e.message });
+    }
+  });
+
+  api.post('/admin/master/payments/:id/approve', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const result = await approveSaasPaymentIdempotently(req.params.id);
+      if (!result.ok) {
+        return res.status(404).json({ error: 'Pagamento não encontrado.' });
+      }
+      res.json({
+        success: true,
+        alreadyApproved: result.alreadyApproved,
+        newExpiresAt: result.newExpiresAt,
+        payment: result.payment
+      });
+    } catch (e: any) {
+      console.error('[MASTER_PAYMENT_APPROVE_ERR]', e);
+      res.status(500).json({ error: 'Erro ao aprovar pagamento', details: e.message });
+    }
+  });
+
   // --- END MASTER ADMIN ROUTES ---
 
-  api.post('/seed', async (req, res) => {
+  // Protected Seed Endpoint (Master Admin only)
+  api.post('/seed', authenticateToken, requireMaster, async (req, res) => {
     try {
       console.log('[SEED] Starting database sync...');
       const shopId = 'shop-1';
@@ -2864,8 +4163,7 @@ async function startServer() {
 
       res.json({ 
         success: true, 
-        message: 'Sistema sincronizado com sucesso!',
-        logins: 'Marcus: marcusdoiseme@doiseme.com (Luna2025) | Admin: admin@doiseme.com (admin123)' 
+        message: 'Sistema sincronizado com sucesso!'
       });
     } catch (error: any) {
       console.error('[SEED_ERROR]', error);
@@ -2930,12 +4228,16 @@ async function startServer() {
         for (const u of masterUsers) {
           const { data: existingUser, error: checkErr } = await supabase.from('users').select('id').eq('email', u.email).maybeSingle();
           
-          if (checkErr && (checkErr.message?.includes('fetch failed') || (checkErr as any).message?.includes('ENOTFOUND'))) {
-            console.error('\n[CRITICAL ERROR] 🚨 SUPABASE PROJECT PAUSED OR UNREACHABLE 🚨');
-            console.error('The application cannot connect to Supabase (ENOTFOUND).');
-            console.error('This usually happens when your Supabase Free Tier project is paused due to inactivity.');
-            console.error('Please log in to your Supabase dashboard and restore your project.');
-            break; // Stop trying if we can't even connect
+          if (checkErr) {
+            if (checkErr.message?.includes('fetch failed') || (checkErr as any).message?.includes('ENOTFOUND')) {
+              console.error('\n[CRITICAL ERROR] 🚨 SUPABASE PROJECT PAUSED OR UNREACHABLE 🚨');
+              console.error('The application cannot connect to Supabase (ENOTFOUND).');
+              console.error('This usually happens when your Supabase Free Tier project is paused due to inactivity.');
+              console.error('Please log in to your Supabase dashboard and restore your project.');
+              break; // Stop trying if we can't even connect
+            }
+            console.error(`[STARTUP] Error checking master user ${u.email}:`, checkErr);
+            continue;
           }
 
           if (existingUser) {
@@ -2954,6 +4256,20 @@ async function startServer() {
             });
             if (error) console.error(`[STARTUP] Failed to create ${u.email}:`, error);
           }
+        }
+
+        // Seed initial Mercado Pago App Payment Link if mp_payment_links not yet saved
+        try {
+          const existingLinksRaw = await cloudNicheDb.getPlatformSetting('mp_payment_links');
+          if (!existingLinksRaw) {
+            await cloudNicheDb.setPlatformSetting(
+              'mp_payment_links',
+              JSON.stringify({ essencial: 'https://mpago.la/2GNFS1S' })
+            );
+            console.log('[STARTUP] Seeded default Essencial Mercado Pago link.');
+          }
+        } catch (linkSeedErr) {
+          console.warn('[STARTUP_MP_LINK_SEED_WARN]', linkSeedErr);
         }
       } catch (e: any) {
         if (e?.message?.includes('fetch failed') || e?.message?.includes('ENOTFOUND')) {

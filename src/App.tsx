@@ -8,8 +8,12 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { ThemeProvider } from 'next-themes';
 import PublicLayout from './layouts/PublicLayout';
 import AdminLayout from './layouts/AdminLayout';
+import Landing from './pages/public/Landing';
 import Booking from './pages/public/Booking';
 import Login from './pages/admin/Login';
+import Register from './pages/admin/Register';
+import ForgotPassword from './pages/admin/ForgotPassword';
+import ResetPassword from './pages/admin/ResetPassword';
 import Dashboard from './pages/admin/Dashboard';
 import Barbers from './pages/admin/Barbers';
 import Services from './pages/admin/Services';
@@ -23,6 +27,7 @@ import Packages from './pages/admin/Packages';
 import Profile from './pages/admin/Profile';
 import BookingSite from './pages/admin/BookingSite';
 import MasterAdmin from './pages/admin/MasterAdmin';
+import Subscription from './pages/admin/Subscription';
 import ErrorBoundary from './components/ErrorBoundary';
 import { BusinessConfigProvider } from './context/BusinessConfigContext';
 
@@ -35,10 +40,16 @@ export default function App() {
           <BrowserRouter>
             <Routes>
             {/* Public Routes */}
-            <Route path="/" element={<Navigate to="/admin" replace />} />
+            <Route path="/" element={<Landing />} />
             <Route path="/b/:slug" element={<PublicLayout />}>
               <Route index element={<Booking />} />
             </Route>
+
+            {/* Auth & Onboarding Routes */}
+            <Route path="/cadastro" element={<Register />} />
+            <Route path="/admin/cadastro" element={<Register />} />
+            <Route path="/admin/recuperar-senha" element={<ForgotPassword />} />
+            <Route path="/admin/redefinir-senha" element={<ResetPassword />} />
 
             {/* Admin Routes */}
             <Route path="/admin/login" element={<Login />} />
@@ -55,6 +66,7 @@ export default function App() {
               <Route path="notifications" element={<Navigate to="/admin/campaigns" replace />} />
               <Route path="booking-site" element={<Navigate to="/admin/profile" replace />} />
               <Route path="master" element={<MasterAdmin />} />
+              <Route path="assinatura" element={<Subscription />} />
               <Route path="settings" element={<Settings />} />
             </Route>
           </Routes>

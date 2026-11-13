@@ -797,7 +797,7 @@ function isLightColor(hexColor?: string): boolean {
             <ShieldCheck className="w-4 h-4 text-green-500/80" />
             <span>Agendamento protegido e garantido por {shop.name}</span>
           </div>
-          <p>© {new Date().getFullYear()} • Plataforma Doiseme Universal SaaS</p>
+          <p>© {new Date().getFullYear()} • Plataforma DoisemePRO</p>
         </div>
 
       </div>

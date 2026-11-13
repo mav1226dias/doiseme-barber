@@ -9,7 +9,8 @@ import {
   EyeOff, 
   ShieldCheck, 
   CheckCircle2, 
-  AlertCircle 
+  AlertCircle,
+  MessageCircle
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -43,6 +44,7 @@ export default function Settings() {
 
   // User Info (from token/storage)
   const [userEmail, setUserEmail] = useState('');
+  const [supportWhatsapp, setSupportWhatsapp] = useState('');
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -77,6 +79,13 @@ export default function Settings() {
     if (currentMonth === 11 || currentMonth === 3 || currentMonth === 4) {
       setShowHolidayAlert(true);
     }
+
+    fetch('/api/public/support-contact')
+      .then(res => res.json())
+      .then(data => {
+        if (data?.whatsapp) setSupportWhatsapp(data.whatsapp);
+      })
+      .catch(() => {});
   }, []);
 
   const handleChange = (day: string, field: string, value: any) => {
@@ -544,6 +553,35 @@ export default function Settings() {
               <p className="text-[11px] opacity-80 leading-relaxed">
                 Após alterar sua senha, sua sessão atual continuará válida. Em caso de suspeita de invasão, recomendamos desconectar e realizar login novamente.
               </p>
+            </div>
+
+            <div className="bg-white dark:bg-zinc-900 p-5 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm space-y-3">
+              <div className="flex items-center gap-2.5">
+                <MessageCircle className="w-5 h-5 text-emerald-500" />
+                <h3 className="font-bold text-sm text-gray-900 dark:text-gray-100">
+                  Suporte para Troca de Senha
+                </h3>
+              </div>
+              <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
+                Esqueceu a senha atual ou precisa de ajuda com o seu acesso? Fale diretamente com o suporte no WhatsApp.
+              </p>
+              {supportWhatsapp ? (
+                <a
+                  href={`https://wa.me/${supportWhatsapp}?text=${encodeURIComponent(
+                    `Olá! Preciso de ajuda para trocar/recuperar a senha da minha conta no DoisemePRO.${userEmail ? `\nE-mail: ${userEmail}` : ''}`
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[#25D366] hover:bg-[#20bd5a] text-black font-bold text-xs transition-colors whitespace-nowrap"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  Chamar Suporte no WhatsApp
+                </a>
+              ) : (
+                <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                  WhatsApp do suporte ainda não configurado no Painel Master.
+                </p>
+              )}
             </div>
           </div>
 

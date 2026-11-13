@@ -15,7 +15,8 @@ import {
   Wallet, 
   Globe, 
   Megaphone, 
-  Shield 
+  Shield,
+  CreditCard
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTheme } from 'next-themes';
@@ -34,6 +35,7 @@ export default function AdminLayout() {
   const [isImpersonating, setIsImpersonating] = useState(false);
   const [shopSegment, setShopSegment] = useState('barbershop');
   const [shopName, setShopName] = useState('');
+  const [shopExpiresAt, setShopExpiresAt] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -85,6 +87,13 @@ export default function AdminLayout() {
           .then(data => {
             if (data?.segment) setShopSegment(data.segment);
             if (data?.name) setShopName(data.name);
+            if (data?.expires_at) {
+              setShopExpiresAt(data.expires_at);
+              const isMasterUser = payload.role === 'master' && authorizedEmails.includes(userEmail);
+              if (!isMasterUser && new Date(data.expires_at) < new Date() && window.location.pathname !== '/admin/assinatura') {
+                navigate('/admin/assinatura');
+              }
+            }
           })
           .catch(err => console.error('[ADMIN_LAYOUT_SHOP_INFO_ERR]', err));
       } catch (e) {
@@ -99,7 +108,10 @@ export default function AdminLayout() {
   useEffect(() => {
     // Close the mobile menu automatically when clicking a navigation link
     setIsMobileMenuOpen(false);
-  }, [location.pathname]);
+    if (!isMaster && shopExpiresAt && new Date(shopExpiresAt) < new Date() && location.pathname !== '/admin/assinatura') {
+      navigate('/admin/assinatura');
+    }
+  }, [location.pathname, isMaster, shopExpiresAt, navigate]);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -139,6 +151,7 @@ export default function AdminLayout() {
         { path: '/admin/finances', icon: Wallet, label: 'Financeiro' },
         { path: '/admin/campaigns', icon: Megaphone, label: 'Marketing & Mensagens' },
         { path: '/admin/profile', icon: Globe, label: 'Meu Site & Perfil' },
+        { path: '/admin/assinatura', icon: CreditCard, label: 'Assinatura & Planos' },
         { path: '/admin/settings', icon: Settings, label: 'Configurações' },
       ]
     }
@@ -161,7 +174,10 @@ export default function AdminLayout() {
         <div className="flex items-center gap-2">
           <SegmentIcon iconName={currentPreset.icon} className="w-6 h-6 text-black dark:text-[#D4AF37]" />
           <div>
-            <span className="font-bold text-lg tracking-wider uppercase font-serif">Doiseme</span>
+            <div className="flex items-center">
+              <span className="font-bold text-base tracking-wider uppercase font-serif">Doiseme</span>
+              <span className="text-[#D4AF37] font-sans font-extrabold text-[11px] px-1.5 py-0.2 rounded bg-[#D4AF37]/15 ml-1">PRO</span>
+            </div>
             <span className="text-[10px] block text-gray-500 dark:text-gray-400 font-sans tracking-normal leading-none font-medium truncate max-w-[140px]">{currentPreset.name.split(' ')[0]}</span>
           </div>
         </div>
@@ -202,7 +218,10 @@ export default function AdminLayout() {
           <div className="flex items-center gap-2">
             <SegmentIcon iconName={currentPreset.icon} className="w-6 h-6 text-[#D4AF37]" />
             <div>
-              <span className="font-bold text-lg tracking-wider uppercase font-serif">Doiseme</span>
+              <div className="flex items-center">
+                <span className="font-bold text-lg tracking-wider uppercase font-serif">Doiseme</span>
+                <span className="text-[#D4AF37] font-sans font-extrabold text-xs px-1.5 py-0.5 rounded bg-[#D4AF37]/15 ml-1">PRO</span>
+              </div>
               <span className="text-[10px] block text-gray-400 font-sans leading-none truncate max-w-[120px]">{currentPreset.name}</span>
             </div>
           </div>
@@ -270,6 +289,35 @@ export default function AdminLayout() {
             </button>
           </div>
         )}
+        {!isMaster && shopExpiresAt && (() => {
+          const daysLeft = Math.ceil((new Date(shopExpiresAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+          if (daysLeft < 0) {
+            return (
+              <div className="bg-red-600 text-white px-4 py-2.5 text-center text-xs font-bold flex flex-wrap items-center justify-center gap-3 tabular-nums">
+                <span>Assinatura expirada em {new Date(shopExpiresAt).toLocaleDateString('pt-BR')}. Renove para liberar o painel.</span>
+                <Link
+                  to="/admin/assinatura"
+                  className="bg-white text-red-600 px-3 py-1 rounded-md hover:bg-gray-100 transition-colors uppercase"
+                >
+                  Renovar Agora
+                </Link>
+              </div>
+            );
+          }
+          if (daysLeft >= 0 && daysLeft <= 15) {
+            return (
+              <div className="bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900/40 px-4 py-2 text-center text-xs text-amber-800 dark:text-amber-300 font-medium tabular-nums flex flex-wrap items-center justify-center gap-2">
+                <span>
+                  Período de avaliação ativo: {daysLeft === 0 ? 'expira hoje' : `${daysLeft} ${daysLeft === 1 ? 'dia restante' : 'dias restantes'}`} ({new Date(shopExpiresAt).toLocaleDateString('pt-BR')}).
+                </span>
+                <Link to="/admin/assinatura" className="font-bold underline hover:opacity-80">
+                  Ver planos e assinar
+                </Link>
+              </div>
+            );
+          }
+          return null;
+        })()}
         <div className="p-4 sm:p-6 md:p-8 max-w-6xl mx-auto w-full">
           <Outlet />
         </div>

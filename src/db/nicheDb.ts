@@ -226,6 +226,49 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_barber_meta_shop
   ON barber_metadata (barbershop_id);
+
+  -- Password Reset Tokens
+  CREATE TABLE IF NOT EXISTS password_reset_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_password_reset_hash
+  ON password_reset_tokens (token_hash);
+
+  -- Platform Settings (e.g. support_whatsapp, mp_access_token, saas_plans)
+  CREATE TABLE IF NOT EXISTS platform_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  -- SaaS Subscription Payments (Mercado Pago / PIX)
+  CREATE TABLE IF NOT EXISTS saas_payments (
+    id TEXT PRIMARY KEY,
+    barbershop_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    plan_name TEXT NOT NULL,
+    amount REAL NOT NULL,
+    billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+    payment_method TEXT NOT NULL DEFAULT 'mercadopago',
+    external_reference TEXT NOT NULL,
+    mp_preference_id TEXT,
+    mp_payment_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    days_added INTEGER NOT NULL DEFAULT 30,
+    paid_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_saas_payments_shop
+  ON saas_payments (barbershop_id, created_at DESC);
 `);
 
 export interface ClinicalNote {
@@ -1011,5 +1054,140 @@ export const nicheDb = {
       map[r.barber_id] = { commission_percentage: r.commission_percentage };
     });
     return map;
+  },
+
+  // --- PASSWORD RESET TOKENS ---
+  invalidateUserResetTokens(userId: string): void {
+    const now = new Date().toISOString();
+    db.prepare(`UPDATE password_reset_tokens SET used_at = ? WHERE user_id = ? AND used_at IS NULL`).run(now, userId);
+  },
+
+  createPasswordResetToken(data: {
+    id: string;
+    user_id: string;
+    email: string;
+    token_hash: string;
+    expires_at: string;
+    created_at: string;
+  }): void {
+    db.prepare(`
+      INSERT INTO password_reset_tokens (id, user_id, email, token_hash, expires_at, used_at, created_at)
+      VALUES (?, ?, ?, ?, ?, NULL, ?)
+    `).run(data.id, data.user_id, data.email, data.token_hash, data.expires_at, data.created_at);
+  },
+
+  getPasswordResetTokenByHash(tokenHash: string): {
+    id: string;
+    user_id: string;
+    email: string;
+    token_hash: string;
+    expires_at: string;
+    used_at: string | null;
+    created_at: string;
+  } | null {
+    const row = db.prepare(`SELECT * FROM password_reset_tokens WHERE token_hash = ? LIMIT 1`).get(tokenHash) as any;
+    return row || null;
+  },
+
+  markPasswordResetTokenUsed(id: string): void {
+    const now = new Date().toISOString();
+    db.prepare(`UPDATE password_reset_tokens SET used_at = ? WHERE id = ?`).run(now, id);
+  },
+
+  // --- PLATFORM SETTINGS ---
+  getPlatformSetting(key: string): string | null {
+    const row = db.prepare(`SELECT value FROM platform_settings WHERE key = ? LIMIT 1`).get(key) as any;
+    return row?.value ?? null;
+  },
+
+  setPlatformSetting(key: string, value: string): void {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO platform_settings (key, value, updated_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET
+        value = excluded.value,
+        updated_at = excluded.updated_at
+    `).run(key, value, now);
+  },
+
+  // --- SAAS PAYMENTS ---
+  createSaasPayment(data: {
+    id: string;
+    barbershop_id: string;
+    plan_id: string;
+    plan_name: string;
+    amount: number;
+    billing_cycle: string;
+    payment_method: string;
+    external_reference: string;
+    mp_preference_id?: string | null;
+    mp_payment_id?: string | null;
+    status: string;
+    days_added: number;
+    paid_at?: string | null;
+    created_at: string;
+    updated_at: string;
+  }): void {
+    db.prepare(`
+      INSERT INTO saas_payments (
+        id, barbershop_id, plan_id, plan_name, amount, billing_cycle, payment_method,
+        external_reference, mp_preference_id, mp_payment_id, status, days_added, paid_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      data.id, data.barbershop_id, data.plan_id, data.plan_name, data.amount,
+      data.billing_cycle, data.payment_method, data.external_reference,
+      data.mp_preference_id || null, data.mp_payment_id || null,
+      data.status, data.days_added, data.paid_at || null, data.created_at, data.updated_at
+    );
+  },
+
+  updateSaasPayment(id: string, updates: Record<string, any>): void {
+    const allowed = ['mp_preference_id', 'mp_payment_id', 'status', 'paid_at', 'payment_method', 'updated_at'];
+    const entries = Object.entries(updates).filter(([k]) => allowed.includes(k));
+    if (!entries.length) return;
+    const sets = entries.map(([k]) => `${k} = ?`).join(', ');
+    db.prepare(`UPDATE saas_payments SET ${sets} WHERE id = ?`).run(...entries.map(([, v]) => v), id);
+  },
+
+  getSaasPaymentById(id: string): any | null {
+    return (db.prepare(`SELECT * FROM saas_payments WHERE id = ? LIMIT 1`).get(id) as any) || null;
+  },
+
+  getSaasPaymentsByShop(barbershopId: string): any[] {
+    return db.prepare(`SELECT * FROM saas_payments WHERE barbershop_id = ? ORDER BY created_at DESC LIMIT 30`).all(barbershopId) as any[];
+  },
+
+  getAllSaasPayments(): any[] {
+    return db.prepare(`SELECT * FROM saas_payments ORDER BY created_at DESC LIMIT 50`).all() as any[];
+  },
+
+  getAllForMigration(): Record<string, any[]> {
+    const tables = [
+      'client_clinical_notes',
+      'patient_anamnesis',
+      'aesthetics_anamnesis',
+      'aesthetics_photos',
+      'aesthetics_touchups',
+      'client_pets',
+      'client_vehicles',
+      'client_style_preferences',
+      'client_fitness_assessments',
+      'client_tattoo_records',
+      'entity_photos',
+      'barber_metadata',
+      'password_reset_tokens',
+      'platform_settings',
+      'saas_payments'
+    ];
+    const result: Record<string, any[]> = {};
+    for (const table of tables) {
+      try {
+        result[table] = db.prepare(`SELECT * FROM ${table}`).all();
+      } catch {
+        result[table] = [];
+      }
+    }
+    return result;
   }
 };

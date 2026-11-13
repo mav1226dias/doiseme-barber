@@ -14,9 +14,16 @@ const getEnv = (key: string) => {
   return value;
 };
 
+const normalizeSupabaseUrl = (value?: string) => {
+  if (!value || typeof value !== 'string') return undefined;
+  return value
+    .replace(/\/(rest|auth|storage|realtime|functions)\/v1(\/.*)?$/i, '')
+    .replace(/\/+$/, '');
+};
+
 const supabaseUrl = 
-  getEnv('SUPABASE_URL') || 
-  getEnv('VITE_SUPABASE_URL') || 
+  normalizeSupabaseUrl(getEnv('SUPABASE_URL')) || 
+  normalizeSupabaseUrl(getEnv('VITE_SUPABASE_URL')) || 
   'https://omirtjuxuornolywneak.supabase.co';
 
 const supabaseKey = 

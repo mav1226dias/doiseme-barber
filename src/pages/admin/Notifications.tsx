@@ -124,7 +124,7 @@ export default function Notifications() {
               {inactiveClients.map((client, idx) => {
                 const rawPhone = (client.phone || '').replace(/\D/g, '');
                 const cleanPhone = rawPhone.startsWith('55') ? rawPhone : `55${rawPhone}`;
-                const msg = `Oi, sou o ${client.lastBarberName || 'Barbeiro'} da Doiseme Barber Shop. Vi que está chegando a hora de dar um trato no visual. Vamos marcar um horário?`;
+                const msg = `Olá! Sou o ${client.lastBarberName || 'profissional'} da sua equipe de confiança. Vi que já faz algum tempo desde o seu último atendimento. Vamos agendar seu próximo horário?`;
                 const whatsappUrl = `https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`;
 
                 return (
