@@ -565,13 +565,80 @@ async function startServer() {
     }
   });
 
+  type PlanId = 'trial' | 'essencial' | 'profissional' | 'premium';
+  const PLAN_META: Record<PlanId, { id: PlanId; name: string; monthlyPrice: number; annualPrice: number; maxActiveProfessionals: number | null }> = {
+    trial: { id: 'trial', name: 'Teste Grátis (7 dias)', monthlyPrice: 0, annualPrice: 0, maxActiveProfessionals: null },
+    essencial: { id: 'essencial', name: 'Agenda Individual (Básico)', monthlyPrice: 59.9, annualPrice: 479.0, maxActiveProfessionals: 1 },
+    profissional: { id: 'profissional', name: 'Plano Pro', monthlyPrice: 99.9, annualPrice: 859.0, maxActiveProfessionals: 4 },
+    premium: { id: 'premium', name: 'Plano Completo', monthlyPrice: 119.9, annualPrice: 997.0, maxActiveProfessionals: null }
+  };
+
+  const normalizePlanId = (raw?: string | null): PlanId => {
+    const v = String(raw || '').trim().toLowerCase();
+    if (v === 'essencial' || v === 'solo' || v === 'basico' || v === 'básico') return 'essencial';
+    if (v === 'profissional' || v === 'pro') return 'profissional';
+    if (v === 'premium' || v === 'completo') return 'premium';
+    return 'trial';
+  };
+
+  const getPlanMeta = (raw?: string | null) => PLAN_META[normalizePlanId(raw)];
+
+  const getShopPlansMap = async (): Promise<Record<string, PlanId>> => {
+    try {
+      const raw = await cloudNicheDb.getPlatformSetting('shop_plans_map');
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return {};
+      const out: Record<string, PlanId> = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        out[k] = normalizePlanId(String(v));
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  };
+
+  const setShopPlan = async (shopId: string, rawPlanId: string): Promise<PlanId> => {
+    const planId = normalizePlanId(rawPlanId);
+    const currentMap = await getShopPlansMap();
+    currentMap[shopId] = planId;
+    await cloudNicheDb.setPlatformSetting('shop_plans_map', JSON.stringify(currentMap));
+
+    try {
+      const { error } = await supabase
+        .from('barbershops')
+        .update({ plan_id: planId })
+        .eq('id', shopId);
+      if (error && !String(error.message || '').toLowerCase().includes('plan_id') && error.code !== 'PGRST204') {
+        console.warn('[SET_SHOP_PLAN_COLUMN_WARN]', error.message);
+      }
+    } catch {
+      // Ignore if column does not exist yet in Supabase
+    }
+    return planId;
+  };
+
+  const resolveShopPlanId = (shop: any, plansMap?: Record<string, PlanId>): PlanId => {
+    if (plansMap && plansMap[shop?.id]) {
+      return normalizePlanId(plansMap[shop.id]);
+    }
+    if (shop?.plan_id) {
+      return normalizePlanId(shop.plan_id);
+    }
+    return 'trial';
+  };
+
   api.get('/admin/shop-info', authenticateToken, async (req: any, res) => {
     try {
-      const { data, error } = await supabase
-        .from('barbershops')
-        .select('*')
-        .eq('id', req.user.barbershopId)
-        .single();
+      const [{ data, error }, plansMap] = await Promise.all([
+        supabase
+          .from('barbershops')
+          .select('*')
+          .eq('id', req.user.barbershopId)
+          .single(),
+        getShopPlansMap()
+      ]);
       if (error) throw error;
 
       let primaryColor = data.primary_color || '#D4AF37';
@@ -587,8 +654,13 @@ async function startServer() {
         } catch (e) {}
       }
 
+      const resolvedPlanId = resolveShopPlanId(data, plansMap);
+      const planMeta = getPlanMeta(resolvedPlanId);
+
       res.json({
         ...data,
+        plan_id: resolvedPlanId,
+        plan_name: planMeta.name,
         primary_color: primaryColor,
         primaryColor,
         secondary_color: backgroundColor,
@@ -1300,6 +1372,7 @@ async function startServer() {
         name: cleanBusinessName,
         slug: cleanSlug,
         segment: preset.id,
+        plan_id: 'trial',
         whatsapp: cleanPhone || null,
         phone: cleanPhone || null,
         primary_color: preset.defaultColors.primary,
@@ -1309,12 +1382,19 @@ async function startServer() {
       };
 
       let { error: shopInsertErr } = await supabase.from('barbershops').insert(shopPayload);
-      if (shopInsertErr && shopInsertErr.message?.includes('column')) {
-        delete shopPayload.segment;
+      if (shopInsertErr && (shopInsertErr.code === 'PGRST204' || shopInsertErr.message?.includes('column') || shopInsertErr.message?.includes('schema cache'))) {
+        if (shopInsertErr.message?.includes('plan_id')) {
+          delete shopPayload.plan_id;
+        } else {
+          delete shopPayload.plan_id;
+          delete shopPayload.segment;
+        }
         const retryShop = await supabase.from('barbershops').insert(shopPayload);
         shopInsertErr = retryShop.error;
       }
       if (shopInsertErr) throw shopInsertErr;
+
+      await setShopPlan(shopId, 'trial');
 
       // Initialize default business hours
       const { error: settingsErr } = await supabase.from('shop_settings').insert({
@@ -2549,6 +2629,22 @@ async function startServer() {
     const { name, commission_percentage, commissionPercentage, service_ids, photo_url, photoUrl, loginEmail, loginPassword } = req.body;
     const effectiveCommission = commission_percentage ?? commissionPercentage;
     try {
+      // Enforce plan team limit for non-master owners
+      if (req.user.role !== 'master' && !req.user.isImpersonating) {
+        const [{ data: shopRow }, plansMap, { data: activeBarbers }] = await Promise.all([
+          supabase.from('barbershops').select('id, plan_id').eq('id', req.user.barbershopId).maybeSingle(),
+          getShopPlansMap(),
+          supabase.from('barbers').select('id').eq('barbershop_id', req.user.barbershopId).eq('active', true)
+        ]);
+        const currentPlanId = resolveShopPlanId(shopRow || { id: req.user.barbershopId }, plansMap);
+        const planMeta = getPlanMeta(currentPlanId);
+        if (planMeta.maxActiveProfessionals !== null && (activeBarbers || []).length >= planMeta.maxActiveProfessionals) {
+          return res.status(403).json({
+            error: `Seu plano atual (${planMeta.name}) permite até ${planMeta.maxActiveProfessionals} profissional(is) ativo(s). Faça upgrade em Assinatura ou solicite ao suporte.`
+          });
+        }
+      }
+
       const cleanLoginEmail = typeof loginEmail === 'string' ? loginEmail.trim().toLowerCase() : '';
       const cleanLoginPassword = typeof loginPassword === 'string' ? loginPassword : '';
 
@@ -2641,6 +2737,24 @@ async function startServer() {
     try {
       const barberId = req.params.id;
       const shopId = req.user.barbershopId;
+
+      if (active === true && req.user.role !== 'master' && !req.user.isImpersonating) {
+        const [{ data: targetBarber }, { data: shopRow }, plansMap, { data: activeBarbers }] = await Promise.all([
+          supabase.from('barbers').select('id, active').eq('id', barberId).eq('barbershop_id', shopId).maybeSingle(),
+          supabase.from('barbershops').select('id, plan_id').eq('id', shopId).maybeSingle(),
+          getShopPlansMap(),
+          supabase.from('barbers').select('id').eq('barbershop_id', shopId).eq('active', true)
+        ]);
+        if (targetBarber && !targetBarber.active) {
+          const currentPlanId = resolveShopPlanId(shopRow || { id: shopId }, plansMap);
+          const planMeta = getPlanMeta(currentPlanId);
+          if (planMeta.maxActiveProfessionals !== null && (activeBarbers || []).length >= planMeta.maxActiveProfessionals) {
+            return res.status(403).json({
+              error: `Seu plano atual (${planMeta.name}) permite até ${planMeta.maxActiveProfessionals} profissional(is) ativo(s). Faça upgrade em Assinatura.`
+            });
+          }
+        }
+      }
 
       const cleanLoginEmail = typeof loginEmail === 'string' ? loginEmail.trim().toLowerCase() : undefined;
       const cleanLoginPassword = typeof loginPassword === 'string' ? loginPassword : undefined;
@@ -4018,7 +4132,7 @@ async function startServer() {
 
   // Create new shop + master user
   api.post('/admin/master/shops', authenticateToken, requireMaster, async (req, res) => {
-    const { name, slug, email, password, segment } = req.body;
+    const { name, slug, email, password, segment, plan_id, planId, phone, whatsapp, expires_at } = req.body;
     
     if (!name || !slug || !email || !password) {
       return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
@@ -4042,26 +4156,42 @@ async function startServer() {
       const { data: existingUser } = await supabase
         .from('users')
         .select('id')
-        .eq('email', email)
+        .ilike('email', String(email).trim())
         .maybeSingle();
 
       if (existingUser) {
         return res.status(400).json({ error: 'Este email já está cadastrado.' });
       }
 
-      // Create shop with segment / business_type
+      // Create shop with segment / business_type / plan_id
       const shopId = crypto.randomUUID();
       const shopType = req.body.business_type || req.body.businessType || segment || 'barbershop';
-      const { error: shopErr } = await supabase
-        .from('barbershops')
-        .insert({
-          id: shopId,
-          name,
-          slug: cleanSlug,
-          segment: shopType,
-        });
+      const targetPlanId = normalizePlanId(plan_id || planId || 'trial');
+      const cleanContact = whatsapp || phone ? String(whatsapp || phone).trim() : null;
+      const defaultExpires = expires_at || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+      const insertShopPayload: Record<string, any> = {
+        id: shopId,
+        name: String(name).trim(),
+        slug: cleanSlug,
+        segment: shopType,
+        plan_id: targetPlanId,
+        whatsapp: cleanContact,
+        phone: cleanContact,
+        is_blocked: false,
+        expires_at: defaultExpires
+      };
+
+      let { error: shopErr } = await supabase.from('barbershops').insert(insertShopPayload);
+      if (shopErr && (shopErr.code === 'PGRST204' || shopErr.message?.includes('plan_id') || shopErr.message?.includes('schema cache'))) {
+        delete insertShopPayload.plan_id;
+        const retry = await supabase.from('barbershops').insert(insertShopPayload);
+        shopErr = retry.error;
+      }
 
       if (shopErr) throw shopErr;
+
+      await setShopPlan(shopId, targetPlanId);
 
       // Create Admin User
       const userId = crypto.randomUUID();
@@ -4071,8 +4201,8 @@ async function startServer() {
         .insert({
           id: userId,
           barbershop_id: shopId,
-          name: `${name} Admin`,
-          email,
+          name: `${String(name).trim()} Admin`,
+          email: String(email).trim().toLowerCase(),
           password_hash: passwordHash,
           role: 'admin'
         });
@@ -4081,46 +4211,243 @@ async function startServer() {
 
       res.json({ 
         success: true, 
-        message: 'Barbearia e administrador criados com sucesso!', 
-        shop: { id: shopId, name, slug: cleanSlug },
-        admin: { email }
+        message: 'Estabelecimento e administrador criados com sucesso!', 
+        shop: { id: shopId, name, slug: cleanSlug, plan_id: targetPlanId, plan_name: getPlanMeta(targetPlanId).name },
+        admin: { email: String(email).trim().toLowerCase() }
       });
     } catch (e: any) {
       console.error('[MASTER_CREATE_SHOP_ERROR]', e);
-      res.status(500).json({ error: 'Erro ao criar barbearia', details: e.message });
+      res.status(500).json({ error: 'Erro ao criar estabelecimento', details: e.message });
     }
   });
 
-  // List all shops (Master only)
+  // List all shops (Master only) — enriched with plan, permission, admin contact & payment totals
   api.get('/admin/master/shops', authenticateToken, requireMaster, async (req, res) => {
     try {
-      const { data, error } = await supabase
-        .from('barbershops')
-        .select('*')
-        .order('created_at', { ascending: false });
-      
+      const [{ data: shopsRows, error }, { data: usersRows }, plansMap, payments] = await Promise.all([
+        supabase.from('barbershops').select('*').order('created_at', { ascending: false }),
+        supabase.from('users').select('id, barbershop_id, name, email, role, created_at').order('created_at', { ascending: true }),
+        getShopPlansMap(),
+        cloudNicheDb.getAllSaasPayments()
+      ]);
+
       if (error) throw error;
-      res.json(data);
+
+      const usersByShop = new Map<string, any[]>();
+      for (const u of usersRows || []) {
+        const list = usersByShop.get(u.barbershop_id) || [];
+        list.push(u);
+        usersByShop.set(u.barbershop_id, list);
+      }
+
+      const paidByShop = new Map<string, { totalPaid: number; lastPaymentAt: string | null }>();
+      for (const p of payments || []) {
+        if (p.status !== 'approved') continue;
+        const prev = paidByShop.get(p.barbershop_id) || { totalPaid: 0, lastPaymentAt: null };
+        prev.totalPaid += Number(p.amount) || 0;
+        const pDate = p.paid_at || p.created_at || null;
+        if (pDate && (!prev.lastPaymentAt || pDate > prev.lastPaymentAt)) {
+          prev.lastPaymentAt = pDate;
+        }
+        paidByShop.set(p.barbershop_id, prev);
+      }
+
+      const enriched = (shopsRows || []).map((shop: any) => {
+        const shopUsers = usersByShop.get(shop.id) || [];
+        const adminUser =
+          shopUsers.find((u) => u.role === 'admin') ||
+          shopUsers.find((u) => u.role === 'master') ||
+          shopUsers.find((u) => u.role !== 'barber') ||
+          shopUsers[0] ||
+          null;
+        const planId = resolveShopPlanId(shop, plansMap);
+        const planMeta = getPlanMeta(planId);
+        const payStats = paidByShop.get(shop.id) || { totalPaid: 0, lastPaymentAt: null };
+
+        return {
+          ...shop,
+          plan_id: planId,
+          plan_name: planMeta.name,
+          plan_monthly_price: planMeta.monthlyPrice,
+          admin_name: adminUser?.name || null,
+          admin_email: adminUser?.email || null,
+          contact_whatsapp: shop.whatsapp || shop.phone || '',
+          total_paid: Number(payStats.totalPaid.toFixed(2)),
+          last_payment_at: payStats.lastPaymentAt
+        };
+      });
+
+      res.json(enriched);
     } catch (e: any) {
       res.status(500).json({ error: 'Erro ao buscar lojas', details: e.message });
     }
   });
 
-  // Toggle block status
+  // Update shop plan, permission & optional manual payment recording (Master only)
+  api.patch('/admin/master/shops/:id/plan', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const {
+        plan_id,
+        planId,
+        is_blocked,
+        expires_at,
+        extend_days,
+        record_payment,
+        payment_amount,
+        billing_cycle
+      } = req.body;
+
+      const rawPlan = plan_id || planId;
+      if (!rawPlan) {
+        return res.status(400).json({ error: 'Informe o nível do plano (plan_id).' });
+      }
+
+      const { data: existingShop, error: fetchErr } = await supabase
+        .from('barbershops')
+        .select('id, name, expires_at, is_blocked')
+        .eq('id', id)
+        .maybeSingle();
+
+      if (fetchErr) throw fetchErr;
+      if (!existingShop) {
+        return res.status(404).json({ error: 'Estabelecimento não encontrado.' });
+      }
+
+      const targetPlanId = await setShopPlan(id, String(rawPlan));
+      const planMeta = getPlanMeta(targetPlanId);
+
+      const shopUpdates: Record<string, any> = {};
+      let finalBlocked = Boolean(existingShop.is_blocked);
+      let finalExpiresAt = existingShop.expires_at || null;
+
+      if (typeof is_blocked === 'boolean') {
+        shopUpdates.is_blocked = is_blocked;
+        finalBlocked = is_blocked;
+      }
+
+      if (expires_at !== undefined) {
+        shopUpdates.expires_at = expires_at;
+        finalExpiresAt = expires_at;
+      } else if (extend_days !== undefined && Number(extend_days) > 0) {
+        const now = Date.now();
+        const curr = existingShop.expires_at ? new Date(existingShop.expires_at).getTime() : 0;
+        const base = curr > now ? curr : now;
+        finalExpiresAt = new Date(base + Number(extend_days) * 24 * 60 * 60 * 1000).toISOString();
+        shopUpdates.expires_at = finalExpiresAt;
+      }
+
+      if (Object.keys(shopUpdates).length > 0) {
+        const { error: updErr } = await supabase
+          .from('barbershops')
+          .update(shopUpdates)
+          .eq('id', id);
+        if (updErr) throw updErr;
+      }
+
+      let recordedPayment: any = null;
+      if (record_payment === true && targetPlanId !== 'trial') {
+        const cycle = billing_cycle === 'annual' ? 'annual' : 'monthly';
+        const defaultAmt = cycle === 'annual' ? planMeta.annualPrice : planMeta.monthlyPrice;
+        const amount = payment_amount !== undefined && Number(payment_amount) > 0 ? Number(payment_amount) : defaultAmt;
+        const daysAdded = Number(extend_days) > 0 ? Number(extend_days) : (cycle === 'annual' ? 365 : 30);
+        const nowIso = new Date().toISOString();
+        const paymentId = `pay_manual_${crypto.randomUUID()}`;
+
+        recordedPayment = {
+          id: paymentId,
+          barbershop_id: id,
+          plan_id: targetPlanId,
+          plan_name: planMeta.name,
+          amount,
+          billing_cycle: cycle,
+          payment_method: 'manual_master',
+          external_reference: `master:${id}:${Date.now()}`,
+          status: 'approved',
+          days_added: daysAdded,
+          paid_at: nowIso,
+          created_at: nowIso,
+          updated_at: nowIso
+        };
+        await cloudNicheDb.createSaasPayment(recordedPayment);
+      }
+
+      res.json({
+        success: true,
+        shop_id: id,
+        plan_id: targetPlanId,
+        plan_name: planMeta.name,
+        is_blocked: finalBlocked,
+        expires_at: finalExpiresAt,
+        recordedPayment
+      });
+    } catch (e: any) {
+      console.error('[MASTER_UPDATE_PLAN_ERR]', e);
+      res.status(500).json({ error: 'Erro ao atualizar plano do estabelecimento', details: e.message });
+    }
+  });
+
+  // Update shop admin contact phone / WhatsApp (Master only)
+  api.patch('/admin/master/shops/:id/contact', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const rawContact = req.body.whatsapp ?? req.body.phone ?? '';
+      const cleanContact = String(rawContact).trim() || null;
+
+      let { error } = await supabase
+        .from('barbershops')
+        .update({ whatsapp: cleanContact, phone: cleanContact })
+        .eq('id', id);
+
+      if (error && (error.code === 'PGRST204' || error.message?.includes('whatsapp') || error.message?.includes('phone'))) {
+        const retry = await supabase
+          .from('barbershops')
+          .update(error.message?.includes('whatsapp') ? { phone: cleanContact } : { whatsapp: cleanContact })
+          .eq('id', id);
+        error = retry.error;
+      }
+
+      if (error) throw error;
+      res.json({ success: true, whatsapp: cleanContact || '' });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao atualizar contato da loja', details: e.message });
+    }
+  });
+
+  // Toggle block status (grant / revoke usage permission)
   api.post('/admin/master/shops/:id/toggle-block', authenticateToken, requireMaster, async (req, res) => {
     try {
       const { id } = req.params;
-      const { is_blocked } = req.body;
-      
+      const { is_blocked, expires_at, extend_days_if_expired } = req.body;
+
+      const updates: Record<string, any> = { is_blocked: Boolean(is_blocked) };
+      let finalExpiresAt: string | null | undefined = undefined;
+
+      if (expires_at !== undefined) {
+        updates.expires_at = expires_at;
+        finalExpiresAt = expires_at;
+      } else if (is_blocked === false && extend_days_if_expired && Number(extend_days_if_expired) > 0) {
+        const { data: currentShop } = await supabase
+          .from('barbershops')
+          .select('expires_at')
+          .eq('id', id)
+          .maybeSingle();
+        const currExp = currentShop?.expires_at ? new Date(currentShop.expires_at).getTime() : 0;
+        if (!currExp || currExp < Date.now()) {
+          finalExpiresAt = new Date(Date.now() + Number(extend_days_if_expired) * 24 * 60 * 60 * 1000).toISOString();
+          updates.expires_at = finalExpiresAt;
+        }
+      }
+
       const { error } = await supabase
         .from('barbershops')
-        .update({ is_blocked })
+        .update(updates)
         .eq('id', id);
       
       if (error) throw error;
-      res.json({ success: true, is_blocked });
+      res.json({ success: true, is_blocked: Boolean(is_blocked), expires_at: finalExpiresAt });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao alterar status de bloqueio' });
+      res.status(500).json({ error: 'Erro ao alterar permissão de uso do estabelecimento' });
     }
   });
 
@@ -4139,6 +4466,249 @@ async function startServer() {
       res.json({ success: true, expires_at });
     } catch (e: any) {
       res.status(500).json({ error: 'Erro ao alterar data de expiração' });
+    }
+  });
+
+  // Master Analytics Dashboard (Revenue + Niche + Date Range filtering)
+  api.get('/admin/master/analytics', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const startParam = typeof req.query.start === 'string' && req.query.start.trim() ? req.query.start.trim().slice(0, 10) : '';
+      const endParam = typeof req.query.end === 'string' && req.query.end.trim() ? req.query.end.trim().slice(0, 10) : '';
+      const segmentFilter = typeof req.query.segment === 'string' && req.query.segment.trim() ? req.query.segment.trim() : 'all';
+
+      const [
+        { data: allShops, error: shopsErr },
+        { data: allUsers },
+        plansMap,
+        allPayments
+      ] = await Promise.all([
+        supabase.from('barbershops').select('*'),
+        supabase.from('users').select('id, barbershop_id, role'),
+        getShopPlansMap(),
+        cloudNicheDb.getAllSaasPayments()
+      ]);
+
+      if (shopsErr) throw shopsErr;
+
+      const shopsList = allShops || [];
+      const matchingShops = segmentFilter !== 'all'
+        ? shopsList.filter((s: any) => (s.segment || s.business_type || 'barbershop') === segmentFilter)
+        : shopsList;
+      const matchingShopIds = new Set(matchingShops.map((s: any) => s.id));
+      const shopLookup = new Map(shopsList.map((s: any) => [s.id, s]));
+
+      const nowMs = Date.now();
+      let activeShops = 0;
+      let blockedShops = 0;
+      let expiredShops = 0;
+      let trialShops = 0;
+      let paidShops = 0;
+      let mrrEstimate = 0;
+
+      const planCounts: Record<PlanId, { planId: PlanId; name: string; count: number; activeCount: number; mrr: number }> = {
+        trial: { planId: 'trial', name: PLAN_META.trial.name, count: 0, activeCount: 0, mrr: 0 },
+        essencial: { planId: 'essencial', name: PLAN_META.essencial.name, count: 0, activeCount: 0, mrr: 0 },
+        profissional: { planId: 'profissional', name: PLAN_META.profissional.name, count: 0, activeCount: 0, mrr: 0 },
+        premium: { planId: 'premium', name: PLAN_META.premium.name, count: 0, activeCount: 0, mrr: 0 }
+      };
+
+      const segmentStats = new Map<string, {
+        segment: string;
+        segmentName: string;
+        shopsCount: number;
+        activeShopsCount: number;
+        paidShopsCount: number;
+        saasRevenue: number;
+        approvedPaymentsCount: number;
+        mrrEstimate: number;
+        ecosystemRevenue: number;
+        ecosystemAppointmentsCount: number;
+      }>();
+
+      const ensureSegmentStat = (segId: string) => {
+        const key = segId || 'barbershop';
+        if (!segmentStats.has(key)) {
+          segmentStats.set(key, {
+            segment: key,
+            segmentName: getSegment(key).name,
+            shopsCount: 0,
+            activeShopsCount: 0,
+            paidShopsCount: 0,
+            saasRevenue: 0,
+            approvedPaymentsCount: 0,
+            mrrEstimate: 0,
+            ecosystemRevenue: 0,
+            ecosystemAppointmentsCount: 0
+          });
+        }
+        return segmentStats.get(key)!;
+      };
+
+      for (const s of matchingShops) {
+        const segId = s.segment || s.business_type || 'barbershop';
+        const segStat = ensureSegmentStat(segId);
+        segStat.shopsCount += 1;
+
+        const isBlocked = Boolean(s.is_blocked);
+        const isExpired = Boolean(s.expires_at && new Date(s.expires_at).getTime() < nowMs);
+        const isActive = !isBlocked && !isExpired;
+        const planId = resolveShopPlanId(s, plansMap);
+        const planMeta = getPlanMeta(planId);
+
+        if (isBlocked) blockedShops += 1;
+        else if (isExpired) expiredShops += 1;
+        else activeShops += 1;
+
+        if (planId === 'trial') trialShops += 1;
+        else paidShops += 1;
+
+        planCounts[planId].count += 1;
+        if (isActive) {
+          segStat.activeShopsCount += 1;
+          planCounts[planId].activeCount += 1;
+          if (planId !== 'trial') {
+            segStat.paidShopsCount += 1;
+            mrrEstimate += planMeta.monthlyPrice;
+            planCounts[planId].mrr += planMeta.monthlyPrice;
+            segStat.mrrEstimate += planMeta.monthlyPrice;
+          }
+        }
+      }
+
+      const inDateRange = (isoOrDate?: string | null) => {
+        if (!isoOrDate) return !startParam && !endParam;
+        const day = String(isoOrDate).slice(0, 10);
+        if (startParam && day < startParam) return false;
+        if (endParam && day > endParam) return false;
+        return true;
+      };
+
+      let saasRevenue = 0;
+      let manualRevenue = 0;
+      let gatewayRevenue = 0;
+      let approvedPaymentsCount = 0;
+      let pendingPaymentsCount = 0;
+      let pendingPaymentsAmount = 0;
+      const filteredApprovedPayments: any[] = [];
+
+      for (const p of allPayments || []) {
+        if (!matchingShopIds.has(p.barbershop_id)) continue;
+        const shop = shopLookup.get(p.barbershop_id);
+        const segId = shop?.segment || shop?.business_type || 'barbershop';
+
+        if (p.status === 'pending') {
+          if (inDateRange(p.created_at)) {
+            pendingPaymentsCount += 1;
+            pendingPaymentsAmount += Number(p.amount) || 0;
+          }
+          continue;
+        }
+
+        if (p.status === 'approved') {
+          const effectiveDate = p.paid_at || p.created_at;
+          if (!inDateRange(effectiveDate)) continue;
+          const amt = Number(p.amount) || 0;
+          saasRevenue += amt;
+          approvedPaymentsCount += 1;
+          if (p.payment_method === 'manual_master') {
+            manualRevenue += amt;
+          } else {
+            gatewayRevenue += amt;
+          }
+          const segStat = ensureSegmentStat(segId);
+          segStat.saasRevenue += amt;
+          segStat.approvedPaymentsCount += 1;
+
+          filteredApprovedPayments.push({
+            id: p.id,
+            barbershop_id: p.barbershop_id,
+            shopName: shop?.name || p.barbershop_id,
+            segment: segId,
+            segmentName: getSegment(segId).name,
+            plan_id: p.plan_id,
+            plan_name: p.plan_name,
+            amount: amt,
+            billing_cycle: p.billing_cycle,
+            payment_method: p.payment_method,
+            paid_at: effectiveDate
+          });
+        }
+      }
+
+      // Fetch appointments + services to calculate Store Ecosystem Revenue
+      let ecosystemRevenue = 0;
+      let ecosystemAppointmentsCount = 0;
+      try {
+        let apptQuery = supabase.from('appointments').select('id, barbershop_id, service_id, status, date');
+        if (startParam) apptQuery = apptQuery.gte('date', startParam);
+        if (endParam) apptQuery = apptQuery.lte('date', endParam);
+        const [{ data: appts }, { data: services }] = await Promise.all([
+          apptQuery,
+          supabase.from('services').select('id, price')
+        ]);
+
+        const priceMap = new Map((services || []).map((sv: any) => [sv.id, Number(sv.price) || 0]));
+        for (const a of appts || []) {
+          if (!matchingShopIds.has(a.barbershop_id)) continue;
+          ecosystemAppointmentsCount += 1;
+          const shop = shopLookup.get(a.barbershop_id);
+          const segStat = ensureSegmentStat(shop?.segment || shop?.business_type || 'barbershop');
+          segStat.ecosystemAppointmentsCount += 1;
+          if (a.status === 'completed' || a.status === 'confirmed') {
+            const val = priceMap.get(a.service_id) || 0;
+            ecosystemRevenue += val;
+            segStat.ecosystemRevenue += val;
+          }
+        }
+      } catch (ecoErr: any) {
+        console.warn('[MASTER_ANALYTICS_ECO_WARN]', ecoErr?.message);
+      }
+
+      const filteredUsersCount = (allUsers || []).filter((u: any) => matchingShopIds.has(u.barbershop_id)).length;
+
+      const bySegment = Array.from(segmentStats.values())
+        .map((row) => ({
+          ...row,
+          saasRevenue: Number(row.saasRevenue.toFixed(2)),
+          mrrEstimate: Number(row.mrrEstimate.toFixed(2)),
+          ecosystemRevenue: Number(row.ecosystemRevenue.toFixed(2))
+        }))
+        .sort((a, b) => (b.saasRevenue - a.saasRevenue) || (b.mrrEstimate - a.mrrEstimate) || (b.shopsCount - a.shopsCount));
+
+      res.json({
+        filters: {
+          start: startParam || null,
+          end: endParam || null,
+          segment: segmentFilter
+        },
+        summary: {
+          totalShops: matchingShops.length,
+          activeShops,
+          blockedShops,
+          expiredShops,
+          trialShops,
+          paidShops,
+          totalUsers: filteredUsersCount,
+          saasRevenue: Number(saasRevenue.toFixed(2)),
+          manualRevenue: Number(manualRevenue.toFixed(2)),
+          gatewayRevenue: Number(gatewayRevenue.toFixed(2)),
+          approvedPaymentsCount,
+          pendingPaymentsCount,
+          pendingPaymentsAmount: Number(pendingPaymentsAmount.toFixed(2)),
+          mrrEstimate: Number(mrrEstimate.toFixed(2)),
+          ecosystemRevenue: Number(ecosystemRevenue.toFixed(2)),
+          ecosystemAppointmentsCount
+        },
+        planBreakdown: Object.values(planCounts).map((item) => ({
+          ...item,
+          mrr: Number(item.mrr.toFixed(2))
+        })),
+        bySegment,
+        recentApprovedPayments: filteredApprovedPayments.slice(0, 12)
+      });
+    } catch (e: any) {
+      console.error('[MASTER_ANALYTICS_ERR]', e);
+      res.status(500).json({ error: 'Erro ao calcular métricas administrativas', details: e.message });
     }
   });
 
@@ -4605,6 +5175,10 @@ async function startServer() {
       paid_at: paidAt
     });
 
+    if (payment.plan_id) {
+      await setShopPlan(payment.barbershop_id, normalizePlanId(payment.plan_id));
+    }
+
     return {
       ok: true,
       alreadyApproved: false,
@@ -4622,11 +5196,14 @@ async function startServer() {
   api.get('/admin/billing/status', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const shopId = req.user.barbershopId;
-      const { data: shop, error } = await supabase
-        .from('barbershops')
-        .select('id, name, slug, segment, is_blocked, expires_at, created_at')
-        .eq('id', shopId)
-        .maybeSingle();
+      const [{ data: shop, error }, plansMap] = await Promise.all([
+        supabase
+          .from('barbershops')
+          .select('*')
+          .eq('id', shopId)
+          .maybeSingle(),
+        getShopPlansMap()
+      ]);
       if (error) throw error;
 
       const [payments, mpToken, pixProfile, mpLinks, savedWhatsapp] = await Promise.all([
@@ -4639,9 +5216,25 @@ async function startServer() {
 
       const supportWhatsapp = normalizeSupportWhatsapp(savedWhatsapp || process.env.SUPPORT_WHATSAPP || '');
       const isExpired = Boolean(shop?.expires_at && new Date(shop.expires_at) < new Date());
+      const currentPlanId = resolveShopPlanId(shop || { id: shopId }, plansMap);
+      const currentPlanMeta = getPlanMeta(currentPlanId);
 
       res.json({
-        shop,
+        shop: shop
+          ? {
+              id: shop.id,
+              name: shop.name,
+              slug: shop.slug,
+              segment: shop.segment,
+              is_blocked: shop.is_blocked,
+              expires_at: shop.expires_at,
+              created_at: shop.created_at,
+              plan_id: currentPlanId,
+              plan_name: currentPlanMeta.name
+            }
+          : null,
+        currentPlanId,
+        currentPlanName: currentPlanMeta.name,
         isExpired,
         plans: SAAS_PLANS,
         payments,

@@ -1241,7 +1241,7 @@ export const cloudNicheDb = {
       .from('saas_payments')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(50);
+      .limit(2000);
     if (error) {
       if (isTableMissingOrUnmigrated(error)) {
         logFallbackOnce('saas_payments', error);

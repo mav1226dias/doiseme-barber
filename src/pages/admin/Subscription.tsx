@@ -34,7 +34,11 @@ interface BillingStatusResponse {
     slug: string;
     expires_at?: string | null;
     is_blocked?: boolean;
+    plan_id?: string;
+    plan_name?: string;
   } | null;
+  currentPlanId?: string;
+  currentPlanName?: string;
   isExpired: boolean;
   plans: PlanOption[];
   payments: any[];
@@ -307,9 +311,10 @@ export default function Subscription() {
                   : 'Assinatura ativa'}
             </h2>
             <p className="text-sm text-gray-600 dark:text-zinc-400 mt-0.5 tabular-nums">
+              Plano atual: <strong className="text-gray-900 dark:text-white">{billing?.currentPlanName || billing?.shop?.plan_name || 'Teste Grátis (7 dias)'}</strong>
               {expiresAt ? (
                 <>
-                  Validade atual: <strong className="text-gray-900 dark:text-white">{expiresAt.toLocaleDateString('pt-BR')}</strong>
+                  {' · '}Validade: <strong className="text-gray-900 dark:text-white">{expiresAt.toLocaleDateString('pt-BR')}</strong>
                   {daysLeft !== null && (
                     <>
                       {' · '}
@@ -322,7 +327,7 @@ export default function Subscription() {
                   )}
                 </>
               ) : (
-                'Escolha um plano abaixo para definir seu ciclo de renovação.'
+                ' · Escolha um plano abaixo para definir seu ciclo de renovação.'
               )}
             </p>
             {isExpired && (
@@ -380,20 +385,27 @@ export default function Subscription() {
           const isCheckoutLoading = processingKey === `checkout:${plan.id}`;
           const isLinkLoading = processingKey === `link:${plan.id}`;
           const appLink = billing?.mpLinks?.[plan.id];
+          const isCurrentPlan = (billing?.currentPlanId || billing?.shop?.plan_id) === plan.id;
 
           return (
             <div
               key={plan.id}
               className={`rounded-2xl p-6 flex flex-col justify-between border transition-shadow ${
-                plan.highlighted
-                  ? 'bg-white dark:bg-zinc-900 border-[#D4AF37] shadow-lg'
-                  : 'bg-white dark:bg-zinc-900 border-gray-200 dark:border-zinc-800 shadow-sm'
+                isCurrentPlan
+                  ? 'bg-white dark:bg-zinc-900 border-emerald-500 ring-1 ring-emerald-500/40 shadow-md'
+                  : plan.highlighted
+                    ? 'bg-white dark:bg-zinc-900 border-[#D4AF37] shadow-lg'
+                    : 'bg-white dark:bg-zinc-900 border-gray-200 dark:border-zinc-800 shadow-sm'
               }`}
             >
               <div className="space-y-4">
                 <div className="flex items-center justify-between gap-2">
                   <h3 className="text-xl font-bold text-gray-900 dark:text-white">{plan.name}</h3>
-                  {(plan.badge || plan.highlighted) && (
+                  {isCurrentPlan ? (
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">
+                      Plano Atual
+                    </span>
+                  ) : (plan.badge || plan.highlighted) && (
                     <span className={`text-[11px] font-bold uppercase tracking-wider ${
                       plan.highlighted
                         ? 'text-[#B69121] dark:text-[#D4AF37]'

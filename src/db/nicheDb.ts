@@ -1425,7 +1425,7 @@ export const nicheDb = {
   },
 
   getAllSaasPayments(): any[] {
-    return db.prepare(`SELECT * FROM saas_payments ORDER BY created_at DESC LIMIT 50`).all() as any[];
+    return db.prepare(`SELECT * FROM saas_payments ORDER BY created_at DESC LIMIT 2000`).all() as any[];
   },
 
   deleteClientsData(barbershopId: string, clientIds: string[]): void {
