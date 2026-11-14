@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Shield, Users, Server, Database, Activity, Lock, Plus, Globe, Mail, Key, Trash2,
   ShieldCheck, ShieldAlert, Calendar, ExternalLink, Unlock, CheckCircle2, XCircle, Sparkles,
-  Cloud, Copy, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, MessageCircle, Save, CreditCard, Clock
+  Cloud, Copy, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, MessageCircle, Save, CreditCard, Clock, Bot
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
@@ -54,6 +54,19 @@ export default function MasterAdmin() {
   const [showAllPayments, setShowAllPayments] = useState(false);
   const [shopToDelete, setShopToDelete] = useState<any | null>(null);
   const [deletingShopId, setDeletingShopId] = useState<string | null>(null);
+
+  // Evolution API v2 (Parte 6 — oculta temporariamente até ativação da VPS)
+  const showEvolutionSetup = false;
+  const [evoConfigured, setEvoConfigured] = useState(false);
+  const [evoApiUrlInput, setEvoApiUrlInput] = useState('');
+  const [evoApiKeyInput, setEvoApiKeyInput] = useState('');
+  const [evoKeyMasked, setEvoKeyMasked] = useState('');
+  const [evoSource, setEvoSource] = useState<'database' | 'env' | 'none'>('none');
+  const [cronSecretInput, setCronSecretInput] = useState('');
+  const [cronSecretConfigured, setCronSecretConfigured] = useState(false);
+  const [savingEvo, setSavingEvo] = useState(false);
+  const [testingEvo, setTestingEvo] = useState(false);
+  const [runningCron, setRunningCron] = useState(false);
   
   const [newShop, setNewShop] = useState({
     name: '',
@@ -311,11 +324,114 @@ export default function MasterAdmin() {
     }
   };
 
+  const fetchEvolutionConfig = async () => {
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch('/api/admin/master/evolution-config', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEvoConfigured(Boolean(data.configured));
+        setEvoApiUrlInput(data.apiUrl || '');
+        setEvoKeyMasked(data.apiKeyMasked || '');
+        setEvoSource(data.source || 'none');
+        setCronSecretConfigured(Boolean(data.cronSecretConfigured));
+      }
+    } catch (e) {
+      console.error('Failed to load evolution config:', e);
+    }
+  };
+
+  const handleSaveEvolutionConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const token = localStorage.getItem('token');
+    setSavingEvo(true);
+    try {
+      const res = await fetch('/api/admin/master/evolution-config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          apiUrl: evoApiUrlInput.trim(),
+          apiKey: evoApiKeyInput.trim() || undefined,
+          cronSecret: cronSecretInput.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || 'Erro ao salvar configuração da Evolution API');
+        return;
+      }
+      setEvoApiKeyInput('');
+      setCronSecretInput('');
+      await fetchEvolutionConfig();
+      toast.success('Servidor Evolution API salvo com sucesso!');
+    } catch {
+      toast.error('Erro de conexão ao salvar Evolution API');
+    } finally {
+      setSavingEvo(false);
+    }
+  };
+
+  const handleTestEvolutionServer = async () => {
+    const token = localStorage.getItem('token');
+    setTestingEvo(true);
+    try {
+      const res = await fetch('/api/admin/master/evolution-test', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        toast.success(`${data.message} (${data.instancesCount ?? 0} instância(s) ativa(s))`);
+      } else {
+        toast.error(data.message || 'Não foi possível conectar na Evolution API.');
+      }
+    } catch {
+      toast.error('Erro de rede ao testar Evolution API.');
+    } finally {
+      setTestingEvo(false);
+    }
+  };
+
+  const handleRunRemindersCronNow = async () => {
+    const token = localStorage.getItem('token');
+    setRunningCron(true);
+    try {
+      const res = await fetch('/api/cron/whatsapp-reminders', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || 'Erro ao executar lembretes');
+        return;
+      }
+      if (data.skipped) {
+        toast.warning('Rotina ignorada: configure primeiro a URL e API Key da Evolution API.');
+      } else {
+        toast.success(
+          `Cron executado: ${data.processedShops} loja(s), ${data.sent24h} lembrete(s) 24h, ${data.sent2h} lembrete(s) 2h.`
+        );
+      }
+    } catch {
+      toast.error('Erro de rede ao executar rotina de lembretes');
+    } finally {
+      setRunningCron(false);
+    }
+  };
+
   useEffect(() => {
     fetchMasterData();
     fetchCloudStatus();
     fetchSupportWhatsapp();
     fetchBillingConfigAndPayments();
+    if (showEvolutionSetup) {
+      fetchEvolutionConfig();
+    }
     // System status remains static or could be fetched
     setStats(prev => ({ ...prev, systemStatus: 'Online', dbSize: '4.8 MB' }));
   }, []);
@@ -856,6 +972,114 @@ export default function MasterAdmin() {
           </div>
         </form>
       </div>
+
+      {/* Evolution API v2 Global Server & Cron Config Card (Part 6 - Oculta até ativação da VPS) */}
+      {showEvolutionSetup && (
+      <div className="bg-white dark:bg-zinc-900 rounded-3xl border border-gray-200 dark:border-zinc-800 shadow-sm p-6 space-y-5">
+        <form onSubmit={handleSaveEvolutionConfig} className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-start gap-4">
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center flex-shrink-0 ${
+                evoConfigured ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'
+              }`}>
+                <Bot className="w-6 h-6" />
+              </div>
+              <div>
+                <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100">
+                  Automação WhatsApp — Servidor Evolution API v2
+                </h2>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+                  Conecte aqui a sua VPS com Evolution API quando estiver pronta. Cada loja passa a parear o próprio WhatsApp na aba <strong>WhatsApp &amp; Robô</strong>.
+                </p>
+              </div>
+            </div>
+            <span className={`text-xs font-bold ${evoConfigured ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+              {evoConfigured
+                ? `Configurada (${evoSource === 'database' ? 'Painel Master' : 'Env Vercel'})`
+                : 'Aguardando VPS (Parte 6 pronta no app)'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">
+                URL da Evolution API (VPS)
+              </label>
+              <input
+                type="url"
+                value={evoApiUrlInput}
+                onChange={(e) => setEvoApiUrlInput(e.target.value)}
+                placeholder="Ex: https://evo.seu-ip.sslip.io"
+                className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm font-mono outline-none focus:border-[#D4AF37]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">
+                Global API Key (Evolution)
+              </label>
+              <input
+                type="password"
+                value={evoApiKeyInput}
+                onChange={(e) => setEvoApiKeyInput(e.target.value)}
+                placeholder={evoKeyMasked ? `Atual: ${evoKeyMasked}` : 'Chave secreta da Evolution API'}
+                className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm font-mono outline-none focus:border-[#D4AF37]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1.5">
+                CRON_SECRET (Lembretes automáticos)
+              </label>
+              <input
+                type="password"
+                value={cronSecretInput}
+                onChange={(e) => setCronSecretInput(e.target.value)}
+                placeholder={cronSecretConfigured ? 'Configurado (digite para trocar)' : 'Segredo p/ cron-job.org / Vercel'}
+                className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4 py-2.5 text-sm font-mono outline-none focus:border-[#D4AF37]"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="text-xs text-gray-500 dark:text-gray-400">
+              Endpoint do agendador (2h e 24h): <code className="font-mono bg-gray-100 dark:bg-zinc-800 px-2 py-0.5 rounded">/api/cron/whatsapp-reminders</code>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={handleTestEvolutionServer}
+                disabled={testingEvo || !evoConfigured}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
+              >
+                <Activity className="w-4 h-4" />
+                {testingEvo ? 'Testando...' : 'Testar Conexão VPS'}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleRunRemindersCronNow}
+                disabled={runningCron}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-800 text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
+              >
+                <RefreshCw className="w-4 h-4" />
+                {runningCron ? 'Executando...' : 'Rodar Lembretes Agora'}
+              </button>
+
+              <button
+                type="submit"
+                disabled={savingEvo}
+                className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-bold bg-[#D4AF37] text-black hover:opacity-90 transition-opacity disabled:opacity-50"
+              >
+                <Save className="w-4 h-4" />
+                {savingEvo ? 'Salvando...' : 'Salvar Evolution API'}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+      )}
 
       {/* PIX QR Code + App Mercado Pago Payment Links + Optional API Config Card */}
       <div className="bg-white dark:bg-zinc-900 rounded-3xl border border-gray-200 dark:border-zinc-800 shadow-sm p-6 space-y-6">

@@ -11,12 +11,15 @@ import PublicLayout from './layouts/PublicLayout';
 import AdminLayout from './layouts/AdminLayout';
 import Landing from './pages/public/Landing';
 import Booking from './pages/public/Booking';
+import Terms from './pages/public/Terms';
+import Privacy from './pages/public/Privacy';
 import Login from './pages/admin/Login';
 import Register from './pages/admin/Register';
 import ForgotPassword from './pages/admin/ForgotPassword';
 import ResetPassword from './pages/admin/ResetPassword';
 import Dashboard from './pages/admin/Dashboard';
 import Barbers from './pages/admin/Barbers';
+import MyCommissions from './pages/admin/MyCommissions';
 import Services from './pages/admin/Services';
 import Agenda from './pages/admin/Agenda';
 import Notifications from './pages/admin/Notifications';
@@ -43,6 +46,8 @@ export default function App() {
             <Routes>
             {/* Public Routes */}
             <Route path="/" element={<Landing />} />
+            <Route path="/termos" element={<Terms />} />
+            <Route path="/privacidade" element={<Privacy />} />
             <Route path="/b/:slug" element={<PublicLayout />}>
               <Route index element={<Booking />} />
             </Route>
@@ -69,6 +74,8 @@ export default function App() {
               <Route path="booking-site" element={<Navigate to="/admin/profile" replace />} />
               <Route path="master" element={<MasterAdmin />} />
               <Route path="assinatura" element={<Subscription />} />
+              <Route path="comissoes" element={<MyCommissions />} />
+              <Route path="automacoes" element={<Navigate to="/admin" replace />} />
               <Route path="settings" element={<Settings />} />
             </Route>
           </Routes>

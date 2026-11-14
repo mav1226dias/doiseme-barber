@@ -32,6 +32,7 @@ export default function AdminLayout() {
   // Avoid hydration mismatch
   const [mounted, setMounted] = useState(false);
   const [isMaster, setIsMaster] = useState(false);
+  const [userRole, setUserRole] = useState<'admin' | 'master' | 'barber'>('admin');
   const [isImpersonating, setIsImpersonating] = useState(false);
   const [shopSegment, setShopSegment] = useState('barbershop');
   const [shopName, setShopName] = useState('');
@@ -71,12 +72,23 @@ export default function AdminLayout() {
 
         const authorizedEmails = ['marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com'];
         const userEmail = payload.email?.toLowerCase();
-        
-        if (payload.role === 'master' && authorizedEmails.includes(userEmail)) {
+        const resolvedRole = payload.role === 'barber'
+          ? 'barber'
+          : (payload.role === 'master' && authorizedEmails.includes(userEmail))
+          ? 'master'
+          : 'admin';
+
+        setUserRole(resolvedRole);
+        if (resolvedRole === 'master') {
           setIsMaster(true);
         }
         if (payload.isImpersonating) {
           setIsImpersonating(true);
+        }
+
+        const barberAllowedPaths = ['/admin/agenda', '/admin/clients', '/admin/comissoes'];
+        if (resolvedRole === 'barber' && !barberAllowedPaths.includes(window.location.pathname)) {
+          navigate('/admin/agenda', { replace: true });
         }
 
         // Load shop info to get the segment
@@ -89,15 +101,20 @@ export default function AdminLayout() {
             if (data?.name) setShopName(data.name);
             if (data?.expires_at) {
               setShopExpiresAt(data.expires_at);
-              const isMasterUser = payload.role === 'master' && authorizedEmails.includes(userEmail);
-              if (!isMasterUser && new Date(data.expires_at) < new Date() && window.location.pathname !== '/admin/assinatura') {
+              const isMasterUser = resolvedRole === 'master';
+              if (
+                !isMasterUser &&
+                resolvedRole !== 'barber' &&
+                new Date(data.expires_at) < new Date() &&
+                window.location.pathname !== '/admin/assinatura'
+              ) {
                 navigate('/admin/assinatura');
               }
             }
           })
           .catch(err => console.error('[ADMIN_LAYOUT_SHOP_INFO_ERR]', err));
       } catch (e) {
-        console.error("Token inválido ou corrompido", e);
+        console.error("Token inválido ou corromido", e);
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         navigate('/admin/login');
@@ -108,10 +125,21 @@ export default function AdminLayout() {
   useEffect(() => {
     // Close the mobile menu automatically when clicking a navigation link
     setIsMobileMenuOpen(false);
-    if (!isMaster && shopExpiresAt && new Date(shopExpiresAt) < new Date() && location.pathname !== '/admin/assinatura') {
+    const barberAllowedPaths = ['/admin/agenda', '/admin/clients', '/admin/comissoes'];
+    if (userRole === 'barber' && !barberAllowedPaths.includes(location.pathname)) {
+      navigate('/admin/agenda', { replace: true });
+      return;
+    }
+    if (
+      !isMaster &&
+      userRole !== 'barber' &&
+      shopExpiresAt &&
+      new Date(shopExpiresAt) < new Date() &&
+      location.pathname !== '/admin/assinatura'
+    ) {
       navigate('/admin/assinatura');
     }
-  }, [location.pathname, isMaster, shopExpiresAt, navigate]);
+  }, [location.pathname, isMaster, userRole, shopExpiresAt, navigate]);
 
   const handleLogout = () => {
     localStorage.removeItem('token');
@@ -129,35 +157,46 @@ export default function AdminLayout() {
 
   const currentPreset = getSegment(shopSegment);
 
-  const navSections = [
-    {
-      title: 'Principal',
-      items: [
-        { path: '/admin', icon: LayoutDashboard, label: 'Dashboard' },
-        { path: '/admin/agenda', icon: Calendar, label: 'Agenda' },
-        { path: '/admin/clients', icon: Users, label: currentPreset.terms.clientPlural },
+  const navSections = userRole === 'barber'
+    ? [
+        {
+          title: 'Área do Profissional',
+          items: [
+            { path: '/admin/agenda', icon: Calendar, label: 'Minha Agenda' },
+            { path: '/admin/clients', icon: Users, label: `Meus ${currentPreset.terms.clientPlural}` },
+            { path: '/admin/comissoes', icon: Wallet, label: 'Minhas Comissões' }
+          ]
+        }
       ]
-    },
-    {
-      title: 'Atendimento & Catálogo',
-      items: [
-        { path: '/admin/barbers', icon: UserCheck, label: currentPreset.terms.professionalPlural },
-        { path: '/admin/services', icon: Scissors, label: currentPreset.terms.servicePlural },
-      ]
-    },
-    {
-      title: 'Gestão & Presença',
-      items: [
-        { path: '/admin/finances', icon: Wallet, label: 'Financeiro' },
-        { path: '/admin/campaigns', icon: Megaphone, label: 'Marketing & Mensagens' },
-        { path: '/admin/profile', icon: Globe, label: 'Meu Site & Perfil' },
-        { path: '/admin/assinatura', icon: CreditCard, label: 'Assinatura & Planos' },
-        { path: '/admin/settings', icon: Settings, label: 'Configurações' },
-      ]
-    }
-  ];
+    : [
+        {
+          title: 'Principal',
+          items: [
+            { path: '/admin', icon: LayoutDashboard, label: 'Dashboard' },
+            { path: '/admin/agenda', icon: Calendar, label: 'Agenda' },
+            { path: '/admin/clients', icon: Users, label: currentPreset.terms.clientPlural },
+          ]
+        },
+        {
+          title: 'Atendimento & Catálogo',
+          items: [
+            { path: '/admin/barbers', icon: UserCheck, label: currentPreset.terms.professionalPlural },
+            { path: '/admin/services', icon: Scissors, label: currentPreset.terms.servicePlural },
+          ]
+        },
+        {
+          title: 'Gestão & Presença',
+          items: [
+            { path: '/admin/finances', icon: Wallet, label: 'Financeiro' },
+            { path: '/admin/campaigns', icon: Megaphone, label: 'Marketing & Mensagens' },
+            { path: '/admin/profile', icon: Globe, label: 'Meu Site & Perfil' },
+            { path: '/admin/assinatura', icon: CreditCard, label: 'Assinatura & Planos' },
+            { path: '/admin/settings', icon: Settings, label: 'Configurações' },
+          ]
+        }
+      ];
 
-  if (isMaster) {
+  if (isMaster && userRole !== 'barber') {
     navSections.push({
       title: 'Administração',
       items: [
@@ -294,17 +333,23 @@ export default function AdminLayout() {
           if (daysLeft < 0) {
             return (
               <div className="bg-red-600 text-white px-4 py-2.5 text-center text-xs font-bold flex flex-wrap items-center justify-center gap-3 tabular-nums">
-                <span>Assinatura expirada em {new Date(shopExpiresAt).toLocaleDateString('pt-BR')}. Renove para liberar o painel.</span>
-                <Link
-                  to="/admin/assinatura"
-                  className="bg-white text-red-600 px-3 py-1 rounded-md hover:bg-gray-100 transition-colors uppercase"
-                >
-                  Renovar Agora
-                </Link>
+                <span>
+                  {userRole === 'barber'
+                    ? `Assinatura do estabelecimento expirada em ${new Date(shopExpiresAt).toLocaleDateString('pt-BR')}. Solicite ao administrador para regularizar.`
+                    : `Assinatura expirada em ${new Date(shopExpiresAt).toLocaleDateString('pt-BR')}. Renove para liberar o painel.`}
+                </span>
+                {userRole !== 'barber' && (
+                  <Link
+                    to="/admin/assinatura"
+                    className="bg-white text-red-600 px-3 py-1 rounded-md hover:bg-gray-100 transition-colors uppercase"
+                  >
+                    Renovar Agora
+                  </Link>
+                )}
               </div>
             );
           }
-          if (daysLeft >= 0 && daysLeft <= 15) {
+          if (daysLeft >= 0 && daysLeft <= 15 && userRole !== 'barber') {
             return (
               <div className="bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900/40 px-4 py-2 text-center text-xs text-amber-800 dark:text-amber-300 font-medium tabular-nums flex flex-wrap items-center justify-center gap-2">
                 <span>

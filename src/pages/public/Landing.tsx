@@ -558,7 +558,13 @@ export default function Landing() {
             <span className="text-xs text-zinc-500">Gestão Multi-Nicho</span>
           </div>
 
-          <div className="flex flex-wrap items-center gap-6 text-xs sm:text-sm">
+          <div className="flex flex-wrap items-center gap-5 sm:gap-6 text-xs sm:text-sm">
+            <Link to="/termos" className="hover:text-white transition-colors">
+              Termos de Uso
+            </Link>
+            <Link to="/privacidade" className="hover:text-white transition-colors">
+              Privacidade (LGPD)
+            </Link>
             <Link to="/cadastro" className="hover:text-white transition-colors">
               Criar conta
             </Link>

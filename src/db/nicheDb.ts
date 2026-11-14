@@ -330,6 +330,61 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_appointment_notes_shop
   ON appointment_notes (barbershop_id);
+
+  -- Vinculo de Login Individual por Profissional (Parte 5 Multi-Usuários)
+  CREATE TABLE IF NOT EXISTS barber_accounts (
+    barber_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    barbershop_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_barber_accounts_user
+  ON barber_accounts (user_id);
+
+  CREATE INDEX IF NOT EXISTS idx_barber_accounts_shop
+  ON barber_accounts (barbershop_id);
+
+  -- Automação de WhatsApp por Loja (Parte 6 - Evolution API)
+  CREATE TABLE IF NOT EXISTS whatsapp_integrations (
+    barbershop_id TEXT PRIMARY KEY,
+    instance_name TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'evolution',
+    connection_status TEXT NOT NULL DEFAULT 'disconnected',
+    connected_phone TEXT,
+    auto_confirm_enabled INTEGER DEFAULT 0,
+    reminder_24h_enabled INTEGER DEFAULT 0,
+    reminder_2h_enabled INTEGER DEFAULT 0,
+    auto_cancel_enabled INTEGER DEFAULT 0,
+    template_confirm TEXT NOT NULL,
+    template_reminder_24h TEXT NOT NULL,
+    template_reminder_2h TEXT NOT NULL,
+    template_cancel TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS whatsapp_logs (
+    id TEXT PRIMARY KEY,
+    barbershop_id TEXT NOT NULL,
+    appointment_id TEXT,
+    event_type TEXT NOT NULL,
+    recipient_phone TEXT NOT NULL,
+    recipient_name TEXT,
+    message_text TEXT NOT NULL,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    provider_message_id TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_shop
+  ON whatsapp_logs (barbershop_id, created_at DESC);
+
+  CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_appt_event
+  ON whatsapp_logs (appointment_id, event_type, status);
 `);
 
 export interface ClinicalNote {
@@ -1225,6 +1280,48 @@ export const nicheDb = {
     return map;
   },
 
+  // --- BARBER ACCOUNTS (INDIVIDUAL PROFESSIONAL LOGIN LINK) ---
+  upsertBarberAccount(data: {
+    barber_id: string;
+    user_id: string;
+    barbershop_id: string;
+    email: string;
+  }): void {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO barber_accounts (barber_id, user_id, barbershop_id, email, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(barber_id) DO UPDATE SET
+        user_id = excluded.user_id,
+        barbershop_id = excluded.barbershop_id,
+        email = excluded.email,
+        updated_at = excluded.updated_at
+    `).run(data.barber_id, data.user_id, data.barbershop_id, data.email, now, now);
+  },
+
+  getBarberAccountByUserId(userId: string): { barber_id: string; user_id: string; barbershop_id: string; email: string } | null {
+    const row = db.prepare(`SELECT barber_id, user_id, barbershop_id, email FROM barber_accounts WHERE user_id = ? LIMIT 1`).get(userId) as any;
+    return row || null;
+  },
+
+  getBarberAccountByBarberId(barberId: string): { barber_id: string; user_id: string; barbershop_id: string; email: string } | null {
+    const row = db.prepare(`SELECT barber_id, user_id, barbershop_id, email FROM barber_accounts WHERE barber_id = ? LIMIT 1`).get(barberId) as any;
+    return row || null;
+  },
+
+  getBarberAccountsByShop(barbershopId: string): Record<string, { user_id: string; email: string }> {
+    const rows = db.prepare(`SELECT barber_id, user_id, email FROM barber_accounts WHERE barbershop_id = ?`).all(barbershopId) as any[];
+    const map: Record<string, { user_id: string; email: string }> = {};
+    rows.forEach((r) => {
+      map[r.barber_id] = { user_id: r.user_id, email: r.email };
+    });
+    return map;
+  },
+
+  deleteBarberAccount(barberId: string): void {
+    db.prepare(`DELETE FROM barber_accounts WHERE barber_id = ?`).run(barberId);
+  },
+
   // --- PASSWORD RESET TOKENS ---
   invalidateUserResetTokens(userId: string): void {
     const now = new Date().toISOString();
@@ -1376,7 +1473,10 @@ export const nicheDb = {
       'appointment_notes',
       'entity_photos',
       'barber_metadata',
-      'saas_payments'
+      'barber_accounts',
+      'saas_payments',
+      'whatsapp_integrations',
+      'whatsapp_logs'
     ];
     for (const table of shopTables) {
       try {
@@ -1397,6 +1497,162 @@ export const nicheDb = {
     }
   },
 
+  // --- WHATSAPP INTEGRATIONS & LOGS (PART 6) ---
+  getWhatsAppIntegration(barbershopId: string): any | null {
+    return (
+      db.prepare(`SELECT * FROM whatsapp_integrations WHERE barbershop_id = ? LIMIT 1`).get(barbershopId) as any
+    ) || null;
+  },
+
+  getAllActiveWhatsAppReminderIntegrations(): any[] {
+    return db
+      .prepare(
+        `SELECT * FROM whatsapp_integrations WHERE connection_status = 'connected' AND (reminder_24h_enabled = 1 OR reminder_2h_enabled = 1)`
+      )
+      .all() as any[];
+  },
+
+  upsertWhatsAppIntegration(data: {
+    barbershop_id: string;
+    instance_name: string;
+    provider?: string;
+    connection_status?: string;
+    connected_phone?: string | null;
+    auto_confirm_enabled?: number;
+    reminder_24h_enabled?: number;
+    reminder_2h_enabled?: number;
+    auto_cancel_enabled?: number;
+    template_confirm: string;
+    template_reminder_24h: string;
+    template_reminder_2h: string;
+    template_cancel: string;
+    created_at?: string;
+    updated_at?: string;
+  }): any {
+    const now = new Date().toISOString();
+    const existing = this.getWhatsAppIntegration(data.barbershop_id);
+    const payload = {
+      barbershop_id: data.barbershop_id,
+      instance_name: data.instance_name || existing?.instance_name || `doiseme_${data.barbershop_id.slice(0, 8)}`,
+      provider: data.provider || existing?.provider || 'evolution',
+      connection_status: data.connection_status ?? existing?.connection_status ?? 'disconnected',
+      connected_phone: data.connected_phone !== undefined ? data.connected_phone : (existing?.connected_phone ?? null),
+      auto_confirm_enabled: data.auto_confirm_enabled ?? existing?.auto_confirm_enabled ?? 0,
+      reminder_24h_enabled: data.reminder_24h_enabled ?? existing?.reminder_24h_enabled ?? 0,
+      reminder_2h_enabled: data.reminder_2h_enabled ?? existing?.reminder_2h_enabled ?? 0,
+      auto_cancel_enabled: data.auto_cancel_enabled ?? existing?.auto_cancel_enabled ?? 0,
+      template_confirm: data.template_confirm,
+      template_reminder_24h: data.template_reminder_24h,
+      template_reminder_2h: data.template_reminder_2h,
+      template_cancel: data.template_cancel,
+      created_at: existing?.created_at || data.created_at || now,
+      updated_at: data.updated_at || now
+    };
+
+    db.prepare(`
+      INSERT INTO whatsapp_integrations (
+        barbershop_id, instance_name, provider, connection_status, connected_phone,
+        auto_confirm_enabled, reminder_24h_enabled, reminder_2h_enabled, auto_cancel_enabled,
+        template_confirm, template_reminder_24h, template_reminder_2h, template_cancel,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(barbershop_id) DO UPDATE SET
+        instance_name = excluded.instance_name,
+        provider = excluded.provider,
+        connection_status = excluded.connection_status,
+        connected_phone = excluded.connected_phone,
+        auto_confirm_enabled = excluded.auto_confirm_enabled,
+        reminder_24h_enabled = excluded.reminder_24h_enabled,
+        reminder_2h_enabled = excluded.reminder_2h_enabled,
+        auto_cancel_enabled = excluded.auto_cancel_enabled,
+        template_confirm = excluded.template_confirm,
+        template_reminder_24h = excluded.template_reminder_24h,
+        template_reminder_2h = excluded.template_reminder_2h,
+        template_cancel = excluded.template_cancel,
+        updated_at = excluded.updated_at
+    `).run(
+      payload.barbershop_id,
+      payload.instance_name,
+      payload.provider,
+      payload.connection_status,
+      payload.connected_phone,
+      payload.auto_confirm_enabled,
+      payload.reminder_24h_enabled,
+      payload.reminder_2h_enabled,
+      payload.auto_cancel_enabled,
+      payload.template_confirm,
+      payload.template_reminder_24h,
+      payload.template_reminder_2h,
+      payload.template_cancel,
+      payload.created_at,
+      payload.updated_at
+    );
+
+    return payload;
+  },
+
+  updateWhatsAppConnection(barbershopId: string, connectionStatus: string, connectedPhone?: string | null): void {
+    const now = new Date().toISOString();
+    if (connectedPhone !== undefined) {
+      db.prepare(
+        `UPDATE whatsapp_integrations SET connection_status = ?, connected_phone = ?, updated_at = ? WHERE barbershop_id = ?`
+      ).run(connectionStatus, connectedPhone, now, barbershopId);
+    } else {
+      db.prepare(
+        `UPDATE whatsapp_integrations SET connection_status = ?, updated_at = ? WHERE barbershop_id = ?`
+      ).run(connectionStatus, now, barbershopId);
+    }
+  },
+
+  createWhatsAppLog(log: {
+    id: string;
+    barbershop_id: string;
+    appointment_id?: string | null;
+    event_type: string;
+    recipient_phone: string;
+    recipient_name?: string | null;
+    message_text: string;
+    status: string;
+    error_message?: string | null;
+    provider_message_id?: string | null;
+    created_at?: string;
+  }): void {
+    const now = log.created_at || new Date().toISOString();
+    db.prepare(`
+      INSERT INTO whatsapp_logs (
+        id, barbershop_id, appointment_id, event_type, recipient_phone, recipient_name,
+        message_text, status, error_message, provider_message_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      log.id,
+      log.barbershop_id,
+      log.appointment_id || null,
+      log.event_type,
+      log.recipient_phone,
+      log.recipient_name || null,
+      log.message_text,
+      log.status,
+      log.error_message || null,
+      log.provider_message_id || null,
+      now
+    );
+  },
+
+  getWhatsAppLogsByShop(barbershopId: string, limit = 30): any[] {
+    return db
+      .prepare(`SELECT * FROM whatsapp_logs WHERE barbershop_id = ? ORDER BY created_at DESC LIMIT ?`)
+      .all(barbershopId, limit) as any[];
+  },
+
+  hasSentWhatsAppEvent(appointmentId: string, eventType: string): boolean {
+    const row = db
+      .prepare(
+        `SELECT id FROM whatsapp_logs WHERE appointment_id = ? AND event_type = ? AND status = 'sent' LIMIT 1`
+      )
+      .get(appointmentId, eventType) as any;
+    return Boolean(row);
+  },
+
   getAllForMigration(): Record<string, any[]> {
     const tables = [
       'client_clinical_notes',
@@ -1413,9 +1669,12 @@ export const nicheDb = {
       'appointment_notes',
       'entity_photos',
       'barber_metadata',
+      'barber_accounts',
       'password_reset_tokens',
       'platform_settings',
-      'saas_payments'
+      'saas_payments',
+      'whatsapp_integrations',
+      'whatsapp_logs'
     ];
     const result: Record<string, any[]> = {};
     for (const table of tables) {

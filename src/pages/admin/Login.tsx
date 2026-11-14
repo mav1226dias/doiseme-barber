@@ -45,7 +45,11 @@ export default function Login() {
           if (data.user) {
             localStorage.setItem('user', JSON.stringify(data.user));
           }
-          navigate(data.subscriptionExpired ? '/admin/assinatura' : '/admin');
+          if (data.user?.role === 'barber') {
+            navigate('/admin/agenda');
+          } else {
+            navigate(data.subscriptionExpired ? '/admin/assinatura' : '/admin');
+          }
         } catch (storageErr) {
           console.error("Storage error (iframe blocked cookies?):", storageErr);
           setError("O seu navegador está bloqueando o salvamento da sessão (Cookies/Storage). Utilize o botão de 'Abrir em Nova Aba' (ícone superior direito do AI Studio) para acessar o painel!");

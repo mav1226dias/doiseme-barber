@@ -51,9 +51,12 @@ export const NICHE_CLOUD_TABLES = [
   'appointment_notes',
   'entity_photos',
   'barber_metadata',
+  'barber_accounts',
   'password_reset_tokens',
   'platform_settings',
-  'saas_payments'
+  'saas_payments',
+  'whatsapp_integrations',
+  'whatsapp_logs'
 ] as const;
 
 const CONFLICT_KEYS: Record<string, string> = {
@@ -71,9 +74,12 @@ const CONFLICT_KEYS: Record<string, string> = {
   appointment_notes: 'appointment_id',
   entity_photos: 'entity_id',
   barber_metadata: 'barber_id',
+  barber_accounts: 'barber_id',
   password_reset_tokens: 'id',
   platform_settings: 'key',
-  saas_payments: 'id'
+  saas_payments: 'id',
+  whatsapp_integrations: 'barbershop_id',
+  whatsapp_logs: 'id'
 };
 
 export const cloudNicheDb = {
@@ -941,6 +947,107 @@ export const cloudNicheDb = {
     return map;
   },
 
+  // --- BARBER ACCOUNTS (INDIVIDUAL PROFESSIONAL LOGIN LINK) ---
+  async upsertBarberAccount(data: {
+    barber_id: string;
+    user_id: string;
+    barbershop_id: string;
+    email: string;
+  }): Promise<void> {
+    const now = new Date().toISOString();
+    const { error } = await supabaseAdmin.from('barber_accounts').upsert(
+      {
+        barber_id: data.barber_id,
+        user_id: data.user_id,
+        barbershop_id: data.barbershop_id,
+        email: data.email,
+        created_at: now,
+        updated_at: now
+      },
+      { onConflict: 'barber_id' }
+    );
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('barber_accounts', error);
+        nicheDb.upsertBarberAccount(data);
+        return;
+      }
+      throw error;
+    }
+  },
+
+  async getBarberAccountByUserId(userId: string): Promise<{ barber_id: string; user_id: string; barbershop_id: string; email: string } | null> {
+    const { data, error } = await supabaseAdmin
+      .from('barber_accounts')
+      .select('barber_id, user_id, barbershop_id, email')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('barber_accounts', error);
+        return nicheDb.getBarberAccountByUserId(userId);
+      }
+      throw error;
+    }
+    return data || null;
+  },
+
+  async getBarberAccountByBarberId(barberId: string): Promise<{ barber_id: string; user_id: string; barbershop_id: string; email: string } | null> {
+    const { data, error } = await supabaseAdmin
+      .from('barber_accounts')
+      .select('barber_id, user_id, barbershop_id, email')
+      .eq('barber_id', barberId)
+      .maybeSingle();
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('barber_accounts', error);
+        return nicheDb.getBarberAccountByBarberId(barberId);
+      }
+      throw error;
+    }
+    return data || null;
+  },
+
+  async getBarberAccountsByShop(barbershopId: string): Promise<Record<string, { user_id: string; email: string }>> {
+    const { data, error } = await supabaseAdmin
+      .from('barber_accounts')
+      .select('barber_id, user_id, email')
+      .eq('barbershop_id', barbershopId);
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('barber_accounts', error);
+        return nicheDb.getBarberAccountsByShop(barbershopId);
+      }
+      throw error;
+    }
+
+    const map: Record<string, { user_id: string; email: string }> = {};
+    (data || []).forEach((r: any) => {
+      map[r.barber_id] = { user_id: r.user_id, email: r.email };
+    });
+    return map;
+  },
+
+  async deleteBarberAccount(barberId: string): Promise<void> {
+    const { error } = await supabaseAdmin
+      .from('barber_accounts')
+      .delete()
+      .eq('barber_id', barberId);
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('barber_accounts', error);
+        nicheDb.deleteBarberAccount(barberId);
+        return;
+      }
+      throw error;
+    }
+  },
+
   // --- PASSWORD RESET TOKENS ---
   async invalidateUserResetTokens(userId: string): Promise<void> {
     const now = new Date().toISOString();
@@ -1194,7 +1301,10 @@ export const cloudNicheDb = {
       'appointment_notes',
       'entity_photos',
       'barber_metadata',
-      'saas_payments'
+      'barber_accounts',
+      'saas_payments',
+      'whatsapp_integrations',
+      'whatsapp_logs'
     ];
 
     for (const table of shopTables) {
@@ -1221,5 +1331,181 @@ export const cloudNicheDb = {
     }
 
     nicheDb.deleteShopData(barbershopId, cleanUserIds);
+  },
+
+  // --- WHATSAPP INTEGRATIONS & LOGS (PART 6) ---
+  async getWhatsAppIntegration(barbershopId: string): Promise<any | null> {
+    const { data, error } = await supabaseAdmin
+      .from('whatsapp_integrations')
+      .select('*')
+      .eq('barbershop_id', barbershopId)
+      .maybeSingle();
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('whatsapp_integrations', error);
+        return nicheDb.getWhatsAppIntegration(barbershopId);
+      }
+      throw error;
+    }
+    return data || null;
+  },
+
+  async getAllActiveWhatsAppReminderIntegrations(): Promise<any[]> {
+    const { data, error } = await supabaseAdmin
+      .from('whatsapp_integrations')
+      .select('*')
+      .eq('connection_status', 'connected');
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('whatsapp_integrations', error);
+        return nicheDb.getAllActiveWhatsAppReminderIntegrations();
+      }
+      throw error;
+    }
+    return (data || []).filter((row: any) => Boolean(row.reminder_24h_enabled || row.reminder_2h_enabled));
+  },
+
+  async upsertWhatsAppIntegration(data: {
+    barbershop_id: string;
+    instance_name: string;
+    provider?: string;
+    connection_status?: string;
+    connected_phone?: string | null;
+    auto_confirm_enabled?: number;
+    reminder_24h_enabled?: number;
+    reminder_2h_enabled?: number;
+    auto_cancel_enabled?: number;
+    template_confirm: string;
+    template_reminder_24h: string;
+    template_reminder_2h: string;
+    template_cancel: string;
+  }): Promise<any> {
+    const existing = await this.getWhatsAppIntegration(data.barbershop_id);
+    const now = new Date().toISOString();
+    const payload = {
+      barbershop_id: data.barbershop_id,
+      instance_name: data.instance_name || existing?.instance_name || `doiseme_${data.barbershop_id.slice(0, 8)}`,
+      provider: data.provider || existing?.provider || 'evolution',
+      connection_status: data.connection_status ?? existing?.connection_status ?? 'disconnected',
+      connected_phone: data.connected_phone !== undefined ? data.connected_phone : (existing?.connected_phone ?? null),
+      auto_confirm_enabled: data.auto_confirm_enabled ?? existing?.auto_confirm_enabled ?? 0,
+      reminder_24h_enabled: data.reminder_24h_enabled ?? existing?.reminder_24h_enabled ?? 0,
+      reminder_2h_enabled: data.reminder_2h_enabled ?? existing?.reminder_2h_enabled ?? 0,
+      auto_cancel_enabled: data.auto_cancel_enabled ?? existing?.auto_cancel_enabled ?? 0,
+      template_confirm: data.template_confirm,
+      template_reminder_24h: data.template_reminder_24h,
+      template_reminder_2h: data.template_reminder_2h,
+      template_cancel: data.template_cancel,
+      created_at: existing?.created_at || now,
+      updated_at: now
+    };
+
+    const { error } = await supabaseAdmin
+      .from('whatsapp_integrations')
+      .upsert(payload, { onConflict: 'barbershop_id' });
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('whatsapp_integrations', error);
+        return nicheDb.upsertWhatsAppIntegration(payload);
+      }
+      throw error;
+    }
+    return payload;
+  },
+
+  async updateWhatsAppConnection(barbershopId: string, connectionStatus: string, connectedPhone?: string | null): Promise<void> {
+    const updatePayload: Record<string, any> = {
+      connection_status: connectionStatus,
+      updated_at: new Date().toISOString()
+    };
+    if (connectedPhone !== undefined) {
+      updatePayload.connected_phone = connectedPhone;
+    }
+
+    const { error } = await supabaseAdmin
+      .from('whatsapp_integrations')
+      .update(updatePayload)
+      .eq('barbershop_id', barbershopId);
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('whatsapp_integrations', error);
+        nicheDb.updateWhatsAppConnection(barbershopId, connectionStatus, connectedPhone);
+        return;
+      }
+      throw error;
+    }
+  },
+
+  async createWhatsAppLog(log: {
+    id: string;
+    barbershop_id: string;
+    appointment_id?: string | null;
+    event_type: string;
+    recipient_phone: string;
+    recipient_name?: string | null;
+    message_text: string;
+    status: string;
+    error_message?: string | null;
+    provider_message_id?: string | null;
+  }): Promise<void> {
+    const payload = {
+      ...log,
+      appointment_id: log.appointment_id || null,
+      recipient_name: log.recipient_name || null,
+      error_message: log.error_message || null,
+      provider_message_id: log.provider_message_id || null,
+      created_at: new Date().toISOString()
+    };
+
+    const { error } = await supabaseAdmin.from('whatsapp_logs').insert(payload);
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('whatsapp_logs', error);
+        nicheDb.createWhatsAppLog(payload);
+        return;
+      }
+      throw error;
+    }
+  },
+
+  async getWhatsAppLogsByShop(barbershopId: string, limit = 30): Promise<any[]> {
+    const { data, error } = await supabaseAdmin
+      .from('whatsapp_logs')
+      .select('*')
+      .eq('barbershop_id', barbershopId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('whatsapp_logs', error);
+        return nicheDb.getWhatsAppLogsByShop(barbershopId, limit);
+      }
+      throw error;
+    }
+    return data || [];
+  },
+
+  async hasSentWhatsAppEvent(appointmentId: string, eventType: string): Promise<boolean> {
+    const { data, error } = await supabaseAdmin
+      .from('whatsapp_logs')
+      .select('id')
+      .eq('appointment_id', appointmentId)
+      .eq('event_type', eventType)
+      .eq('status', 'sent')
+      .limit(1);
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('whatsapp_logs', error);
+        return nicheDb.hasSentWhatsAppEvent(appointmentId, eventType);
+      }
+      throw error;
+    }
+    return Boolean(data && data.length > 0);
   }
 };

@@ -13,6 +13,8 @@ export default function Agenda() {
   
   const [barbersListOptions, setBarbersListOptions] = useState<any[]>([]);
   const [servicesListOptions, setServicesListOptions] = useState<any[]>([]);
+  const [userRole, setUserRole] = useState<string>('admin');
+  const [ownBarberId, setOwnBarberId] = useState<string>('');
 
   // Modals state
   const [isApptModalOpen, setIsApptModalOpen] = useState(false);
@@ -44,7 +46,7 @@ export default function Agenda() {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(async res => {
-        if (res.status === 401 || res.status === 403) {
+        if (res.status === 401) {
           localStorage.removeItem('token');
           window.location.href = '/admin/login';
           return [];
@@ -65,22 +67,47 @@ export default function Agenda() {
         const text = await res.text();
         return text ? JSON.parse(text) : [];
       })
-      .then(data => setBarbersListOptions(data || []))
+      .then(data => {
+        const list = Array.isArray(data) ? data : [];
+        setBarbersListOptions(list);
+        if (list.length === 1 && list[0]?.id) {
+          setNewAppt(prev => prev.barberId ? prev : { ...prev, barberId: list[0].id });
+          setNewBlock(prev => prev.barberId ? prev : { ...prev, barberId: list[0].id });
+        }
+      })
       .catch(console.error);
     fetch('/api/admin/services', { headers: { 'Authorization': `Bearer ${token}` } })
       .then(async res => {
         const text = await res.text();
         return text ? JSON.parse(text) : [];
       })
-      .then(data => setServicesListOptions(data || []))
+      .then(data => setServicesListOptions(Array.isArray(data) ? data : []))
       .catch(console.error);
   };
 
   useEffect(() => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      try {
+        const parts = token.split('.');
+        if (parts.length === 3) {
+          const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+          const payload = JSON.parse(decodeURIComponent(atob(base64).split('').map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2)).join('')));
+          if (payload.role) setUserRole(payload.role);
+          if (payload.barberId) {
+            setOwnBarberId(payload.barberId);
+            setNewAppt(prev => ({ ...prev, barberId: payload.barberId }));
+            setNewBlock(prev => ({ ...prev, barberId: payload.barberId }));
+          }
+        }
+      } catch {
+        // ignore decode issue
+      }
+    }
+
     fetchAppointments();
     loadOptions();
 
-    const token = localStorage.getItem('token');
     fetch('/api/admin/shop-info', { headers: { 'Authorization': `Bearer ${token}` } })
       .then(res => res.json())
       .then(data => { if (data?.segment) setSegment(data.segment); })
@@ -136,7 +163,7 @@ export default function Agenda() {
       if (res.ok) {
         toast.success('Agendamento criado com sucesso!');
         setIsApptModalOpen(false);
-        setNewAppt({ clientName: '', clientPhone: '', serviceId: '', barberId: '', time: '09:00', notes: '' });
+        setNewAppt({ clientName: '', clientPhone: '', serviceId: '', barberId: ownBarberId || '', time: '09:00', notes: '' });
         fetchAppointments();
       } else {
         const err = await res.json().catch(() => ({}));
@@ -353,7 +380,13 @@ export default function Agenda() {
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Profissional</label>
-                <select required value={newAppt.barberId} onChange={e => setNewAppt({...newAppt, barberId: e.target.value})} className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700">
+                <select
+                  required
+                  disabled={userRole === 'barber'}
+                  value={newAppt.barberId}
+                  onChange={e => setNewAppt({...newAppt, barberId: e.target.value})}
+                  className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700 disabled:opacity-70"
+                >
                   <option value="">Selecione...</option>
                   {barbersListOptions.map(b => (
                     <option key={b.id} value={b.id}>{b.name}</option>
@@ -396,7 +429,13 @@ export default function Agenda() {
               <p className="text-sm text-gray-500 mb-4">Isto criará blocos de indisponibilidade para o período. Útil para folgas do dia e pausas.</p>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Profissional</label>
-                <select required value={newBlock.barberId} onChange={e => setNewBlock({...newBlock, barberId: e.target.value})} className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700">
+                <select
+                  required
+                  disabled={userRole === 'barber'}
+                  value={newBlock.barberId}
+                  onChange={e => setNewBlock({...newBlock, barberId: e.target.value})}
+                  className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700 disabled:opacity-70"
+                >
                   <option value="">Selecione...</option>
                   {barbersListOptions.map(b => (
                     <option key={b.id} value={b.id}>{b.name}</option>

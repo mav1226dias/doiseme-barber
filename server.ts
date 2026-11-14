@@ -13,6 +13,19 @@ import QRCode from 'qrcode';
 import { supabaseAdmin as supabase, hasServiceRoleKey } from './src/db/supabaseAdmin.js';
 import { cloudNicheDb } from './src/db/cloudNicheDb.js';
 import { getSegment } from './src/lib/segments.js';
+import {
+  DEFAULT_WHATSAPP_TEMPLATES,
+  buildInstanceName,
+  formatBrDate,
+  renderWhatsAppTemplate,
+  resolveEvolutionConfig,
+  resolveCronSecret,
+  testEvolutionServer,
+  connectEvolutionInstance,
+  getEvolutionConnectionState,
+  logoutEvolutionInstance,
+  sendEvolutionTextMessage
+} from './src/services/evolutionService.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-for-doiseme';
 if (!process.env.JWT_SECRET) {
@@ -359,6 +372,25 @@ async function startServer() {
     }
   };
 
+  // Owner or Master Check Middleware (Blocks role === 'barber')
+  const requireOwnerOrMaster = (req: any, res: any, next: any) => {
+    if (req.user?.role === 'barber') {
+      return res.status(403).json({ error: 'Acesso restrito ao administrador do estabelecimento.' });
+    }
+    next();
+  };
+
+  // Resolve Barber ID for logged-in professional
+  const resolveBarberId = async (user: any): Promise<string | null> => {
+    if (!user) return null;
+    if (user.barberId) return String(user.barberId);
+    if (user.id) {
+      const account = await cloudNicheDb.getBarberAccountByUserId(String(user.id));
+      if (account?.barber_id) return account.barber_id;
+    }
+    return null;
+  };
+
   api.get('/health', async (req, res) => {
     try {
       const { data, error } = await supabase.from('barbershops').select('id').limit(1);
@@ -668,6 +700,104 @@ async function startServer() {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
   };
 
+  const dispatchAppointmentWhatsApp = async (params: {
+    shopId: string;
+    appointmentId?: string | null;
+    eventType: 'confirmation' | 'reminder_24h' | 'reminder_2h' | 'cancellation';
+    clientName: string;
+    clientPhone: string;
+    date: string;
+    startTime: string;
+    serviceName?: string;
+    barberName?: string;
+    shopName?: string;
+  }): Promise<{ sent?: boolean; skipped?: boolean; reason?: string; error?: string }> => {
+    try {
+      const evoConfig = await resolveEvolutionConfig();
+      if (!evoConfig.apiUrl || !evoConfig.apiKey) {
+        return { skipped: true, reason: 'server_not_configured' };
+      }
+
+      const integration = await cloudNicheDb.getWhatsAppIntegration(params.shopId);
+      if (!integration || integration.connection_status !== 'connected') {
+        return { skipped: true, reason: 'instance_not_connected' };
+      }
+
+      const toggleEnabled =
+        params.eventType === 'confirmation'
+          ? Boolean(integration.auto_confirm_enabled)
+          : params.eventType === 'reminder_24h'
+          ? Boolean(integration.reminder_24h_enabled)
+          : params.eventType === 'reminder_2h'
+          ? Boolean(integration.reminder_2h_enabled)
+          : Boolean(integration.auto_cancel_enabled);
+
+      if (!toggleEnabled) {
+        return { skipped: true, reason: 'toggle_disabled' };
+      }
+
+      if (params.appointmentId) {
+        const alreadySent = await cloudNicheDb.hasSentWhatsAppEvent(params.appointmentId, params.eventType);
+        if (alreadySent) {
+          return { skipped: true, reason: 'already_sent' };
+        }
+      }
+
+      let shopName = params.shopName || '';
+      if (!shopName) {
+        const { data: shopRow } = await supabase
+          .from('barbershops')
+          .select('name')
+          .eq('id', params.shopId)
+          .maybeSingle();
+        shopName = shopRow?.name || 'Estabelecimento';
+      }
+
+      const template =
+        params.eventType === 'confirmation'
+          ? (integration.template_confirm || DEFAULT_WHATSAPP_TEMPLATES.template_confirm)
+          : params.eventType === 'reminder_24h'
+          ? (integration.template_reminder_24h || DEFAULT_WHATSAPP_TEMPLATES.template_reminder_24h)
+          : params.eventType === 'reminder_2h'
+          ? (integration.template_reminder_2h || DEFAULT_WHATSAPP_TEMPLATES.template_reminder_2h)
+          : (integration.template_cancel || DEFAULT_WHATSAPP_TEMPLATES.template_cancel);
+
+      const messageText = renderWhatsAppTemplate(template, {
+        cliente: params.clientName || 'Cliente',
+        estabelecimento: shopName,
+        servico: params.serviceName || 'Atendimento',
+        profissional: params.barberName || 'Equipe',
+        data: formatBrDate(params.date),
+        horario: String(params.startTime || '').slice(0, 5)
+      });
+
+      const sendRes = await sendEvolutionTextMessage(
+        evoConfig,
+        integration.instance_name,
+        params.clientPhone,
+        messageText
+      );
+
+      await cloudNicheDb.createWhatsAppLog({
+        id: crypto.randomUUID(),
+        barbershop_id: params.shopId,
+        appointment_id: params.appointmentId || null,
+        event_type: params.eventType,
+        recipient_phone: params.clientPhone,
+        recipient_name: params.clientName || null,
+        message_text: messageText,
+        status: sendRes.ok ? 'sent' : 'failed',
+        error_message: sendRes.ok ? null : (sendRes.error || 'Falha no envio'),
+        provider_message_id: sendRes.messageId || null
+      });
+
+      return sendRes.ok ? { sent: true } : { sent: false, error: sendRes.error };
+    } catch (err: any) {
+      console.warn('[WHATSAPP_DISPATCH_WARN]', err?.message || err);
+      return { sent: false, error: err?.message || 'Erro interno' };
+    }
+  };
+
   const buildOccupiedIntervals = (rows: any[]): Array<[number, number]> => {
     return (rows || []).map((appt) => {
       const startMin = timeToMinutes(appt.start_time, -1);
@@ -826,15 +956,17 @@ async function startServer() {
         client = newC;
       }
 
-      // Buscar duração do serviço (suporta sessões longas)
+      // Buscar duração e nome do serviço (suporta sessões longas)
       let duration = Number(durationMinutes) > 0 ? Math.min(720, Math.max(15, Number(durationMinutes))) : 30;
+      let resolvedServiceName = 'Atendimento';
       let resolvedServiceId: string | null = String(serviceId);
       if (!resolvedServiceId.startsWith('sug-')) {
         const { data: service } = await supabase
           .from('services')
-          .select('duration_minutes')
+          .select('name, duration_minutes')
           .eq('id', resolvedServiceId)
           .maybeSingle();
+        if (service?.name) resolvedServiceName = service.name;
         if (service?.duration_minutes) {
           duration = Math.min(720, Math.max(15, Number(service.duration_minutes)));
         }
@@ -899,6 +1031,32 @@ async function startServer() {
         await cloudNicheDb.upsertAppointmentNote(appointmentId, barbershopId, trimmedNotes);
       }
 
+      // Disparo automático de confirmação via WhatsApp (não bloqueia agendamento se VPS não configurada)
+      let resolvedBarberName = 'Equipe';
+      if (barberId && barberId !== 'prof-default-1') {
+        const { data: barberRow } = await supabase
+          .from('barbers')
+          .select('name')
+          .eq('id', barberId)
+          .maybeSingle();
+        if (barberRow?.name) resolvedBarberName = barberRow.name;
+      }
+
+      await Promise.race([
+        dispatchAppointmentWhatsApp({
+          shopId: barbershopId,
+          appointmentId,
+          eventType: 'confirmation',
+          clientName: String(clientName).trim(),
+          clientPhone: cleanPhone,
+          date,
+          startTime: minutesToTime(reqStartMinutes),
+          serviceName: resolvedServiceName,
+          barberName: resolvedBarberName
+        }),
+        new Promise((resolve) => setTimeout(resolve, 3500))
+      ]);
+
       return res.json({
         success: true,
         data: insertResult.data
@@ -918,15 +1076,18 @@ async function startServer() {
     res.json(settings);
   });
 
-  api.post('/admin/settings', authenticateToken, async (req: any, res) => {
+  api.post('/admin/settings', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const shopId = req.user.barbershopId;
-    const config = req.body;
+    const config = {
+      ...(typeof req.body === 'object' && req.body ? req.body : {}),
+      _scheduleConfirmed: true
+    };
     
     try {
       const { error } = await supabase
         .from('shop_settings')
         .upsert({
-          id: crypto.randomUUID(), // This is technically wrong for upsert without constraint but Supabase upsert works on unique columns
+          id: crypto.randomUUID(),
           barbershop_id: shopId,
           config: JSON.stringify(config),
           updated_at: new Date().toISOString()
@@ -1053,7 +1214,7 @@ async function startServer() {
     }
   });
 
-  // Self-service shop + owner registration (14-day free trial)
+  // Self-service shop + owner registration (7-day free trial)
   api.post('/auth/register', registerLimiter, async (req, res) => {
     const {
       businessName,
@@ -1065,8 +1226,13 @@ async function startServer() {
       password,
       confirmPassword,
       seedStarterServices = true,
-      createOwnerAsProfessional = true
+      createOwnerAsProfessional = true,
+      acceptedTerms
     } = req.body;
+
+    if (acceptedTerms === false) {
+      return res.status(400).json({ error: 'Você precisa aceitar os Termos de Uso e a Política de Privacidade (LGPD).' });
+    }
 
     if (!businessName || !ownerName || !slug || !email || !password) {
       return res.status(400).json({ error: 'Preencha todos os campos obrigatórios.' });
@@ -1418,13 +1584,40 @@ async function startServer() {
         return res.status(401).json({ error: 'Senha incorreta' });
       }
 
-      console.log(`[LOGIN SUCCESS] User authenticated: ${user.email} (Role: ${user.role}, Expired: ${subscriptionExpired})`);
-      const token = jwt.sign({ 
-        id: user.id, 
-        barbershopId: user.barbershop_id, 
+      let resolvedBarberId: string | null = null;
+      if (user.role === 'barber') {
+        resolvedBarberId = (user as any).barber_id || (await cloudNicheDb.getBarberAccountByUserId(user.id))?.barber_id || null;
+        if (!resolvedBarberId) {
+          return res.status(403).json({
+            error: 'Conta de profissional sem vínculo ativo. Peça ao administrador do estabelecimento para vincular seu acesso.'
+          });
+        }
+        const { data: linkedBarber } = await supabase
+          .from('barbers')
+          .select('id, active')
+          .eq('id', resolvedBarberId)
+          .eq('barbershop_id', user.barbershop_id)
+          .maybeSingle();
+
+        if (!linkedBarber || linkedBarber.active === false) {
+          return res.status(403).json({
+            error: 'Seu acesso de profissional está desativado no momento. Fale com o administrador.'
+          });
+        }
+      }
+
+      console.log(`[LOGIN SUCCESS] User authenticated: ${user.email} (Role: ${user.role}, BarberId: ${resolvedBarberId || 'n/a'}, Expired: ${subscriptionExpired})`);
+      const tokenPayload: Record<string, any> = {
+        id: user.id,
+        barbershopId: user.barbershop_id,
         role: user.role,
-        email: user.email 
-      }, JWT_SECRET, { expiresIn: '7d' });
+        email: user.email
+      };
+      if (resolvedBarberId) {
+        tokenPayload.barberId = resolvedBarberId;
+      }
+
+      const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '7d' });
       
       res.json({ 
         token, 
@@ -1434,7 +1627,8 @@ async function startServer() {
           name: user.name, 
           email: user.email, 
           role: user.role, 
-          barbershopId: user.barbershop_id 
+          barbershopId: user.barbershop_id,
+          ...(resolvedBarberId ? { barberId: resolvedBarberId } : {})
         } 
       });
     } catch (error: any) {
@@ -1445,8 +1639,8 @@ async function startServer() {
 
   // --- PROTECTED ADMIN ROUTES ---
   
-  // Dashboard stats
-  api.patch('/admin/shop/:id?', authenticateToken, async (req: any, res) => {
+  // Dashboard stats (Owner / Master only)
+  api.patch('/admin/shop/:id?', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     // 1. ADICIONAR LOGS
     console.log('BODY:', req.body);
     console.log('ID:', req.params.id);
@@ -1576,7 +1770,7 @@ async function startServer() {
     }
   });
 
-  api.get('/admin/dashboard', authenticateToken, async (req: any, res) => {
+  api.get('/admin/dashboard', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { barbershopId } = (req as any).user;
     const { start, end } = req.query;
     console.log(`[DASHBOARD] Loading for shop ${barbershopId}, range: ${start} to ${end}`);
@@ -1684,8 +1878,8 @@ async function startServer() {
     }
   });
 
-  // Finances / Expenses
-  api.get('/admin/expenses', authenticateToken, async (req: any, res) => {
+  // Finances / Expenses (Owner / Master only)
+  api.get('/admin/expenses', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { start, end } = req.query;
     try {
       let query = supabase
@@ -1706,7 +1900,7 @@ async function startServer() {
     }
   });
 
-  api.post('/admin/expenses', authenticateToken, async (req: any, res) => {
+  api.post('/admin/expenses', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { description, amount, category, date, barberId } = req.body;
     try {
       const id = crypto.randomUUID();
@@ -1727,7 +1921,7 @@ async function startServer() {
     }
   });
 
-  api.delete('/admin/expenses/:id', authenticateToken, async (req: any, res) => {
+  api.delete('/admin/expenses/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const { error } = await supabase
         .from('finances')
@@ -1741,8 +1935,228 @@ async function startServer() {
     }
   });
 
-  // Client Packages
-  api.get('/admin/packages', authenticateToken, async (req: any, res) => {
+  // Individual Professional Commissions Summary (Part 5)
+  api.get('/admin/my-commissions', authenticateToken, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const requestedBarberId = req.query.barberId ? String(req.query.barberId) : null;
+      const barberId = req.user.role === 'barber'
+        ? await resolveBarberId(req.user)
+        : requestedBarberId;
+
+      if (!barberId) {
+        return res.status(400).json({ error: 'Profissional não identificado para consulta de comissões.' });
+      }
+
+      const now = new Date();
+      const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+      const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().split('T')[0];
+      const start = String(req.query.start || defaultStart);
+      const end = String(req.query.end || defaultEnd);
+
+      const [barberRes, metaMap, apptsRes, servicesRes, drawsRes] = await Promise.all([
+        supabase.from('barbers').select('*').eq('id', barberId).eq('barbershop_id', shopId).maybeSingle(),
+        cloudNicheDb.getBarbersMetadataMap([barberId]),
+        supabase
+          .from('appointments')
+          .select('id, date, start_time, end_time, status, service_id, clients (name)')
+          .eq('barbershop_id', shopId)
+          .eq('barber_id', barberId)
+          .gte('date', start)
+          .lte('date', end)
+          .order('date', { ascending: false })
+          .order('start_time', { ascending: false }),
+        supabase.from('services').select('id, name, price').eq('barbershop_id', shopId),
+        supabase
+          .from('finances')
+          .select('id, description, amount, date')
+          .eq('barbershop_id', shopId)
+          .eq('type', 'expense')
+          .eq('category', 'draw')
+          .eq('barber_id', barberId)
+          .gte('date', start)
+          .lte('date', end)
+          .order('date', { ascending: false })
+      ]);
+
+      if (apptsRes.error) throw apptsRes.error;
+      const commissionPercentage = Number(
+        metaMap[barberId]?.commission_percentage ?? barberRes.data?.commission_percentage ?? 50
+      );
+
+      const servicesMap = new Map((servicesRes.data || []).map((s: any) => [s.id, s]));
+      const items: any[] = [];
+      let totalRevenue = 0;
+      let totalCommission = 0;
+      let completedCount = 0;
+      let scheduledCount = 0;
+
+      (apptsRes.data || []).forEach((apt: any) => {
+        if (apt.status === 'scheduled') {
+          scheduledCount += 1;
+        }
+        if (apt.status === 'completed' || apt.status === 'confirmed') {
+          completedCount += 1;
+          const srv = servicesMap.get(apt.service_id);
+          const price = Number(srv?.price || 0);
+          const commissionEarned = (price * commissionPercentage) / 100;
+          totalRevenue += price;
+          totalCommission += commissionEarned;
+          items.push({
+            id: apt.id,
+            date: apt.date,
+            startTime: apt.start_time,
+            endTime: apt.end_time,
+            status: apt.status,
+            clientName: (apt.clients as any)?.name || 'Cliente',
+            serviceName: srv?.name || 'Atendimento',
+            price,
+            commissionEarned
+          });
+        }
+      });
+
+      const draws = (drawsRes.data || []).map((d: any) => ({
+        id: d.id,
+        date: d.date,
+        description: d.description || 'Vale / Adiantamento',
+        amount: Number(d.amount || 0)
+      }));
+      const totalDraws = draws.reduce((acc: number, d: any) => acc + d.amount, 0);
+
+      res.json({
+        barber: barberRes.data ? { id: barberRes.data.id, name: barberRes.data.name } : { id: barberId, name: 'Profissional' },
+        range: { start, end },
+        commissionPercentage,
+        completedCount,
+        scheduledCount,
+        totalRevenue,
+        totalCommission,
+        totalDraws,
+        netPayable: totalCommission - totalDraws,
+        items,
+        draws
+      });
+    } catch (error: any) {
+      console.error('[MY_COMMISSIONS_ERR]', error);
+      res.status(500).json({ error: 'Erro ao calcular suas comissões' });
+    }
+  });
+
+  // Onboarding First-Steps Checklist (Owner / Master only)
+  api.get('/admin/onboarding-checklist', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const [shopRes, settingsRes, servicesRes, barbersRes, shopPhotosMap] = await Promise.all([
+        supabase.from('barbershops').select('*').eq('id', shopId).maybeSingle(),
+        supabase.from('shop_settings').select('config').eq('barbershop_id', shopId).maybeSingle(),
+        supabase.from('services').select('id', { count: 'exact', head: true }).eq('barbershop_id', shopId).eq('active', true),
+        supabase.from('barbers').select('id', { count: 'exact', head: true }).eq('barbershop_id', shopId).eq('active', true),
+        cloudNicheDb.getEntityPhotosMap([shopId])
+      ]);
+
+      let parsedConfig: any = {};
+      if (settingsRes.data?.config) {
+        if (typeof settingsRes.data.config === 'string') {
+          try { parsedConfig = JSON.parse(settingsRes.data.config); } catch { parsedConfig = {}; }
+        } else {
+          parsedConfig = settingsRes.data.config;
+        }
+      }
+
+      const servicesCount = servicesRes.count || 0;
+      const barbersCount = barbersRes.count || 0;
+      const shop: any = shopRes.data || {};
+      const hasSchedule = Boolean(parsedConfig._scheduleConfirmed);
+      const hasServices = servicesCount > 0;
+      const hasBarbers = barbersCount > 0;
+      const hasSharedProfile = Boolean(parsedConfig._shareConfirmed || shop.whatsapp || shop.logo_url || shopPhotosMap[shopId] || shop.address);
+
+      const steps = [
+        {
+          id: 'schedule',
+          title: 'Configure seus horários',
+          description: 'Defina dias abertos, abertura, fechamento e intervalo de almoço.',
+          completed: hasSchedule,
+          path: '/admin/settings',
+          cta: 'Definir Horários'
+        },
+        {
+          id: 'services',
+          title: 'Cadastre seus serviços',
+          description: 'Adicione procedimentos, valores e duração correta de cada atendimento.',
+          completed: hasServices,
+          path: '/admin/services',
+          cta: 'Ver Serviços'
+        },
+        {
+          id: 'barbers',
+          title: 'Configure sua equipe',
+          description: 'Adicione profissionais, comissões e acessos individuais se desejar.',
+          completed: hasBarbers,
+          path: '/admin/barbers',
+          cta: 'Gerenciar Equipe'
+        },
+        {
+          id: 'share',
+          title: 'Compartilhe seu link e QR Code',
+          description: 'Personalize sua vitrine e envie seu link público para os clientes agendarem.',
+          completed: hasSharedProfile,
+          path: '/admin/profile',
+          cta: 'Meu Site & QR Code'
+        }
+      ];
+
+      res.json({
+        shopSlug: shop.slug || '',
+        shopName: shop.name || '',
+        completedCount: steps.filter(s => s.completed).length,
+        totalCount: steps.length,
+        steps
+      });
+    } catch (error: any) {
+      console.error('[ONBOARDING_CHECKLIST_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar checklist inicial' });
+    }
+  });
+
+  api.post('/admin/onboarding-confirm-share', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const currentSettings = await getShopSettings(shopId);
+      const { data: rawRow } = await supabase
+        .from('shop_settings')
+        .select('config')
+        .eq('barbershop_id', shopId)
+        .maybeSingle();
+
+      let rawObj: any = { ...currentSettings };
+      if (rawRow?.config) {
+        try {
+          rawObj = typeof rawRow.config === 'string' ? JSON.parse(rawRow.config) : rawRow.config;
+        } catch {
+          rawObj = { ...currentSettings };
+        }
+      }
+
+      const nextConfig = { ...rawObj, _shareConfirmed: true };
+      await supabase
+        .from('shop_settings')
+        .upsert({
+          id: crypto.randomUUID(),
+          barbershop_id: shopId,
+          config: JSON.stringify(nextConfig),
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'barbershop_id' });
+
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(500).json({ error: 'Erro ao confirmar etapa' });
+    }
+  });
+
+  // Client Packages (Owner / Master only)
+  api.get('/admin/packages', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const { data, error } = await supabase
         .from('client_packages')
@@ -1756,7 +2170,7 @@ async function startServer() {
     }
   });
 
-  api.post('/admin/packages', authenticateToken, async (req: any, res) => {
+  api.post('/admin/packages', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { clientName, clientWhatsapp, packageName, totalQuantity, pricePaid } = req.body;
     try {
       const id = crypto.randomUUID();
@@ -1778,7 +2192,7 @@ async function startServer() {
     }
   });
 
-  api.get('/admin/packages/search', authenticateToken, async (req: any, res) => {
+  api.get('/admin/packages/search', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { whatsapp } = req.query;
     try {
       const { data, error } = await supabase
@@ -1794,12 +2208,13 @@ async function startServer() {
     }
   });
 
-  api.post('/admin/packages/use/:id', authenticateToken, async (req: any, res) => {
+  api.post('/admin/packages/use/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const { data: pkg, error: fetchError } = await supabase
         .from('client_packages')
         .select('remaining_quantity')
         .eq('id', req.params.id)
+        .eq('barbershop_id', req.user.barbershopId)
         .single();
       
       if (fetchError || !pkg) throw new Error('Pacote não encontrado');
@@ -1808,7 +2223,8 @@ async function startServer() {
       const { error: updateError } = await supabase
         .from('client_packages')
         .update({ remaining_quantity: pkg.remaining_quantity - 1 })
-        .eq('id', req.params.id);
+        .eq('id', req.params.id)
+        .eq('barbershop_id', req.user.barbershopId);
       
       if (updateError) throw updateError;
       res.json({ success: true, remaining: pkg.remaining_quantity - 1 });
@@ -1817,7 +2233,7 @@ async function startServer() {
     }
   });
 
-  api.delete('/admin/packages/:id', authenticateToken, async (req: any, res) => {
+  api.delete('/admin/packages/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const { error } = await supabase
         .from('client_packages')
@@ -1831,7 +2247,7 @@ async function startServer() {
     }
   });
 
-  // Appointments
+  // Appointments (Scoped to barberId when req.user.role === 'barber')
   api.get('/admin/appointments', authenticateToken, async (req: any, res) => {
     const { barbershopId } = req.user;
     const { date } = req.query;
@@ -1847,6 +2263,14 @@ async function startServer() {
         `)
         .eq('barbershop_id', barbershopId)
         .order('start_time');
+
+      if (req.user.role === 'barber') {
+        const barberId = await resolveBarberId(req.user);
+        if (!barberId) {
+          return res.json([]);
+        }
+        query = query.eq('barber_id', barberId);
+      }
 
       if (date) {
         query = query.eq('date', date);
@@ -1868,6 +2292,7 @@ async function startServer() {
         clientId: (apt.clients as any)?.id || apt.client_id,
         clientName: (apt.clients as any)?.name,
         clientPhone: (apt.clients as any)?.phone,
+        barberId: apt.barber_id,
         barberName: (apt.barbers as any)?.name,
         serviceName: (apt.services as any)?.name,
         servicePrice: (apt.services as any)?.price,
@@ -1884,13 +2309,50 @@ async function startServer() {
   api.patch('/admin/appointments/:id/status', authenticateToken, async (req: any, res) => {
     const { status } = req.body;
     try {
-      const { error } = await supabase
+      let query = supabase
         .from('appointments')
         .update({ status })
         .eq('id', req.params.id)
         .eq('barbershop_id', req.user.barbershopId);
-        
+
+      if (req.user.role === 'barber') {
+        const barberId = await resolveBarberId(req.user);
+        if (!barberId) return res.status(403).json({ error: 'Acesso não vinculado a profissional.' });
+        query = query.eq('barber_id', barberId);
+      }
+
+      const { data: updatedRows, error } = await query.select('id');
       if (error) throw error;
+      if (!updatedRows || updatedRows.length === 0) {
+        return res.status(404).json({ error: 'Agendamento não encontrado ou sem permissão.' });
+      }
+
+      if (status === 'cancelled') {
+        const { data: aptDetail } = await supabase
+          .from('appointments')
+          .select('id, date, start_time, clients(name, phone), barbers(name), services(name)')
+          .eq('id', req.params.id)
+          .eq('barbershop_id', req.user.barbershopId)
+          .maybeSingle();
+
+        if (aptDetail && (aptDetail.clients as any)?.phone) {
+          await Promise.race([
+            dispatchAppointmentWhatsApp({
+              shopId: req.user.barbershopId,
+              appointmentId: aptDetail.id,
+              eventType: 'cancellation',
+              clientName: (aptDetail.clients as any)?.name || 'Cliente',
+              clientPhone: (aptDetail.clients as any)?.phone,
+              date: aptDetail.date,
+              startTime: aptDetail.start_time,
+              serviceName: (aptDetail.services as any)?.name || 'Atendimento',
+              barberName: (aptDetail.barbers as any)?.name || 'Equipe'
+            }),
+            new Promise((resolve) => setTimeout(resolve, 3500))
+          ]);
+        }
+      }
+
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Erro ao atualizar status' });
@@ -1898,10 +2360,17 @@ async function startServer() {
   });
 
   api.post('/admin/appointments', authenticateToken, async (req: any, res) => {
-    const { barberId, serviceId, clientName, clientPhone, date, startTime, notes } = req.body;
+    const { barberId: bodyBarberId, serviceId, clientName, clientPhone, date, startTime, notes } = req.body;
     const barbershopId = req.user.barbershopId;
 
     try {
+      let barberId = bodyBarberId;
+      if (req.user.role === 'barber') {
+        const ownBarberId = await resolveBarberId(req.user);
+        if (!ownBarberId) return res.status(403).json({ error: 'Conta sem profissional vinculado.' });
+        barberId = ownBarberId;
+      }
+
       const cleanPhone = String(clientPhone || '').replace(/\D/g, '');
       let { data: client } = await supabase
         .from('clients')
@@ -1984,8 +2453,15 @@ async function startServer() {
   });
 
   api.post('/admin/appointments/block', authenticateToken, async (req: any, res) => {
-    const { date, startTime, endTime, barberId } = req.body; // endTime is optional
+    const { date, startTime, endTime, barberId: bodyBarberId } = req.body; // endTime is optional
     try {
+      let barberId = bodyBarberId;
+      if (req.user.role === 'barber') {
+        const ownBarberId = await resolveBarberId(req.user);
+        if (!ownBarberId) return res.status(403).json({ error: 'Conta sem profissional vinculado.' });
+        barberId = ownBarberId;
+      }
+
       let { data: client } = await supabase.from('clients').select('*').eq('phone', '00000000000').single();
       if (!client) {
         const { data: newC } = await supabase.from('clients').insert({ id: crypto.randomUUID(), name: 'BLOQUEIO SISTEMA', phone: '00000000000', barbershop_id: req.user.barbershopId }).select().single();
@@ -2030,35 +2506,69 @@ async function startServer() {
     }
   });
 
-  // Barbers
+  // Barbers (GET allowed for barber to see own profile in Agenda; mutations restricted to Owner/Master)
   api.get('/admin/barbers', authenticateToken, async (req: any, res) => {
     try {
-      const { data: barbersList, error } = await supabase
+      let query = supabase
         .from('barbers')
         .select('*')
         .eq('barbershop_id', req.user.barbershopId);
-        
+
+      if (req.user.role === 'barber') {
+        const ownBarberId = await resolveBarberId(req.user);
+        if (!ownBarberId) return res.json([]);
+        query = query.eq('id', ownBarberId);
+      }
+
+      const { data: barbersList, error } = await query;
       if (error) throw error;
 
       const barberIds = (barbersList || []).map((b: any) => b.id.toString());
-      const photosMap = await cloudNicheDb.getEntityPhotosMap(barberIds);
-      const metaMap = await cloudNicheDb.getBarbersMetadataMap(barberIds);
+      const [photosMap, metaMap, accountsMap] = await Promise.all([
+        cloudNicheDb.getEntityPhotosMap(barberIds),
+        cloudNicheDb.getBarbersMetadataMap(barberIds),
+        req.user.role === 'barber'
+          ? Promise.resolve({} as Record<string, { user_id: string; email: string }>)
+          : cloudNicheDb.getBarberAccountsByShop(req.user.barbershopId)
+      ]);
 
       res.json((barbersList || []).map((b: any) => ({
         ...b,
         commission_percentage: metaMap[b.id]?.commission_percentage ?? b.commission_percentage ?? 50,
         photo_url: photosMap[b.id] || b.photo_url || b.avatar_url || null,
         photoUrl: photosMap[b.id] || b.photo_url || b.avatar_url || null,
-        service_ids: Array.isArray(b.service_ids) ? b.service_ids : []
+        service_ids: Array.isArray(b.service_ids) ? b.service_ids : [],
+        loginEmail: accountsMap[b.id]?.email || null
       })));
     } catch (error) {
       res.status(500).json({ error: 'Erro ao buscar profissionais' });
     }
   });
 
-  api.post('/admin/barbers', authenticateToken, async (req: any, res) => {
-    const { name, commission_percentage, service_ids, photo_url, photoUrl } = req.body;
+  api.post('/admin/barbers', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    const { name, commission_percentage, commissionPercentage, service_ids, photo_url, photoUrl, loginEmail, loginPassword } = req.body;
+    const effectiveCommission = commission_percentage ?? commissionPercentage;
     try {
+      const cleanLoginEmail = typeof loginEmail === 'string' ? loginEmail.trim().toLowerCase() : '';
+      const cleanLoginPassword = typeof loginPassword === 'string' ? loginPassword : '';
+
+      if (cleanLoginEmail) {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanLoginEmail)) {
+          return res.status(400).json({ error: 'Informe um e-mail válido para o acesso do profissional.' });
+        }
+        if (cleanLoginPassword.length < 6) {
+          return res.status(400).json({ error: 'A senha de acesso do profissional deve ter no mínimo 6 caracteres.' });
+        }
+        const { data: existingEmailUser } = await supabase
+          .from('users')
+          .select('id')
+          .ilike('email', cleanLoginEmail)
+          .maybeSingle();
+        if (existingEmailUser) {
+          return res.status(400).json({ error: 'Este e-mail já está em uso por outro usuário.' });
+        }
+      }
+
       const id = crypto.randomUUID();
       const finalPhoto = photo_url || photoUrl || null;
 
@@ -2074,7 +2584,6 @@ async function startServer() {
 
       let { error } = await supabase.from('barbers').insert(insertData);
 
-      // If service_ids column doesn't exist yet, retry safely without it
       if (error && (error.code === 'PGRST204' || error.message?.includes('service_ids') || error.message?.includes('schema cache'))) {
         console.warn('[DB_FALLBACK] service_ids column not yet migrated in Supabase. Inserting without it.');
         delete insertData.service_ids;
@@ -2084,26 +2593,80 @@ async function startServer() {
 
       if (error) throw error;
 
-      // Persist commission
-      if (commission_percentage !== undefined) {
-        await cloudNicheDb.upsertBarberMetadata(id, req.user.barbershopId, Number(commission_percentage));
+      if (effectiveCommission !== undefined) {
+        await cloudNicheDb.upsertBarberMetadata(id, req.user.barbershopId, Number(effectiveCommission));
       }
 
-      // Persist photo safely
       if (finalPhoto) {
         await cloudNicheDb.upsertEntityPhoto(id, req.user.barbershopId, 'barber', finalPhoto);
       }
 
-      res.json({ success: true, id, photo_url: finalPhoto });
-    } catch (error) {
+      if (cleanLoginEmail) {
+        const userId = crypto.randomUUID();
+        const passwordHash = await bcrypt.hash(cleanLoginPassword, 10);
+        const userInsertPayload: Record<string, any> = {
+          id: userId,
+          barbershop_id: req.user.barbershopId,
+          name: String(name || 'Profissional').trim(),
+          email: cleanLoginEmail,
+          password_hash: passwordHash,
+          role: 'barber',
+          barber_id: id
+        };
+        let { error: userErr } = await supabase.from('users').insert(userInsertPayload);
+        if (userErr && (userErr.message?.includes('barber_id') || userErr.message?.includes('schema cache'))) {
+          delete userInsertPayload.barber_id;
+          const retryUser = await supabase.from('users').insert(userInsertPayload);
+          userErr = retryUser.error;
+        }
+        if (userErr) throw userErr;
+
+        await cloudNicheDb.upsertBarberAccount({
+          barber_id: id,
+          user_id: userId,
+          barbershop_id: req.user.barbershopId,
+          email: cleanLoginEmail
+        });
+      }
+
+      res.json({ success: true, id, photo_url: finalPhoto, loginEmail: cleanLoginEmail || null });
+    } catch (error: any) {
       console.error('[CREATE_BARBER_ERROR]', error);
-      res.status(500).json({ error: 'Erro ao criar profissional' });
+      res.status(500).json({ error: error.message || 'Erro ao criar profissional' });
     }
   });
 
-  api.patch('/admin/barbers/:id', authenticateToken, async (req: any, res) => {
-    const { active, name, commission_percentage, service_ids, photo_url, photoUrl } = req.body;
+  api.patch('/admin/barbers/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    const { active, name, commission_percentage, service_ids, photo_url, photoUrl, loginEmail, loginPassword, removeAccess } = req.body;
     try {
+      const barberId = req.params.id;
+      const shopId = req.user.barbershopId;
+
+      const cleanLoginEmail = typeof loginEmail === 'string' ? loginEmail.trim().toLowerCase() : undefined;
+      const cleanLoginPassword = typeof loginPassword === 'string' ? loginPassword : undefined;
+
+      // Validate credentials payload before mutating
+      const existingAccount = await cloudNicheDb.getBarberAccountByBarberId(barberId);
+      if (!removeAccess && cleanLoginEmail !== undefined && cleanLoginEmail !== '') {
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanLoginEmail)) {
+          return res.status(400).json({ error: 'Informe um e-mail válido para o acesso do profissional.' });
+        }
+        const { data: emailConflict } = await supabase
+          .from('users')
+          .select('id')
+          .ilike('email', cleanLoginEmail)
+          .maybeSingle();
+        if (emailConflict && emailConflict.id !== existingAccount?.user_id) {
+          return res.status(400).json({ error: 'Este e-mail já está em uso por outro usuário.' });
+        }
+        if (!existingAccount && (!cleanLoginPassword || cleanLoginPassword.length < 6)) {
+          return res.status(400).json({ error: 'Defina uma senha com no mínimo 6 caracteres para criar o acesso.' });
+        }
+        if (cleanLoginPassword && cleanLoginPassword.length < 6) {
+          return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres.' });
+        }
+      }
+
       const updateData: any = {};
       if (active !== undefined) updateData.active = active;
       if (name !== undefined) updateData.name = name;
@@ -2113,10 +2676,9 @@ async function startServer() {
         let { error } = await supabase
           .from('barbers')
           .update(updateData)
-          .eq('id', req.params.id)
-          .eq('barbershop_id', req.user.barbershopId);
+          .eq('id', barberId)
+          .eq('barbershop_id', shopId);
 
-        // If service_ids does not exist in schema cache, retry without it
         if (error && (error.code === 'PGRST204' || error.message?.includes('service_ids') || error.message?.includes('schema cache'))) {
           console.warn('[DB_FALLBACK] service_ids column not yet migrated in Supabase. Updating without it.');
           delete updateData.service_ids;
@@ -2124,8 +2686,8 @@ async function startServer() {
             const retry = await supabase
               .from('barbers')
               .update(updateData)
-              .eq('id', req.params.id)
-              .eq('barbershop_id', req.user.barbershopId);
+              .eq('id', barberId)
+              .eq('barbershop_id', shopId);
             error = retry.error;
           } else {
             error = null;
@@ -2135,24 +2697,73 @@ async function startServer() {
         if (error) throw error;
       }
 
-      // Save commission_percentage
       if (commission_percentage !== undefined) {
-        await cloudNicheDb.upsertBarberMetadata(req.params.id, req.user.barbershopId, Number(commission_percentage));
+        await cloudNicheDb.upsertBarberMetadata(barberId, shopId, Number(commission_percentage));
       }
 
-      // Update photo if provided
       if (photo_url !== undefined || photoUrl !== undefined) {
-        await cloudNicheDb.upsertEntityPhoto(req.params.id, req.user.barbershopId, 'barber', photo_url ?? photoUrl);
+        await cloudNicheDb.upsertEntityPhoto(barberId, shopId, 'barber', photo_url ?? photoUrl);
+      }
+
+      if (removeAccess === true) {
+        if (existingAccount?.user_id) {
+          await supabase.from('users').delete().eq('id', existingAccount.user_id).eq('role', 'barber');
+        }
+        await cloudNicheDb.deleteBarberAccount(barberId);
+      } else if (cleanLoginEmail !== undefined && cleanLoginEmail !== '') {
+        if (existingAccount) {
+          const userUpdate: Record<string, any> = {
+            email: cleanLoginEmail,
+            ...(name ? { name: String(name).trim() } : {})
+          };
+          if (cleanLoginPassword && cleanLoginPassword.length >= 6) {
+            userUpdate.password_hash = await bcrypt.hash(cleanLoginPassword, 10);
+          }
+          await supabase.from('users').update(userUpdate).eq('id', existingAccount.user_id);
+          await cloudNicheDb.upsertBarberAccount({
+            barber_id: barberId,
+            user_id: existingAccount.user_id,
+            barbershop_id: shopId,
+            email: cleanLoginEmail
+          });
+        } else if (cleanLoginPassword && cleanLoginPassword.length >= 6) {
+          const userId = crypto.randomUUID();
+          const passwordHash = await bcrypt.hash(cleanLoginPassword, 10);
+          const { data: barberRow } = await supabase.from('barbers').select('name').eq('id', barberId).maybeSingle();
+          const userInsertPayload: Record<string, any> = {
+            id: userId,
+            barbershop_id: shopId,
+            name: String(name || barberRow?.name || 'Profissional').trim(),
+            email: cleanLoginEmail,
+            password_hash: passwordHash,
+            role: 'barber',
+            barber_id: barberId
+          };
+          let { error: userErr } = await supabase.from('users').insert(userInsertPayload);
+          if (userErr && (userErr.message?.includes('barber_id') || userErr.message?.includes('schema cache'))) {
+            delete userInsertPayload.barber_id;
+            const retryUser = await supabase.from('users').insert(userInsertPayload);
+            userErr = retryUser.error;
+          }
+          if (userErr) throw userErr;
+
+          await cloudNicheDb.upsertBarberAccount({
+            barber_id: barberId,
+            user_id: userId,
+            barbershop_id: shopId,
+            email: cleanLoginEmail
+          });
+        }
       }
 
       res.json({ success: true });
-    } catch (error) {
+    } catch (error: any) {
       console.error('[UPDATE_BARBER_ERROR]', error);
-      res.status(500).json({ error: 'Erro ao atualizar profissional' });
+      res.status(500).json({ error: error.message || 'Erro ao atualizar profissional' });
     }
   });
 
-  // Services
+  // Services (Read allowed for Agenda; mutations restricted to Owner/Master)
   api.get('/admin/services', authenticateToken, async (req: any, res) => {
     try {
       const { data: servicesList, error } = await supabase
@@ -2179,7 +2790,7 @@ async function startServer() {
     }
   });
 
-  api.post('/admin/services', authenticateToken, async (req: any, res) => {
+  api.post('/admin/services', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { name, durationMinutes, price, image_url, imageUrl, photo_url } = req.body;
     try {
       const id = crypto.randomUUID();
@@ -2206,7 +2817,7 @@ async function startServer() {
     }
   });
 
-  api.patch('/admin/services/:id', authenticateToken, async (req: any, res) => {
+  api.patch('/admin/services/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { active, name, durationMinutes, price, image_url, imageUrl, photo_url } = req.body;
     try {
       const updateData: any = {};
@@ -2234,7 +2845,7 @@ async function startServer() {
     }
   });
 
-  api.delete('/admin/services/:id', authenticateToken, async (req: any, res) => {
+  api.delete('/admin/services/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       console.log(`[DELETE_SERVICE] Attempting to delete service ${req.params.id} for shop ${req.user.barbershopId}`);
       
@@ -2298,8 +2909,8 @@ async function startServer() {
     }
   });
 
-  // Inactive Clients (no appointments in last 20 days)
-  api.get('/admin/inactive-clients', authenticateToken, async (req: any, res) => {
+  // Inactive Clients (no appointments in last 20 days - Owner / Master only)
+  api.get('/admin/inactive-clients', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const barbershopId = req.user.barbershopId;
       const twentyDaysAgo = new Date();
@@ -2356,6 +2967,30 @@ async function startServer() {
   // --- CLIENTS ---
   api.get('/admin/clients', authenticateToken, async (req: any, res) => {
     try {
+      if (req.user.role === 'barber') {
+        const barberId = await resolveBarberId(req.user);
+        if (!barberId) return res.json([]);
+        const { data: appts, error: apptErr } = await supabase
+          .from('appointments')
+          .select('client_id')
+          .eq('barbershop_id', req.user.barbershopId)
+          .eq('barber_id', barberId);
+        if (apptErr) throw apptErr;
+
+        const clientIds = Array.from(new Set((appts || []).map((a: any) => a.client_id).filter(Boolean)));
+        if (clientIds.length === 0) return res.json([]);
+
+        const { data: scopedClients, error } = await supabase
+          .from('clients')
+          .select('*')
+          .eq('barbershop_id', req.user.barbershopId)
+          .in('id', clientIds)
+          .neq('phone', '00000000000')
+          .order('name');
+        if (error) throw error;
+        return res.json(scopedClients || []);
+      }
+
       const { data: clientsList, error } = await supabase
         .from('clients')
         .select('*')
@@ -2369,7 +3004,7 @@ async function startServer() {
     }
   });
 
-  api.post('/admin/clients', authenticateToken, async (req: any, res) => {
+  api.post('/admin/clients', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { name, phone } = req.body;
     try {
       // Basic check for existing client
@@ -2398,7 +3033,7 @@ async function startServer() {
     }
   });
 
-  api.post('/admin/clients/batch', authenticateToken, async (req: any, res) => {
+  api.post('/admin/clients/batch', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { clients } = req.body; // Array of { name, phone }
     try {
       // First get existing to avoid duplicates easily.
@@ -2485,7 +3120,7 @@ async function startServer() {
     return { count: deletedCount };
   };
 
-  api.delete('/admin/clients', authenticateToken, async (req: any, res) => {
+  api.delete('/admin/clients', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const queryIds =
       typeof req.query?.ids === 'string'
         ? req.query.ids.split(',').map((s: string) => s.trim()).filter(Boolean)
@@ -2505,7 +3140,7 @@ async function startServer() {
     }
   });
 
-  api.post('/admin/clients/delete', authenticateToken, async (req: any, res) => {
+  api.post('/admin/clients/delete', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const ids = req.body?.ids;
     if (!Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: 'Nenhum cliente selecionado' });
@@ -2520,7 +3155,7 @@ async function startServer() {
     }
   });
 
-  api.delete('/admin/clients/:id', authenticateToken, async (req: any, res) => {
+  api.delete('/admin/clients/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const id = String(req.params.id || '').trim();
     if (!id) {
       return res.status(400).json({ error: 'ID do cliente inválido' });
@@ -3299,8 +3934,8 @@ async function startServer() {
     }
   });
 
-  // --- CAMPAIGNS ---
-  api.post('/admin/campaigns', authenticateToken, async (req: any, res) => {
+  // --- CAMPAIGNS (Owner / Master only) ---
+  api.post('/admin/campaigns', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { name, messageTemplate, daysActive } = req.body;
     try {
       const expirationDate = new Date();
@@ -3325,7 +3960,7 @@ async function startServer() {
     }
   });
 
-  api.get('/admin/campaigns', authenticateToken, async (req: any, res) => {
+  api.get('/admin/campaigns', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const { data: campaignRows, error } = await supabase
         .from('notifications')
@@ -3363,7 +3998,7 @@ async function startServer() {
     }
   });
 
-  api.delete('/admin/campaigns/:id', authenticateToken, async (req: any, res) => {
+  api.delete('/admin/campaigns/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const { error } = await supabase
         .from('notifications')
@@ -3983,8 +4618,8 @@ async function startServer() {
     res.json({ plans: SAAS_PLANS, trialDays: 7 });
   });
 
-  // Admin Billing Status & Payment History
-  api.get('/admin/billing/status', authenticateToken, async (req: any, res) => {
+  // Admin Billing Status & Payment History (Owner / Master only)
+  api.get('/admin/billing/status', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const shopId = req.user.barbershopId;
       const { data: shop, error } = await supabase
@@ -4022,8 +4657,8 @@ async function startServer() {
     }
   });
 
-  // Create Mercado Pago Checkout Pro Preference
-  api.post('/admin/billing/checkout', authenticateToken, async (req: any, res) => {
+  // Create Mercado Pago Checkout Pro Preference (Owner / Master only)
+  api.post('/admin/billing/checkout', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const { planId, billingCycle } = req.body;
       const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
@@ -4122,7 +4757,7 @@ async function startServer() {
   });
 
   // Create Instant PIX via Mercado Pago API OR Official Banco Central BR Code (using Chave PIX)
-  api.post('/admin/billing/pix', authenticateToken, async (req: any, res) => {
+  api.post('/admin/billing/pix', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const { planId, billingCycle } = req.body;
       const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
@@ -4272,7 +4907,7 @@ async function startServer() {
   });
 
   // Register intent when tenant uses a Mercado Pago App Payment Link (created from mobile app)
-  api.post('/admin/billing/link-intent', authenticateToken, async (req: any, res) => {
+  api.post('/admin/billing/link-intent', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const { planId } = req.body;
       const plan = SAAS_PLANS.find((p) => p.id === planId);
@@ -4316,7 +4951,7 @@ async function startServer() {
   });
 
   // Verify / Poll a Payment Status
-  api.post('/admin/billing/verify/:paymentId', authenticateToken, async (req: any, res) => {
+  api.post('/admin/billing/verify/:paymentId', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const payment = await cloudNicheDb.getSaasPaymentById(req.params.paymentId);
       if (!payment) {
@@ -4556,6 +5191,498 @@ async function startServer() {
       res.status(500).json({ error: 'Erro ao aprovar pagamento', details: e.message });
     }
   });
+
+  // --- WHATSAPP AUTOMATION (PART 6 - EVOLUTION API v2) ---
+
+  // Master Admin: Global Evolution API Server Configuration
+  api.get('/admin/master/evolution-config', authenticateToken, requireMaster, async (_req, res) => {
+    try {
+      const [config, cronSecret] = await Promise.all([resolveEvolutionConfig(), resolveCronSecret()]);
+      const maskedKey = config.apiKey
+        ? `${config.apiKey.slice(0, 4)}${'•'.repeat(Math.max(4, Math.min(12, config.apiKey.length - 6)))}${config.apiKey.slice(-2)}`
+        : '';
+
+      res.json({
+        configured: Boolean(config.apiUrl && config.apiKey),
+        apiUrl: config.apiUrl,
+        apiKeyMasked: maskedKey,
+        source: config.source,
+        cronSecretConfigured: Boolean(cronSecret),
+        cronSecretMasked: cronSecret ? `${cronSecret.slice(0, 3)}••••${cronSecret.slice(-2)}` : ''
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao carregar configuração da Evolution API', details: e.message });
+    }
+  });
+
+  api.post('/admin/master/evolution-config', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { apiUrl, apiKey, cronSecret } = req.body || {};
+      const cleanUrl = String(apiUrl || '').trim().replace(/\/+$/, '');
+      const cleanKey = String(apiKey || '').trim();
+      const cleanCron = String(cronSecret || '').trim();
+
+      if (cleanUrl && !/^https?:\/\/.+/i.test(cleanUrl)) {
+        return res.status(400).json({ error: 'A URL da Evolution API deve começar com http:// ou https://' });
+      }
+
+      if (cleanUrl) {
+        await cloudNicheDb.setPlatformSetting('evolution_api_url', cleanUrl);
+      } else if (apiUrl === '') {
+        await cloudNicheDb.setPlatformSetting('evolution_api_url', '');
+      }
+
+      if (cleanKey) {
+        await cloudNicheDb.setPlatformSetting('evolution_api_key', cleanKey);
+      }
+
+      if (cleanCron) {
+        await cloudNicheDb.setPlatformSetting('cron_secret', cleanCron);
+      }
+
+      const resolved = await resolveEvolutionConfig();
+      res.json({
+        success: true,
+        configured: Boolean(resolved.apiUrl && resolved.apiKey),
+        apiUrl: resolved.apiUrl,
+        source: resolved.source
+      });
+    } catch (e: any) {
+      console.error('[MASTER_EVOLUTION_SAVE_ERR]', e);
+      res.status(500).json({ error: 'Erro ao salvar configuração da Evolution API', details: e.message });
+    }
+  });
+
+  api.post('/admin/master/evolution-test', authenticateToken, requireMaster, async (_req, res) => {
+    try {
+      const config = await resolveEvolutionConfig();
+      const result = await testEvolutionServer(config);
+      res.status(result.ok ? 200 : 400).json(result);
+    } catch (e: any) {
+      res.status(500).json({ ok: false, message: e.message || 'Erro ao testar Evolution API' });
+    }
+  });
+
+  // Shop Owner: WhatsApp Integration & Automation Rules
+  api.get('/admin/whatsapp/config', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const [evoConfig, shopRes, existingIntegration, logs] = await Promise.all([
+        resolveEvolutionConfig(),
+        supabase.from('barbershops').select('id, name, slug').eq('id', shopId).maybeSingle(),
+        cloudNicheDb.getWhatsAppIntegration(shopId),
+        cloudNicheDb.getWhatsAppLogsByShop(shopId, 25)
+      ]);
+
+      const serverConfigured = Boolean(evoConfig.apiUrl && evoConfig.apiKey);
+      const instanceName = existingIntegration?.instance_name || buildInstanceName(shopRes.data?.slug, shopId);
+
+      let integration = existingIntegration || {
+        barbershop_id: shopId,
+        instance_name: instanceName,
+        provider: 'evolution',
+        connection_status: 'disconnected',
+        connected_phone: null,
+        auto_confirm_enabled: 0,
+        reminder_24h_enabled: 0,
+        reminder_2h_enabled: 0,
+        auto_cancel_enabled: 0,
+        ...DEFAULT_WHATSAPP_TEMPLATES
+      };
+
+      let serverReachable = serverConfigured;
+      if (serverConfigured && existingIntegration) {
+        const liveState = await getEvolutionConnectionState(evoConfig, integration.instance_name);
+        serverReachable = liveState.reachable;
+        if (liveState.reachable && liveState.connectionStatus !== integration.connection_status) {
+          await cloudNicheDb.updateWhatsAppConnection(
+            shopId,
+            liveState.connectionStatus,
+            liveState.connectedPhone ?? integration.connected_phone
+          );
+          integration = {
+            ...integration,
+            connection_status: liveState.connectionStatus,
+            connected_phone: liveState.connectedPhone ?? integration.connected_phone
+          };
+        }
+      }
+
+      res.json({
+        serverConfigured,
+        serverReachable,
+        shopName: shopRes.data?.name || '',
+        integration: {
+          ...integration,
+          auto_confirm_enabled: Boolean(integration.auto_confirm_enabled),
+          reminder_24h_enabled: Boolean(integration.reminder_24h_enabled),
+          reminder_2h_enabled: Boolean(integration.reminder_2h_enabled),
+          auto_cancel_enabled: Boolean(integration.auto_cancel_enabled)
+        },
+        defaultTemplates: DEFAULT_WHATSAPP_TEMPLATES,
+        logs
+      });
+    } catch (e: any) {
+      console.error('[WHATSAPP_CONFIG_GET_ERR]', e);
+      res.status(500).json({ error: 'Erro ao carregar configurações de WhatsApp', details: e.message });
+    }
+  });
+
+  api.put('/admin/whatsapp/config', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const {
+        auto_confirm_enabled,
+        reminder_24h_enabled,
+        reminder_2h_enabled,
+        auto_cancel_enabled,
+        template_confirm,
+        template_reminder_24h,
+        template_reminder_2h,
+        template_cancel
+      } = req.body || {};
+
+      const [existing, shopRes] = await Promise.all([
+        cloudNicheDb.getWhatsAppIntegration(shopId),
+        supabase.from('barbershops').select('slug').eq('id', shopId).maybeSingle()
+      ]);
+
+      const instanceName = existing?.instance_name || buildInstanceName(shopRes.data?.slug, shopId);
+      const saved = await cloudNicheDb.upsertWhatsAppIntegration({
+        barbershop_id: shopId,
+        instance_name: instanceName,
+        provider: 'evolution',
+        connection_status: existing?.connection_status || 'disconnected',
+        connected_phone: existing?.connected_phone || null,
+        auto_confirm_enabled: auto_confirm_enabled ? 1 : 0,
+        reminder_24h_enabled: reminder_24h_enabled ? 1 : 0,
+        reminder_2h_enabled: reminder_2h_enabled ? 1 : 0,
+        auto_cancel_enabled: auto_cancel_enabled ? 1 : 0,
+        template_confirm: String(template_confirm || DEFAULT_WHATSAPP_TEMPLATES.template_confirm).trim(),
+        template_reminder_24h: String(template_reminder_24h || DEFAULT_WHATSAPP_TEMPLATES.template_reminder_24h).trim(),
+        template_reminder_2h: String(template_reminder_2h || DEFAULT_WHATSAPP_TEMPLATES.template_reminder_2h).trim(),
+        template_cancel: String(template_cancel || DEFAULT_WHATSAPP_TEMPLATES.template_cancel).trim()
+      });
+
+      res.json({
+        success: true,
+        integration: {
+          ...saved,
+          auto_confirm_enabled: Boolean(saved.auto_confirm_enabled),
+          reminder_24h_enabled: Boolean(saved.reminder_24h_enabled),
+          reminder_2h_enabled: Boolean(saved.reminder_2h_enabled),
+          auto_cancel_enabled: Boolean(saved.auto_cancel_enabled)
+        }
+      });
+    } catch (e: any) {
+      console.error('[WHATSAPP_CONFIG_PUT_ERR]', e);
+      res.status(500).json({ error: 'Erro ao salvar regras e modelos de WhatsApp', details: e.message });
+    }
+  });
+
+  api.post('/admin/whatsapp/connect', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const evoConfig = await resolveEvolutionConfig();
+      if (!evoConfig.apiUrl || !evoConfig.apiKey) {
+        return res.status(412).json({
+          code: 'EVOLUTION_NOT_CONFIGURED',
+          error: 'Servidor Evolution API ainda não configurado. Defina a URL e API Key no Painel Master ou variáveis de ambiente quando sua VPS estiver ativa.'
+        });
+      }
+
+      const [existing, shopRes] = await Promise.all([
+        cloudNicheDb.getWhatsAppIntegration(shopId),
+        supabase.from('barbershops').select('slug').eq('id', shopId).maybeSingle()
+      ]);
+
+      const instanceName = existing?.instance_name || buildInstanceName(shopRes.data?.slug, shopId);
+      const pairingPhone = typeof req.body?.phoneNumber === 'string' ? req.body.phoneNumber.trim() : '';
+
+      if (!existing) {
+        await cloudNicheDb.upsertWhatsAppIntegration({
+          barbershop_id: shopId,
+          instance_name: instanceName,
+          provider: 'evolution',
+          connection_status: 'connecting',
+          ...DEFAULT_WHATSAPP_TEMPLATES
+        });
+      }
+
+      const result = await connectEvolutionInstance(evoConfig, instanceName, pairingPhone || undefined);
+      if (!result.ok) {
+        return res.status(502).json({ error: result.error || 'Não foi possível gerar conexão na Evolution API.' });
+      }
+
+      await cloudNicheDb.updateWhatsAppConnection(
+        shopId,
+        result.connectionStatus,
+        result.connectedPhone ?? existing?.connected_phone ?? null
+      );
+
+      res.json({
+        success: true,
+        instanceName,
+        connectionStatus: result.connectionStatus,
+        connectedPhone: result.connectedPhone,
+        qrBase64: result.qrBase64,
+        pairingCode: result.pairingCode
+      });
+    } catch (e: any) {
+      console.error('[WHATSAPP_CONNECT_ERR]', e);
+      res.status(500).json({ error: 'Erro ao iniciar conexão do WhatsApp', details: e.message });
+    }
+  });
+
+  api.get('/admin/whatsapp/status', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const [evoConfig, existing] = await Promise.all([
+        resolveEvolutionConfig(),
+        cloudNicheDb.getWhatsAppIntegration(shopId)
+      ]);
+
+      if (!existing) {
+        return res.json({ serverConfigured: Boolean(evoConfig.apiUrl && evoConfig.apiKey), connectionStatus: 'disconnected', connectedPhone: null });
+      }
+      if (!evoConfig.apiUrl || !evoConfig.apiKey) {
+        return res.json({ serverConfigured: false, connectionStatus: existing.connection_status, connectedPhone: existing.connected_phone });
+      }
+
+      const live = await getEvolutionConnectionState(evoConfig, existing.instance_name);
+      if (live.reachable && (live.connectionStatus !== existing.connection_status || (live.connectedPhone && live.connectedPhone !== existing.connected_phone))) {
+        await cloudNicheDb.updateWhatsAppConnection(
+          shopId,
+          live.connectionStatus,
+          live.connectedPhone ?? existing.connected_phone
+        );
+      }
+
+      res.json({
+        serverConfigured: true,
+        serverReachable: live.reachable,
+        connectionStatus: live.reachable ? live.connectionStatus : existing.connection_status,
+        connectedPhone: live.connectedPhone ?? existing.connected_phone
+      });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao consultar status do WhatsApp', details: e.message });
+    }
+  });
+
+  api.post('/admin/whatsapp/disconnect', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const [evoConfig, existing] = await Promise.all([
+        resolveEvolutionConfig(),
+        cloudNicheDb.getWhatsAppIntegration(shopId)
+      ]);
+
+      if (existing) {
+        if (evoConfig.apiUrl && evoConfig.apiKey) {
+          await logoutEvolutionInstance(evoConfig, existing.instance_name);
+        }
+        await cloudNicheDb.updateWhatsAppConnection(shopId, 'disconnected', null);
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao desconectar WhatsApp', details: e.message });
+    }
+  });
+
+  api.post('/admin/whatsapp/test', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { phone, message } = req.body || {};
+      const cleanPhone = String(phone || '').replace(/\D/g, '');
+      if (cleanPhone.length < 10) {
+        return res.status(400).json({ error: 'Informe um número de WhatsApp válido com DDD.' });
+      }
+
+      const [evoConfig, integration, shopRes] = await Promise.all([
+        resolveEvolutionConfig(),
+        cloudNicheDb.getWhatsAppIntegration(shopId),
+        supabase.from('barbershops').select('name').eq('id', shopId).maybeSingle()
+      ]);
+
+      if (!evoConfig.apiUrl || !evoConfig.apiKey) {
+        return res.status(412).json({
+          code: 'EVOLUTION_NOT_CONFIGURED',
+          error: 'Configure o servidor Evolution API (URL e Key) quando sua VPS estiver ativa para enviar testes.'
+        });
+      }
+      if (!integration || integration.connection_status !== 'connected') {
+        return res.status(400).json({ error: 'Conecte o WhatsApp da loja primeiro para enviar mensagens de teste.' });
+      }
+
+      const textToSend =
+        String(message || '').trim() ||
+        `Teste automático do *DoisemePRO* para *${shopRes.data?.name || 'sua loja'}* ✅\nSua automação de WhatsApp está operando normalmente!`;
+
+      const sendRes = await sendEvolutionTextMessage(evoConfig, integration.instance_name, cleanPhone, textToSend);
+      await cloudNicheDb.createWhatsAppLog({
+        id: crypto.randomUUID(),
+        barbershop_id: shopId,
+        event_type: 'test',
+        recipient_phone: cleanPhone,
+        recipient_name: 'Teste Manual',
+        message_text: textToSend,
+        status: sendRes.ok ? 'sent' : 'failed',
+        error_message: sendRes.ok ? null : (sendRes.error || 'Falha no teste'),
+        provider_message_id: sendRes.messageId || null
+      });
+
+      if (!sendRes.ok) {
+        return res.status(502).json({ error: sendRes.error || 'Falha ao enviar mensagem de teste.' });
+      }
+
+      res.json({ success: true, messageId: sendRes.messageId });
+    } catch (e: any) {
+      res.status(500).json({ error: 'Erro ao enviar teste', details: e.message });
+    }
+  });
+
+  // Scheduled Reminders Cron Route (Vercel Cron or cron-job.org every 15 min)
+  const handleRemindersCron = async (req: any, res: any) => {
+    try {
+      const configuredSecret = await resolveCronSecret();
+      const authHeader = String(req.headers['authorization'] || '');
+      const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+      const providedSecret = String(
+        req.query?.secret || req.headers['x-cron-secret'] || bearerToken || ''
+      ).trim();
+
+      let authorized = false;
+      if (configuredSecret && providedSecret === configuredSecret) {
+        authorized = true;
+      } else if (!configuredSecret && req.headers['x-vercel-cron']) {
+        authorized = true;
+      } else if (bearerToken) {
+        try {
+          const decoded: any = jwt.verify(bearerToken, JWT_SECRET);
+          if (decoded?.role === 'master') authorized = true;
+        } catch {
+          // not a valid master jwt
+        }
+      }
+
+      if (!authorized) {
+        return res.status(401).json({ error: 'Não autorizado para executar rotina de lembretes.' });
+      }
+
+      const evoConfig = await resolveEvolutionConfig();
+      if (!evoConfig.apiUrl || !evoConfig.apiKey) {
+        return res.json({
+          ok: true,
+          skipped: true,
+          reason: 'evolution_not_configured',
+          processedShops: 0,
+          sent24h: 0,
+          sent2h: 0,
+          failed: 0
+        });
+      }
+
+      const activeIntegrations = await cloudNicheDb.getAllActiveWhatsAppReminderIntegrations();
+      if (activeIntegrations.length === 0) {
+        return res.json({
+          ok: true,
+          processedShops: 0,
+          sent24h: 0,
+          sent2h: 0,
+          failed: 0
+        });
+      }
+
+      const spNow = getSaoPauloNow();
+      const [spY, spM, spD] = spNow.dateStr.split('-').map(Number);
+      const spNowMs = Date.UTC(spY, spM - 1, spD, spNow.hour, spNow.minute, 0);
+      const tomorrowDate = new Date(Date.UTC(spY, spM - 1, spD + 1));
+      const tomorrowStr = `${tomorrowDate.getUTCFullYear()}-${String(tomorrowDate.getUTCMonth() + 1).padStart(2, '0')}-${String(tomorrowDate.getUTCDate()).padStart(2, '0')}`;
+
+      let sent24h = 0;
+      let sent2h = 0;
+      let failed = 0;
+
+      for (const integ of activeIntegrations) {
+        const { data: shopRow } = await supabase
+          .from('barbershops')
+          .select('id, name, is_blocked, expires_at')
+          .eq('id', integ.barbershop_id)
+          .maybeSingle();
+
+        if (!shopRow || shopRow.is_blocked) continue;
+        if (shopRow.expires_at && new Date(shopRow.expires_at) < new Date()) continue;
+
+        const { data: appts } = await supabase
+          .from('appointments')
+          .select('id, date, start_time, status, clients(name, phone), barbers(name), services(name)')
+          .eq('barbershop_id', integ.barbershop_id)
+          .eq('status', 'scheduled')
+          .in('date', [spNow.dateStr, tomorrowStr]);
+
+        for (const apt of appts || []) {
+          const phone = (apt.clients as any)?.phone;
+          if (!phone || !apt.date || !apt.start_time) continue;
+
+          const [ay, am, ad] = String(apt.date).split('-').map(Number);
+          const [ah, amin] = String(apt.start_time).split(':').map(Number);
+          if ([ay, am, ad, ah, amin].some((n) => Number.isNaN(n))) continue;
+
+          const aptMs = Date.UTC(ay, am - 1, ad, ah, amin, 0);
+          const diffMinutes = (aptMs - spNowMs) / 60000;
+          if (diffMinutes <= 5) continue;
+
+          if (integ.reminder_2h_enabled && diffMinutes >= 30 && diffMinutes <= 155) {
+            const r = await dispatchAppointmentWhatsApp({
+              shopId: integ.barbershop_id,
+              appointmentId: apt.id,
+              eventType: 'reminder_2h',
+              clientName: (apt.clients as any)?.name || 'Cliente',
+              clientPhone: phone,
+              date: apt.date,
+              startTime: apt.start_time,
+              serviceName: (apt.services as any)?.name || 'Atendimento',
+              barberName: (apt.barbers as any)?.name || 'Equipe',
+              shopName: shopRow.name
+            });
+            if (r.sent) sent2h += 1;
+            else if (r.sent === false) failed += 1;
+          }
+
+          if (integ.reminder_24h_enabled && diffMinutes >= 1080 && diffMinutes <= 1680) {
+            const r = await dispatchAppointmentWhatsApp({
+              shopId: integ.barbershop_id,
+              appointmentId: apt.id,
+              eventType: 'reminder_24h',
+              clientName: (apt.clients as any)?.name || 'Cliente',
+              clientPhone: phone,
+              date: apt.date,
+              startTime: apt.start_time,
+              serviceName: (apt.services as any)?.name || 'Atendimento',
+              barberName: (apt.barbers as any)?.name || 'Equipe',
+              shopName: shopRow.name
+            });
+            if (r.sent) sent24h += 1;
+            else if (r.sent === false) failed += 1;
+          }
+        }
+      }
+
+      res.json({
+        ok: true,
+        processedShops: activeIntegrations.length,
+        sent24h,
+        sent2h,
+        failed
+      });
+    } catch (e: any) {
+      console.error('[CRON_WHATSAPP_REMINDERS_ERR]', e);
+      res.status(500).json({ error: 'Erro na rotina de lembretes WhatsApp', details: e.message });
+    }
+  };
+
+  api.get('/cron/whatsapp-reminders', handleRemindersCron);
+  api.post('/cron/whatsapp-reminders', handleRemindersCron);
 
   // --- END MASTER ADMIN ROUTES ---
 

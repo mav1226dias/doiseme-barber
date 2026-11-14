@@ -17,6 +17,7 @@ ALTER TABLE barbers ADD COLUMN IF NOT EXISTS photo_url TEXT;
 
 ALTER TABLE services ADD COLUMN IF NOT EXISTS image_url TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+ALTER TABLE IF EXISTS users ADD COLUMN IF NOT EXISTS barber_id TEXT;
 ALTER TABLE IF EXISTS appointments ADD COLUMN IF NOT EXISTS notes TEXT;
 
 -- 2. Notas Clínicas / Psicologia e Prontuários
@@ -272,6 +273,22 @@ CREATE TABLE IF NOT EXISTS barber_metadata (
 CREATE INDEX IF NOT EXISTS idx_barber_meta_shop
 ON barber_metadata (barbershop_id);
 
+-- 13a. Vínculo de Login Individual por Profissional (Multi-Usuários)
+CREATE TABLE IF NOT EXISTS barber_accounts (
+  barber_id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  barbershop_id TEXT NOT NULL,
+  email TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_barber_accounts_user
+ON barber_accounts (user_id);
+
+CREATE INDEX IF NOT EXISTS idx_barber_accounts_shop
+ON barber_accounts (barbershop_id);
+
 -- 13b. Tokens de Recuperação de Senha
 ALTER TABLE IF EXISTS users
   ADD COLUMN IF NOT EXISTS updated_at TEXT;
@@ -317,6 +334,45 @@ CREATE TABLE IF NOT EXISTS saas_payments (
 
 CREATE INDEX IF NOT EXISTS idx_saas_payments_shop
 ON saas_payments (barbershop_id, created_at DESC);
+
+-- 13e. Automação de WhatsApp por Loja (Parte 6 - Evolution API)
+CREATE TABLE IF NOT EXISTS whatsapp_integrations (
+  barbershop_id TEXT PRIMARY KEY,
+  instance_name TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'evolution',
+  connection_status TEXT NOT NULL DEFAULT 'disconnected',
+  connected_phone TEXT,
+  auto_confirm_enabled INTEGER DEFAULT 0,
+  reminder_24h_enabled INTEGER DEFAULT 0,
+  reminder_2h_enabled INTEGER DEFAULT 0,
+  auto_cancel_enabled INTEGER DEFAULT 0,
+  template_confirm TEXT NOT NULL,
+  template_reminder_24h TEXT NOT NULL,
+  template_reminder_2h TEXT NOT NULL,
+  template_cancel TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS whatsapp_logs (
+  id TEXT PRIMARY KEY,
+  barbershop_id TEXT NOT NULL,
+  appointment_id TEXT,
+  event_type TEXT NOT NULL,
+  recipient_phone TEXT NOT NULL,
+  recipient_name TEXT,
+  message_text TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error_message TEXT,
+  provider_message_id TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_shop
+ON whatsapp_logs (barbershop_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_appt_event
+ON whatsapp_logs (appointment_id, event_type, status);
 
 -- 14. Garantir Bucket de Storage para Imagens (Logos, Banners, Fotos)
 INSERT INTO storage.buckets (id, name, public)
@@ -364,7 +420,10 @@ CREATE POLICY "Admin Delete" ON storage.objects
 -- ALTER TABLE client_tattoo_records ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE entity_photos ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE barber_metadata ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE barber_accounts ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE password_reset_tokens ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE platform_settings ENABLE ROW LEVEL SECURITY;
 -- ALTER TABLE saas_payments ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE whatsapp_integrations ENABLE ROW LEVEL SECURITY;
+-- ALTER TABLE whatsapp_logs ENABLE ROW LEVEL SECURITY;
 -- ============================================================================

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, FormEvent } from 'react';
-import { Plus, User, Check, X, Scissors, Layers, CheckSquare, Square, Edit2, Camera, Trash2, Loader2 } from 'lucide-react';
+import { Plus, User, X, CheckSquare, Square, Edit2, Camera, Trash2, Loader2, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { getSegment } from '../../lib/segments';
 import { toast } from 'sonner';
 
@@ -19,6 +19,7 @@ interface BarberItem {
   service_ids?: string[];
   photo_url?: string | null;
   photoUrl?: string | null;
+  loginEmail?: string | null;
 }
 
 export default function Barbers() {
@@ -28,6 +29,9 @@ export default function Barbers() {
   const [newCommission, setNewCommission] = useState(50);
   const [newSelectedServices, setNewSelectedServices] = useState<string[]>([]);
   const [newPhotoUrl, setNewPhotoUrl] = useState('');
+  const [newLoginEmail, setNewLoginEmail] = useState('');
+  const [newLoginPassword, setNewLoginPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
   const [uploadingNewPhoto, setUploadingNewPhoto] = useState(false);
   const newFileInputRef = useRef<HTMLInputElement>(null);
   
@@ -37,6 +41,10 @@ export default function Barbers() {
   const [editCommission, setEditCommission] = useState(50);
   const [editSelectedServices, setEditSelectedServices] = useState<string[]>([]);
   const [editPhotoUrl, setEditPhotoUrl] = useState('');
+  const [editLoginEmail, setEditLoginEmail] = useState('');
+  const [editLoginPassword, setEditLoginPassword] = useState('');
+  const [showEditPassword, setShowEditPassword] = useState(false);
+  const [removeAccess, setRemoveAccess] = useState(false);
   const [uploadingEditPhoto, setUploadingEditPhoto] = useState(false);
   const editFileInputRef = useRef<HTMLInputElement>(null);
 
@@ -194,6 +202,12 @@ export default function Barbers() {
       return;
     }
 
+    const cleanLoginEmail = newLoginEmail.trim();
+    if (cleanLoginEmail && newLoginPassword.length < 6) {
+      toast.error('A senha de acesso individual deve ter no mínimo 6 caracteres.');
+      return;
+    }
+
     setIsLoading(true);
     const token = localStorage.getItem('token');
     try {
@@ -207,21 +221,29 @@ export default function Barbers() {
           name: newBarber.trim(), 
           commission_percentage: newCommission,
           service_ids: newSelectedServices,
-          photo_url: newPhotoUrl || null
+          photo_url: newPhotoUrl || null,
+          ...(cleanLoginEmail ? { loginEmail: cleanLoginEmail, loginPassword: newLoginPassword } : {})
         })
       });
 
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        toast.success('Profissional cadastrado com sucesso!');
+        toast.success(
+          cleanLoginEmail
+            ? 'Profissional e acesso individual cadastrados com sucesso!'
+            : 'Profissional cadastrado com sucesso!'
+        );
         setNewBarber('');
         setNewCommission(50);
         setNewPhotoUrl('');
+        setNewLoginEmail('');
+        setNewLoginPassword('');
         setNewSelectedServices(services.map(s => s.id.toString()));
         fetchBarbers();
       } else {
-        toast.error('Erro ao cadastrar profissional');
+        toast.error(data.error || 'Erro ao cadastrar profissional');
       }
-    } catch (err) {
+    } catch {
       toast.error('Erro de conexão');
     } finally {
       setIsLoading(false);
@@ -233,7 +255,10 @@ export default function Barbers() {
     setEditName(barber.name);
     setEditCommission(barber.commission_percentage || 50);
     setEditPhotoUrl(barber.photo_url || barber.photoUrl || '');
-    // If barber has service_ids array, use it; otherwise default to all services
+    setEditLoginEmail(barber.loginEmail || '');
+    setEditLoginPassword('');
+    setShowEditPassword(false);
+    setRemoveAccess(false);
     const currentIds = Array.isArray(barber.service_ids) && barber.service_ids.length > 0
       ? barber.service_ids.map(String)
       : services.map(s => s.id.toString());
@@ -245,6 +270,18 @@ export default function Barbers() {
     if (!editName.trim()) {
       toast.error('Informe o nome');
       return;
+    }
+
+    const cleanEditEmail = editLoginEmail.trim();
+    if (!removeAccess && cleanEditEmail) {
+      if (!editingBarber.loginEmail && editLoginPassword.length < 6) {
+        toast.error('Defina uma senha com no mínimo 6 caracteres para liberar o acesso.');
+        return;
+      }
+      if (editLoginPassword && editLoginPassword.length < 6) {
+        toast.error('A nova senha deve ter no mínimo 6 caracteres.');
+        return;
+      }
     }
 
     setIsLoading(true);
@@ -260,18 +297,26 @@ export default function Barbers() {
           name: editName.trim(),
           commission_percentage: Number(editCommission),
           service_ids: editSelectedServices,
-          photo_url: editPhotoUrl || null
+          photo_url: editPhotoUrl || null,
+          removeAccess,
+          ...(!removeAccess && cleanEditEmail
+            ? {
+                loginEmail: cleanEditEmail,
+                ...(editLoginPassword ? { loginPassword: editLoginPassword } : {})
+              }
+            : {})
         })
       });
 
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         toast.success('Profissional atualizado com sucesso!');
         setEditingBarber(null);
         fetchBarbers();
       } else {
-        toast.error('Erro ao atualizar profissional');
+        toast.error(data.error || 'Erro ao atualizar profissional');
       }
-    } catch (err) {
+    } catch {
       toast.error('Erro de conexão');
     } finally {
       setIsLoading(false);
@@ -446,6 +491,43 @@ export default function Barbers() {
               </div>
             )}
           </div>
+
+          {/* Acesso Individual ao Painel (Opcional) */}
+          <div className="pt-4 border-t border-gray-100 dark:border-zinc-800 space-y-3">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+              <KeyRound className="w-4 h-4 text-[#D4AF37]" />
+              <span>Acesso Individual ao Painel (Opcional)</span>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Ao definir e-mail e senha, o profissional entra no painel vendo apenas a própria agenda, clientes atendidos e comissão (sem acesso ao financeiro geral).
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <input
+                type="email"
+                value={newLoginEmail}
+                onChange={(e) => setNewLoginEmail(e.target.value)}
+                placeholder="E-mail de acesso (ex: joao@suaempresa.com)"
+                className="w-full border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-black dark:focus:border-white"
+              />
+              <div className="relative">
+                <input
+                  type={showNewPassword ? 'text' : 'password'}
+                  value={newLoginPassword}
+                  onChange={(e) => setNewLoginPassword(e.target.value)}
+                  placeholder="Senha inicial (mín. 6 caracteres)"
+                  className="w-full border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl pl-3.5 pr-10 py-2.5 text-sm outline-none focus:border-black dark:focus:border-white"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowNewPassword(!showNewPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                  aria-label="Mostrar ou ocultar senha"
+                >
+                  {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+          </div>
         </form>
       </div>
 
@@ -575,6 +657,67 @@ export default function Barbers() {
             </div>
           </div>
 
+          {/* Acesso Individual no Painel de Edição */}
+          <div className="pt-4 border-t border-amber-500/20 dark:border-[#D4AF37]/20 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-600 dark:text-gray-300">
+                <KeyRound className="w-4 h-4 text-[#D4AF37]" />
+                <span>Acesso Individual ao Painel</span>
+              </div>
+              {editingBarber.loginEmail && (
+                <button
+                  type="button"
+                  onClick={() => setRemoveAccess(!removeAccess)}
+                  className={`text-xs font-semibold px-2.5 py-1 rounded-lg border transition-colors ${
+                    removeAccess
+                      ? 'bg-red-500 text-white border-red-500'
+                      : 'text-red-600 dark:text-red-400 border-red-300 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30'
+                  }`}
+                >
+                  {removeAccess ? 'Acesso será removido ao salvar' : 'Revogar acesso individual'}
+                </button>
+              )}
+            </div>
+
+            {!removeAccess && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    E-mail de login do profissional
+                  </label>
+                  <input
+                    type="email"
+                    value={editLoginEmail}
+                    onChange={(e) => setEditLoginEmail(e.target.value)}
+                    placeholder="profissional@empresa.com"
+                    className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl px-3 py-2 text-sm outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">
+                    {editingBarber.loginEmail ? 'Nova senha (deixe em branco p/ manter)' : 'Senha inicial (mín. 6 caracteres)'}
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showEditPassword ? 'text' : 'password'}
+                      value={editLoginPassword}
+                      onChange={(e) => setEditLoginPassword(e.target.value)}
+                      placeholder={editingBarber.loginEmail ? '•••••••• (opcional)' : 'Mínimo 6 caracteres'}
+                      className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl pl-3 pr-10 py-2 text-sm outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowEditPassword(!showEditPassword)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                    >
+                      {showEditPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="flex justify-end gap-3 pt-2">
             <button
               type="button"
@@ -639,8 +782,16 @@ export default function Barbers() {
                     </div>
 
                     <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex flex-wrap items-center gap-2">
-                      <span>{barber.commission_percentage || 50}% comissão</span>
-                      <span>•</span>
+                      <span className="tabular-nums">{barber.commission_percentage || 50}% comissão</span>
+                      {barber.loginEmail && (
+                        <>
+                          <span>·</span>
+                          <span className="text-gray-700 dark:text-gray-300 font-mono">
+                            Login: {barber.loginEmail}
+                          </span>
+                        </>
+                      )}
+                      <span>·</span>
                       {performsAll ? (
                         <span className="text-green-600 dark:text-green-400 font-medium">
                           Atende todos os {services.length} {currentPreset.terms.servicePlural.toLowerCase()}

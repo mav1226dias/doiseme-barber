@@ -1,5 +1,5 @@
 import { useState, useEffect, FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Scissors,
   Eye,
@@ -32,12 +32,16 @@ function toSlug(text: string): string {
 
 export default function Register() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const nichoParam = searchParams.get('nicho');
 
   const [businessName, setBusinessName] = useState('');
   const [ownerName, setOwnerName] = useState('');
   const [slug, setSlug] = useState('');
   const [slugManuallyEdited, setSlugManuallyEdited] = useState(false);
-  const [segment, setSegment] = useState('barbershop');
+  const [segment, setSegment] = useState(
+    nichoParam && SEGMENTS[nichoParam] ? nichoParam : 'barbershop'
+  );
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
@@ -46,6 +50,7 @@ export default function Register() {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [seedStarterServices, setSeedStarterServices] = useState(true);
   const [createOwnerAsProfessional, setCreateOwnerAsProfessional] = useState(true);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
 
   const [slugStatus, setSlugStatus] = useState<{
     checking: boolean;
@@ -121,6 +126,10 @@ export default function Register() {
       setError(slugStatus.reason || 'Escolha outro link personalizado disponível.');
       return;
     }
+    if (!acceptedTerms) {
+      setError('Você precisa aceitar os Termos de Uso e a Política de Privacidade (LGPD) para criar sua conta.');
+      return;
+    }
 
     setIsLoading(true);
     try {
@@ -137,7 +146,8 @@ export default function Register() {
           password,
           confirmPassword,
           seedStarterServices,
-          createOwnerAsProfessional
+          createOwnerAsProfessional,
+          acceptedTerms
         })
       });
 
@@ -459,11 +469,49 @@ export default function Register() {
                   Me cadastrar como primeiro {selectedPreset.terms.professional.toLowerCase()} ativo na agenda
                 </span>
               </label>
+              <label className="flex items-start gap-3 cursor-pointer select-none pt-1">
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={acceptedTerms}
+                  onClick={() => setAcceptedTerms(!acceptedTerms)}
+                  className={`w-5 h-5 rounded-md border flex items-center justify-center transition-colors shrink-0 mt-0.5 ${
+                    acceptedTerms
+                      ? 'bg-[#D4AF37] border-[#D4AF37] text-black'
+                      : 'border-white/30 bg-black/40 text-transparent'
+                  }`}
+                >
+                  <Check className="w-3.5 h-3.5" />
+                </button>
+                <span className="text-xs text-zinc-300 leading-relaxed">
+                  Li e aceito os{' '}
+                  <Link
+                    to="/termos"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-[#D4AF37] underline hover:opacity-80 font-medium"
+                  >
+                    Termos de Uso
+                  </Link>{' '}
+                  e a{' '}
+                  <Link
+                    to="/privacidade"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    className="text-[#D4AF37] underline hover:opacity-80 font-medium"
+                  >
+                    Política de Privacidade (LGPD)
+                  </Link>
+                  . *
+                </span>
+              </label>
             </div>
 
             <button
               type="submit"
-              disabled={isLoading || slugStatus.checking || slugStatus.available === false}
+              disabled={isLoading || slugStatus.checking || slugStatus.available === false || !acceptedTerms}
               className="w-full bg-[#D4AF37] text-black font-bold py-3 px-6 rounded-xl mt-2 hover:bg-[#e3be46] transition-colors disabled:opacity-50 flex items-center justify-center gap-2 whitespace-nowrap"
             >
               {isLoading ? (

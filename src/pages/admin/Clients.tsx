@@ -18,6 +18,18 @@ export default function Clients() {
   const [pendingImportClients, setPendingImportClients] = useState<{ name: string; phone: string }[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [userRole] = useState<string>(() => {
+    const token = localStorage.getItem('token');
+    if (!token) return 'admin';
+    try {
+      const payload = JSON.parse(atob(token.split('.')[1]));
+      return payload.role || 'admin';
+    } catch {
+      return 'admin';
+    }
+  });
+  const isBarber = userRole === 'barber';
+
   // New Client Form
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
@@ -28,11 +40,12 @@ export default function Clients() {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(async res => {
-        if (res.status === 401 || res.status === 403) {
+        if (res.status === 401) {
           localStorage.removeItem('token');
           window.location.href = '/admin/login';
           return [];
         }
+        if (!res.ok) return [];
         const text = await res.text();
         return text ? JSON.parse(text) : [];
       })
@@ -313,37 +326,41 @@ export default function Clients() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">
-            {currentPreset.terms.clientPlural}
+            {isBarber ? `Meus ${currentPreset.terms.clientPlural}` : currentPreset.terms.clientPlural}
           </h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">
-            Gerencie a base de {currentPreset.terms.clientPlural.toLowerCase()} da sua {currentPreset.terms.business.toLowerCase()}
+            {isBarber
+              ? `Seus ${currentPreset.terms.clientPlural.toLowerCase()} agendados ou atendidos por você (acesso restrito aos seus prontuários).`
+              : `Gerencie a base de ${currentPreset.terms.clientPlural.toLowerCase()} da sua ${currentPreset.terms.business.toLowerCase()}`}
           </p>
         </div>
         
-        <div className="flex flex-wrap gap-3">
-          <button 
-            onClick={() => setIsModalOpen(true)}
-            className="flex items-center gap-2 bg-black dark:bg-zinc-100 text-white dark:text-black px-4 py-2 rounded-xl font-medium hover:bg-gray-800 dark:hover:bg-white transition-colors"
-          >
-            <UserPlus className="w-4 h-4" /> Novo {currentPreset.terms.client}
-          </button>
-          
-          <div>
-            <input 
-              type="file" 
-              accept=".vcf,.csv,.xlsx,.xls"
-              onChange={handleFileUpload}
-              className="hidden"
-              ref={fileInputRef}
-            />
+        {!isBarber && (
+          <div className="flex flex-wrap gap-3">
             <button 
-              onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-2 bg-[#D4AF37] text-white px-4 py-2 rounded-xl font-medium hover:bg-[#b0912e] transition-colors"
+              onClick={() => setIsModalOpen(true)}
+              className="flex items-center gap-2 bg-black dark:bg-zinc-100 text-white dark:text-black px-4 py-2 rounded-xl font-medium hover:bg-gray-800 dark:hover:bg-white transition-colors"
             >
-              <Upload className="w-4 h-4" /> Importar Lista
+              <UserPlus className="w-4 h-4" /> Novo {currentPreset.terms.client}
             </button>
+            
+            <div>
+              <input 
+                type="file" 
+                accept=".vcf,.csv,.xlsx,.xls"
+                onChange={handleFileUpload}
+                className="hidden"
+                ref={fileInputRef}
+              />
+              <button 
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center gap-2 bg-[#D4AF37] text-white px-4 py-2 rounded-xl font-medium hover:bg-[#b0912e] transition-colors"
+              >
+                <Upload className="w-4 h-4" /> Importar Lista
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm overflow-hidden">
@@ -363,7 +380,7 @@ export default function Clients() {
 
         {filteredClients.length > 0 ? (
           <div className="flex flex-col">
-            {selectedIds.length > 0 && (
+            {!isBarber && selectedIds.length > 0 && (
               <div className="bg-[#D4AF37]/10 dark:bg-[#D4AF37]/5 border-b border-[#D4AF37]/20 px-4 py-3 flex items-center justify-between">
                 <span className="text-sm font-medium text-[#D4AF37]">
                   {selectedIds.length} cliente(s) selecionado(s)
@@ -381,14 +398,16 @@ export default function Clients() {
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="bg-gray-50 dark:bg-zinc-800/80 border-b border-gray-200 dark:border-zinc-800 text-sm font-medium text-gray-500 dark:text-gray-400">
-                    <th className="p-4 w-12 text-center">
-                      <input 
-                        type="checkbox" 
-                        checked={allSelected}
-                        onChange={handleSelectAll}
-                        className="rounded w-4 h-4 text-[#D4AF37] focus:ring-[#D4AF37] cursor-pointer"
-                      />
-                    </th>
+                    {!isBarber && (
+                      <th className="p-4 w-12 text-center">
+                        <input 
+                          type="checkbox" 
+                          checked={allSelected}
+                          onChange={handleSelectAll}
+                          className="rounded w-4 h-4 text-[#D4AF37] focus:ring-[#D4AF37] cursor-pointer"
+                        />
+                      </th>
+                    )}
                     <th className="p-4">Nome</th>
                     <th className="p-4">Telefone</th>
                     <th className="p-4 text-center">
@@ -398,7 +417,7 @@ export default function Clients() {
                         ? 'Prontuário & Evoluções' 
                         : 'Prontuário / Ficha'}
                     </th>
-                    <th className="p-4 text-right">Ações</th>
+                    {!isBarber && <th className="p-4 text-right">Ações</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 dark:divide-zinc-800">
@@ -406,19 +425,21 @@ export default function Clients() {
                     const isAesthetics = segment === 'aesthetics' || segment === 'lash_design' || segment === 'beauty_salon';
                     return (
                       <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-zinc-800/50 transition-colors">
-                        <td className="p-4 text-center">
-                          <input 
-                            type="checkbox" 
-                            checked={selectedIds.includes(c.id)}
-                            onChange={() => handleSelectOne(c.id)}
-                            className="rounded w-4 h-4 text-[#D4AF37] focus:ring-[#D4AF37] cursor-pointer"
-                          />
-                        </td>
+                        {!isBarber && (
+                          <td className="p-4 text-center">
+                            <input 
+                              type="checkbox" 
+                              checked={selectedIds.includes(c.id)}
+                              onChange={() => handleSelectOne(c.id)}
+                              className="rounded w-4 h-4 text-[#D4AF37] focus:ring-[#D4AF37] cursor-pointer"
+                            />
+                          </td>
+                        )}
                         <td className="p-4 font-medium text-gray-900 dark:text-gray-100">
                           <button 
                             onClick={() => setSelectedClientForRecord(c)}
                             className="hover:text-[#C47C62] dark:hover:text-[#E0A98B] font-bold transition-colors text-left"
-                            title="Abrir ficha da cliente"
+                            title="Abrir ficha do cliente"
                           >
                             {c.name || 'Sem nome'}
                           </button>
@@ -449,19 +470,21 @@ export default function Clients() {
                             </span>
                           </button>
                         </td>
-                      <td className="p-4 text-right">
-                        <button 
-                          disabled={loading}
-                          onClick={() => handleDelete([c.id])}
-                          className="text-gray-400 hover:text-red-500 transition-colors p-2 disabled:opacity-50 shrink-0"
-                          title="Excluir Cliente"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
+                        {!isBarber && (
+                          <td className="p-4 text-right">
+                            <button 
+                              disabled={loading}
+                              onClick={() => handleDelete([c.id])}
+                              className="text-gray-400 hover:text-red-500 transition-colors p-2 disabled:opacity-50 shrink-0"
+                              title="Excluir Cliente"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </td>
+                        )}
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
