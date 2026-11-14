@@ -17,6 +17,7 @@ ALTER TABLE barbers ADD COLUMN IF NOT EXISTS photo_url TEXT;
 
 ALTER TABLE services ADD COLUMN IF NOT EXISTS image_url TEXT;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();
+ALTER TABLE IF EXISTS appointments ADD COLUMN IF NOT EXISTS notes TEXT;
 
 -- 2. Notas Clínicas / Psicologia e Prontuários
 CREATE TABLE IF NOT EXISTS client_clinical_notes (
@@ -213,6 +214,40 @@ CREATE TABLE IF NOT EXISTS client_tattoo_records (
 
 CREATE INDEX IF NOT EXISTS idx_tattoo_records_client
 ON client_tattoo_records (barbershop_id, client_id, session_date DESC);
+
+-- 11b. Projetos Criativos, Marcenaria, Arquitetura, Fotografia & Audiovisual
+CREATE TABLE IF NOT EXISTS client_creative_projects (
+  id TEXT PRIMARY KEY,
+  barbershop_id TEXT NOT NULL,
+  client_id TEXT NOT NULL,
+  segment_type TEXT NOT NULL,
+  project_title TEXT NOT NULL,
+  category_or_style TEXT,
+  location_or_room TEXT,
+  dimensions_or_scope TEXT,
+  materials_or_specs TEXT,
+  status TEXT DEFAULT 'Briefing / Orçamento',
+  delivery_date TEXT,
+  deliverable_link TEXT,
+  estimated_value REAL,
+  notes TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_creative_projects_client
+ON client_creative_projects (barbershop_id, client_id, created_at DESC);
+
+-- 11c. Observações / Briefing de Agendamentos
+CREATE TABLE IF NOT EXISTS appointment_notes (
+  appointment_id TEXT PRIMARY KEY,
+  barbershop_id TEXT NOT NULL,
+  notes TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_appointment_notes_shop
+ON appointment_notes (barbershop_id);
 
 -- 12. Fotos de Profissionais e Serviços/Procedimentos
 CREATE TABLE IF NOT EXISTS entity_photos (

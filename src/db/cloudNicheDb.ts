@@ -10,7 +10,8 @@ import {
   ClientVehicle,
   ClientStylePreference,
   ClientFitnessAssessment,
-  ClientTattooRecord
+  ClientTattooRecord,
+  ClientCreativeProject
 } from './nicheDb.js';
 
 const warnedTables = new Set<string>();
@@ -46,6 +47,8 @@ export const NICHE_CLOUD_TABLES = [
   'client_style_preferences',
   'client_fitness_assessments',
   'client_tattoo_records',
+  'client_creative_projects',
+  'appointment_notes',
   'entity_photos',
   'barber_metadata',
   'password_reset_tokens',
@@ -64,6 +67,8 @@ const CONFLICT_KEYS: Record<string, string> = {
   client_style_preferences: 'client_id',
   client_fitness_assessments: 'id',
   client_tattoo_records: 'id',
+  client_creative_projects: 'id',
+  appointment_notes: 'appointment_id',
   entity_photos: 'entity_id',
   barber_metadata: 'barber_id',
   password_reset_tokens: 'id',
@@ -713,6 +718,129 @@ export const cloudNicheDb = {
     return (deletedRows || []).length > 0;
   },
 
+  // --- PROJETOS CRIATIVOS (MARCENARIA, ARQUITETURA, FOTOGRAFIA, AUDIOVISUAL) ---
+  async getCreativeProjects(barbershopId: string, clientId: string): Promise<ClientCreativeProject[]> {
+    const { data, error } = await supabaseAdmin
+      .from('client_creative_projects')
+      .select('*')
+      .eq('barbershop_id', barbershopId)
+      .eq('client_id', clientId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('client_creative_projects', error);
+        return nicheDb.getCreativeProjects(barbershopId, clientId);
+      }
+      throw error;
+    }
+    return (data || []) as ClientCreativeProject[];
+  },
+
+  async createCreativeProject(data: Omit<ClientCreativeProject, 'created_at' | 'updated_at'>): Promise<ClientCreativeProject> {
+    const now = new Date().toISOString();
+    const record: ClientCreativeProject = {
+      ...data,
+      status: data.status || 'Briefing / Orçamento',
+      created_at: now,
+      updated_at: now
+    };
+
+    const { error } = await supabaseAdmin.from('client_creative_projects').insert(record);
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('client_creative_projects', error);
+        return nicheDb.createCreativeProject(data);
+      }
+      throw error;
+    }
+    return record;
+  },
+
+  async updateCreativeProjectStatus(id: string, barbershopId: string, status: string): Promise<boolean> {
+    const now = new Date().toISOString();
+    const { data: updatedRows, error } = await supabaseAdmin
+      .from('client_creative_projects')
+      .update({ status, updated_at: now })
+      .eq('id', id)
+      .eq('barbershop_id', barbershopId)
+      .select('id');
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('client_creative_projects', error);
+        return nicheDb.updateCreativeProjectStatus(id, barbershopId, status);
+      }
+      throw error;
+    }
+    return (updatedRows || []).length > 0;
+  },
+
+  async deleteCreativeProject(id: string, barbershopId: string): Promise<boolean> {
+    const { data: deletedRows, error } = await supabaseAdmin
+      .from('client_creative_projects')
+      .delete()
+      .eq('id', id)
+      .eq('barbershop_id', barbershopId)
+      .select('id');
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('client_creative_projects', error);
+        return nicheDb.deleteCreativeProject(id, barbershopId);
+      }
+      throw error;
+    }
+    return (deletedRows || []).length > 0;
+  },
+
+  // --- APPOINTMENT NOTES ---
+  async upsertAppointmentNote(appointmentId: string, barbershopId: string, notes: string): Promise<void> {
+    const trimmed = String(notes || '').trim();
+    if (!trimmed) return;
+    const now = new Date().toISOString();
+    const { error } = await supabaseAdmin.from('appointment_notes').upsert(
+      {
+        appointment_id: appointmentId,
+        barbershop_id: barbershopId,
+        notes: trimmed,
+        updated_at: now
+      },
+      { onConflict: 'appointment_id' }
+    );
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('appointment_notes', error);
+        nicheDb.upsertAppointmentNote(appointmentId, barbershopId, trimmed);
+        return;
+      }
+      console.warn('[APPT_NOTE_UPSERT_WARN]', error.message);
+    }
+  },
+
+  async getAppointmentNotesMap(appointmentIds: string[]): Promise<Record<string, string>> {
+    if (!appointmentIds.length) return {};
+    const { data, error } = await supabaseAdmin
+      .from('appointment_notes')
+      .select('appointment_id, notes')
+      .in('appointment_id', appointmentIds);
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('appointment_notes', error);
+        return nicheDb.getAppointmentNotesMap(appointmentIds);
+      }
+      return {};
+    }
+
+    const map: Record<string, string> = {};
+    (data || []).forEach((r: any) => {
+      if (r.notes) map[r.appointment_id] = r.notes;
+    });
+    return map;
+  },
+
   // --- ENTITY PHOTOS ---
   async upsertEntityPhoto(entityId: string, barbershopId: string, entityType: 'barber' | 'service', photoUrl: string | null): Promise<void> {
     const now = new Date().toISOString();
@@ -1031,7 +1159,8 @@ export const cloudNicheDb = {
       'client_vehicles',
       'client_style_preferences',
       'client_fitness_assessments',
-      'client_tattoo_records'
+      'client_tattoo_records',
+      'client_creative_projects'
     ];
 
     for (const table of clientTables) {
@@ -1061,6 +1190,8 @@ export const cloudNicheDb = {
       'client_style_preferences',
       'client_fitness_assessments',
       'client_tattoo_records',
+      'client_creative_projects',
+      'appointment_notes',
       'entity_photos',
       'barber_metadata',
       'saas_payments'

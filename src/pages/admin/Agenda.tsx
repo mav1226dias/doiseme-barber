@@ -27,7 +27,8 @@ export default function Agenda() {
     clientPhone: '',
     serviceId: '',
     barberId: '',
-    time: '09:00'
+    time: '09:00',
+    notes: ''
   });
 
   // Block form
@@ -128,19 +129,21 @@ export default function Agenda() {
           serviceId: newAppt.serviceId,
           barberId: newAppt.barberId,
           date,
-          startTime: newAppt.time
+          startTime: newAppt.time,
+          notes: newAppt.notes
         })
       });
       if (res.ok) {
+        toast.success('Agendamento criado com sucesso!');
         setIsApptModalOpen(false);
-        setNewAppt({ clientName: '', clientPhone: '', serviceId: '', barberId: '', time: '09:00' });
+        setNewAppt({ clientName: '', clientPhone: '', serviceId: '', barberId: '', time: '09:00', notes: '' });
         fetchAppointments();
       } else {
-        const err = await res.json();
-        alert(err.error || 'Erro ao criar');
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || 'Erro ao criar agendamento');
       }
-    } catch (e) {
-      alert('Erro de rede');
+    } catch {
+      toast.error('Erro de rede ao criar agendamento');
     }
     setLoading(false);
   };
@@ -160,11 +163,12 @@ export default function Agenda() {
           barberId: newBlock.barberId
         })
       });
+      toast.success('Horário bloqueado!');
       setIsBlockModalOpen(false);
       setNewBlock({ ...newBlock, startTime: '09:00', endTime: '10:00' });
       fetchAppointments();
-    } catch (error) {
-      alert('Erro ao bloquear');
+    } catch {
+      toast.error('Erro ao bloquear horário');
     }
     setLoading(false);
   };
@@ -254,12 +258,18 @@ export default function Agenda() {
                       return (
                         <div key={apt.id} className={`p-4 border rounded-xl relative group transition-colors ${bgColor}`}>
                           <div className="bg-black dark:bg-zinc-700 text-white dark:text-gray-100 text-xs px-2 py-1 rounded inline-block font-mono font-bold tracking-wider mb-2">
-                            {apt.startTime}
+                            {apt.startTime}{apt.endTime && apt.endTime !== apt.startTime ? ` – ${apt.endTime}` : ''}
                           </div>
                           {!isBlocked ? (
                             <div>
                               <div className="font-bold text-gray-900 dark:text-gray-100 line-clamp-1" title={apt.clientName}>{apt.clientName}</div>
                               <div className="text-sm text-gray-500 dark:text-gray-400 mt-1 line-clamp-1">{apt.serviceName}</div>
+                              {apt.notes && (
+                                <div className="mt-2 text-xs bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/70 dark:border-amber-800/40 rounded-lg px-2.5 py-1.5 text-gray-700 dark:text-gray-300">
+                                  <span className="font-bold text-[10px] uppercase text-amber-700 dark:text-amber-400 mr-1">Briefing:</span>
+                                  {apt.notes}
+                                </div>
+                              )}
                               {apt.status === 'scheduled' && (
                                 <div className="mt-3 flex gap-2">
                                   <button onClick={() => updateStatus(apt.id, 'completed')} className="text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 flex-1 py-1 rounded font-medium hover:bg-green-200 dark:hover:bg-green-900/50">Concluir</button>
@@ -290,9 +300,17 @@ export default function Agenda() {
                                   )}
                                   <span>
                                     {segment === 'aesthetics' || segment === 'lash_design' || segment === 'beauty_salon'
-                                      ? 'Ficha Estética / Fotos' 
-                                      : segment === 'psychology' 
-                                      ? 'Prontuário / Evolução' 
+                                      ? 'Ficha Estética / Fotos'
+                                      : segment === 'psychology'
+                                      ? 'Prontuário / Evolução'
+                                      : segment === 'woodwork'
+                                      ? 'Projetos & Medidas'
+                                      : segment === 'architecture'
+                                      ? 'Projetos & Obras'
+                                      : segment === 'photography'
+                                      ? 'Ensaios & Galerias'
+                                      : segment === 'video_production'
+                                      ? 'Produções & Entregas'
                                       : 'Ficha / Anotações'}
                                   </span>
                                 </button>
@@ -352,8 +370,12 @@ export default function Agenda() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Horário de Início</label>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Horário de Início</label>
                 <input required type="time" value={newAppt.time} onChange={e => setNewAppt({...newAppt, time: e.target.value})} className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Observações / Briefing (Opcional)</label>
+                <textarea rows={2} value={newAppt.notes} onChange={e => setNewAppt({...newAppt, notes: e.target.value})} placeholder="Detalhes do atendimento, medidas, referências..." className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700 text-sm resize-none" />
               </div>
               <button disabled={loading} type="submit" className="w-full py-3 bg-[#D4AF37] text-white rounded-xl font-bold hover:bg-[#b0912e] transition-colors disabled:opacity-50 mt-4">
                 {loading ? 'Salvando...' : 'Salvar Agendamento'}

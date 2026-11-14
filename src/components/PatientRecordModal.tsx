@@ -3,7 +3,7 @@ import {
   X, Brain, Calendar, Clock, FileText, Plus, Trash2, Edit3, 
   Printer, ShieldCheck, Heart, Sparkles, Check, AlertCircle, Phone, Search, Lock,
   Camera, Image as ImageIcon, RotateCcw, MessageCircle, ArrowRight, UserCheck, Eye,
-  Dog, Car, Scissors, Dumbbell, PenTool
+  Dog, Car, Scissors, Dumbbell, PenTool, Hammer, Compass, Video
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -12,6 +12,7 @@ import VehiclesTab from './niche/VehiclesTab';
 import BarberSalonTab from './niche/BarberSalonTab';
 import FitnessTab from './niche/FitnessTab';
 import TattooTab from './niche/TattooTab';
+import CreativeProjectsTab from './niche/CreativeProjectsTab';
 
 interface PatientRecordModalProps {
   clientId: string;
@@ -63,11 +64,16 @@ export default function PatientRecordModal({
   // Niche checks
   const isPetShop = segment === 'pet_shop' || segment === 'pet' || segment === 'petshop';
   const isAuto = segment === 'auto_detailing' || segment === 'auto' || segment === 'oficina';
-  const isBarberOrSalon = segment === 'barbershop' || segment === 'barber' || segment === 'beauty_salon' || segment === 'woodwork';
+  const isBarberOrSalon = segment === 'barbershop' || segment === 'barber' || segment === 'beauty_salon';
   const isFitness = segment === 'personal_trainer' || segment === 'personal' || segment === 'pilates' || segment === 'nutrition';
   const isTattoo = segment === 'tattoo' || segment === 'tatuagem';
+  const isWoodwork = segment === 'woodwork';
+  const isArchitecture = segment === 'architecture';
+  const isPhotography = segment === 'photography';
+  const isVideo = segment === 'video_production';
+  const isCreativeProject = isWoodwork || isArchitecture || isPhotography || isVideo;
   const isAesthetics = segment === 'aesthetics' || segment === 'lash_design' || segment === 'makeup';
-  const isPsychology = !isPetShop && !isAuto && !isBarberOrSalon && !isFitness && !isTattoo && !isAesthetics;
+  const isPsychology = !isPetShop && !isAuto && !isBarberOrSalon && !isFitness && !isTattoo && !isCreativeProject && !isAesthetics;
 
   const getInitialTab = () => {
     if (isPetShop) return 'pets';
@@ -75,6 +81,7 @@ export default function PatientRecordModal({
     if (isBarberOrSalon) return 'style_prefs';
     if (isFitness) return 'fitness';
     if (isTattoo) return 'tattoo';
+    if (isCreativeProject) return 'creative_projects';
     if (isAesthetics) return 'aesthetics_anamnesis';
     return 'notes';
   };
@@ -536,6 +543,14 @@ export default function PatientRecordModal({
                 ? 'bg-orange-500 text-white shadow-orange-500/20'
                 : isTattoo
                 ? 'bg-red-600 text-white shadow-red-600/20'
+                : isWoodwork
+                ? 'bg-amber-600 text-white shadow-amber-600/20'
+                : isArchitecture
+                ? 'bg-emerald-600 text-white shadow-emerald-600/20'
+                : isVideo
+                ? 'bg-rose-600 text-white shadow-rose-600/20'
+                : isPhotography
+                ? 'bg-violet-600 text-white shadow-violet-600/20'
                 : isAesthetics 
                 ? 'bg-[#E0A98B] text-black shadow-[#E0A98B]/20' 
                 : 'bg-indigo-600 text-white shadow-indigo-600/20'
@@ -545,6 +560,10 @@ export default function PatientRecordModal({
               {isBarberOrSalon && <Scissors className="w-6 h-6" />}
               {isFitness && <Dumbbell className="w-6 h-6" />}
               {isTattoo && <PenTool className="w-6 h-6" />}
+              {isWoodwork && <Hammer className="w-6 h-6" />}
+              {isArchitecture && <Compass className="w-6 h-6" />}
+              {isPhotography && <Camera className="w-6 h-6" />}
+              {isVideo && <Video className="w-6 h-6" />}
               {isAesthetics && <Sparkles className="w-6 h-6" />}
               {isPsychology && <Brain className="w-6 h-6" />}
             </div>
@@ -556,6 +575,10 @@ export default function PatientRecordModal({
                   {isBarberOrSalon && `Ficha de Estilo & Coloração: ${clientName}`}
                   {isFitness && `Avaliação Física & Treinos: ${clientName}`}
                   {isTattoo && `Biossegurança & Artes: ${clientName}`}
+                  {isWoodwork && `Projetos de Marcenaria: ${clientName}`}
+                  {isArchitecture && `Projetos & Obras: ${clientName}`}
+                  {isPhotography && `Ensaios & Galerias: ${clientName}`}
+                  {isVideo && `Produções Audiovisuais: ${clientName}`}
                   {isAesthetics && `Ficha Estética: ${clientName}`}
                   {isPsychology && `Prontuário Clínico: ${clientName}`}
                 </h2>
@@ -570,6 +593,14 @@ export default function PatientRecordModal({
                     ? 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20'
                     : isTattoo
                     ? 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20'
+                    : isWoodwork
+                    ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+                    : isArchitecture
+                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+                    : isVideo
+                    ? 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20'
+                    : isPhotography
+                    ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400 border-violet-500/20'
                     : isAesthetics 
                     ? 'bg-[#E0A98B]/15 text-[#C47C62] dark:text-[#E0A98B] border-[#E0A98B]/30' 
                     : 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20'
@@ -579,6 +610,10 @@ export default function PatientRecordModal({
                   {isBarberOrSalon && <Scissors className="w-3 h-3" />}
                   {isFitness && <Dumbbell className="w-3 h-3" />}
                   {isTattoo && <ShieldCheck className="w-3 h-3" />}
+                  {isWoodwork && <Hammer className="w-3 h-3" />}
+                  {isArchitecture && <Compass className="w-3 h-3" />}
+                  {isPhotography && <Camera className="w-3 h-3" />}
+                  {isVideo && <Video className="w-3 h-3" />}
                   {isAesthetics && <Sparkles className="w-3 h-3" />}
                   {isPsychology && <Lock className="w-3 h-3" />}
 
@@ -587,6 +622,10 @@ export default function PatientRecordModal({
                   {isBarberOrSalon && 'Barbearia & Salão Concept'}
                   {isFitness && 'Personal Trainer & Pilates'}
                   {isTattoo && 'Biossegurança Anvisa & Tattoo'}
+                  {isWoodwork && 'Marcenaria Sob Medida'}
+                  {isArchitecture && 'Arquitetura & Obra'}
+                  {isPhotography && 'Fotografia & Ensaios'}
+                  {isVideo && 'Produtora Audiovisual'}
                   {isAesthetics && 'Estética & Cuidados Avançados'}
                   {isPsychology && 'Sigilo Ético CFP'}
                 </span>
@@ -808,6 +847,53 @@ export default function PatientRecordModal({
             </>
           )}
 
+          {/* MARCENARIA, ARQUITETURA, FOTOGRAFIA & AUDIOVISUAL */}
+          {isCreativeProject && (
+            <>
+              <button
+                onClick={() => setActiveTab('creative_projects')}
+                className={`py-3.5 font-bold text-xs border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
+                  activeTab === 'creative_projects'
+                    ? 'border-amber-600 text-amber-600 dark:text-amber-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'
+                }`}
+              >
+                {isWoodwork && <Hammer className="w-4 h-4" />}
+                {isArchitecture && <Compass className="w-4 h-4" />}
+                {isPhotography && <Camera className="w-4 h-4" />}
+                {isVideo && <Video className="w-4 h-4" />}
+                <span>
+                  {isWoodwork && 'Projetos & Medidas'}
+                  {isArchitecture && 'Projetos & Obras'}
+                  {isPhotography && 'Ensaios & Galerias'}
+                  {isVideo && 'Produções & Entregas'}
+                </span>
+              </button>
+              <button
+                onClick={() => setActiveTab('notes')}
+                className={`py-3.5 font-bold text-xs border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
+                  activeTab === 'notes'
+                    ? 'border-amber-600 text-amber-600 dark:text-amber-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'
+                }`}
+              >
+                <FileText className="w-4 h-4" />
+                <span>Anotações & Briefing ({notes.length})</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('history')}
+                className={`py-3.5 font-bold text-xs border-b-2 flex items-center gap-2 transition-all whitespace-nowrap ${
+                  activeTab === 'history'
+                    ? 'border-amber-600 text-amber-600 dark:text-amber-400'
+                    : 'border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-gray-300'
+                }`}
+              >
+                <Calendar className="w-4 h-4" />
+                <span>Agendamentos ({appointments.length})</span>
+              </button>
+            </>
+          )}
+
           {/* ESTÉTICA */}
           {isAesthetics && (
             <>
@@ -964,6 +1050,16 @@ export default function PatientRecordModal({
                   clientId={clientId}
                   clientName={clientName}
                   clientPhone={clientPhone}
+                />
+              )}
+
+              {/* TAB NICHO 6: MARCENARIA, ARQUITETURA, FOTOGRAFIA & AUDIOVISUAL */}
+              {activeTab === 'creative_projects' && (
+                <CreativeProjectsTab
+                  clientId={clientId}
+                  clientName={clientName}
+                  clientPhone={clientPhone}
+                  segment={segment}
                 />
               )}
 
@@ -1912,9 +2008,15 @@ export default function PatientRecordModal({
                                 </span>
                               </div>
                               <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-3">
-                                <span>📅 {new Date(appt.date).toLocaleDateString('pt-BR')} às {appt.start_time}</span>
+                                <span>📅 {new Date(appt.date).toLocaleDateString('pt-BR')} às {appt.start_time}{appt.end_time ? ` - ${appt.end_time}` : ''}</span>
                                 <span>👤 {appt.barberName}</span>
                               </div>
+                              {appt.notes && (
+                                <div className="mt-2 text-xs bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200/70 dark:border-amber-800/40 rounded-lg px-2.5 py-1.5 text-gray-700 dark:text-gray-300">
+                                  <span className="font-bold text-[10px] uppercase text-amber-700 dark:text-amber-400 mr-1.5">Obs:</span>
+                                  {appt.notes}
+                                </div>
+                              )}
                             </div>
 
                             <button

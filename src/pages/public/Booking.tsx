@@ -41,17 +41,20 @@ export default function Booking() {
   const [services, setServices] = useState<ServiceItem[]>([]);
   const [availableSlots, setAvailableSlots] = useState<string[]>([]);
 
-  // Booking Form State: Step 1 (barber), Step 2 (service), Step 3 (date/time), Step 4 (client info)
+  // Booking Form State: Step 1 (barber), Step 2 (service), Step 3 (date/time), Step 4 (client info + notes)
   const [formData, setFormData] = useState({
     barber_id: '',
     service_id: '',
     date: '',
     time: '',
     name: '',
-    phone: ''
+    phone: '',
+    notes: ''
   });
 
   const [loading, setLoading] = useState(false);
+  const [loadingSlots, setLoadingSlots] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -102,21 +105,77 @@ export default function Booking() {
       });
   }, [slug]);
 
-  // Query availability when date and barber are selected
+  // Query availability when date, barber, or service changes
   useEffect(() => {
     if (formData.date && formData.barber_id && shop) {
-      fetch(`/api/barbershops/${shop.id}/availability?date=${formData.date}&barberId=${formData.barber_id}`)
+      const selectedSvc = availableServices.find(s => s.id.toString() === formData.service_id);
+      const durationParam = selectedSvc?.durationMinutes || 30;
+      const params = new URLSearchParams({
+        date: formData.date,
+        barberId: formData.barber_id,
+        durationMinutes: String(durationParam)
+      });
+      if (formData.service_id) params.set('serviceId', formData.service_id);
+
+      setLoadingSlots(true);
+      fetch(`/api/barbershops/${shop.id}/availability?${params.toString()}&t=${Date.now()}`)
         .then(async res => {
           const text = await res.text();
-          return text ? JSON.parse(text) : [];
+          const parsed = text ? JSON.parse(text) : [];
+          return Array.isArray(parsed) ? parsed : [];
         })
-        .then(setAvailableSlots)
-        .catch(console.error);
+        .then((slots: string[]) => {
+          setAvailableSlots(slots);
+          setFormData(prev => (prev.time && !slots.includes(prev.time) ? { ...prev, time: '' } : prev));
+        })
+        .catch(() => {
+          setAvailableSlots([]);
+        })
+        .finally(() => setLoadingSlots(false));
+    } else {
+      setAvailableSlots([]);
     }
-  }, [formData.date, formData.barber_id, shop]);
+  }, [formData.date, formData.barber_id, formData.service_id, shop]);
 
-  const handleNext = () => setStep(s => s + 1);
-  const handlePrev = () => setStep(s => Math.max(1, s - 1));
+  const formatDuration = (mins?: number) => {
+    const m = Number(mins || 30);
+    if (m < 60) return `${m} min`;
+    const h = Math.floor(m / 60);
+    const rem = m % 60;
+    return rem > 0 ? `${h}h ${rem}min` : `${h}h`;
+  };
+
+  const getNotesPlaceholder = (segId: string) => {
+    switch (segId) {
+      case 'aesthetics':
+      case 'lash_design':
+      case 'makeup':
+        return 'Ex: Pele sensível, alergias ou estilo desejado (opcional)';
+      case 'auto_detailing':
+        return 'Ex: Modelo do veículo, ano, placa ou detalhe para avaliar (opcional)';
+      case 'pet_shop':
+        return 'Ex: Nome do pet, raça, porte ou alergias (opcional)';
+      case 'photography':
+      case 'video_production':
+        return 'Ex: Tipo de ensaio/gravação, local ou referências (opcional)';
+      case 'woodwork':
+      case 'architecture':
+        return 'Ex: Ambiente, metragem aproximada ou endereço da obra (opcional)';
+      case 'tattoo':
+        return 'Ex: Local do corpo, tamanho aproximado (cm) e ideia da arte (opcional)';
+      default:
+        return 'Ex: Alguma preferência ou observação para o atendimento (opcional)';
+    }
+  };
+
+  const handleNext = () => {
+    setSubmitError(null);
+    setStep(s => s + 1);
+  };
+  const handlePrev = () => {
+    setSubmitError(null);
+    setStep(s => Math.max(1, s - 1));
+  };
 
   // The niche preset is strictly determined by the shop's database configuration (fixed layout per business)
   const currentPreset = useMemo(() => {
@@ -201,6 +260,8 @@ function isLightColor(hexColor?: string): boolean {
 
   const handleSubmit = async () => {
     setLoading(true);
+    setSubmitError(null);
+    const selectedSvc = availableServices.find(s => s.id.toString() === formData.service_id);
     try {
       const res = await fetch('/api/appointments', {
         method: 'POST',
@@ -209,19 +270,22 @@ function isLightColor(hexColor?: string): boolean {
           barbershopId: shop.id,
           barberId: formData.barber_id,
           serviceId: formData.service_id,
+          durationMinutes: selectedSvc?.durationMinutes || 30,
           clientName: formData.name,
           clientPhone: formData.phone,
           date: formData.date,
-          startTime: formData.time
+          startTime: formData.time,
+          notes: formData.notes
         })
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setSuccess(true);
       } else {
-        alert('Erro ao agendar. Tente novamente.');
+        setSubmitError(data.error || 'Erro ao agendar. Tente novamente.');
       }
-    } catch (error) {
-      alert('Erro ao agendar. Tente novamente.');
+    } catch {
+      setSubmitError('Erro de conexão ao confirmar agendamento. Tente novamente.');
     } finally {
       setLoading(false);
     }
@@ -577,7 +641,7 @@ function isLightColor(hexColor?: string): boolean {
                           <div className="font-semibold text-base" style={{ color: textColor }}>{service?.name || 'Serviço'}</div>
                           <div className="text-xs mt-0.5 flex items-center gap-1.5" style={{ color: textColor, opacity: 0.6 }}>
                             <Clock className="w-3.5 h-3.5" />
-                            <span>{service?.durationMinutes || 30} min</span>
+                            <span>{formatDuration(service?.durationMinutes)}</span>
                           </div>
                         </div>
                       </div>
@@ -633,25 +697,43 @@ function isLightColor(hexColor?: string): boolean {
                   <label className="block text-xs font-semibold mb-2 uppercase tracking-wider" style={{ color: textColor, opacity: 0.7 }}>
                     Horários Disponíveis
                   </label>
-                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
-                    {(availableSlots.length > 0 ? availableSlots : ['09:00', '10:00', '11:00', '14:00', '15:00', '16:00', '17:00', '18:00']).map(slot => (
-                      <button
-                        key={slot}
-                        onClick={() => setFormData({ ...formData, time: slot })}
-                        className="py-2.5 rounded-xl border text-sm font-mono tabular-nums transition-all"
-                        style={formData.time === slot 
-                          ? { ...btnStyle, borderColor: primaryColor }
-                          : {
-                              backgroundColor: isBgLight ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.06)',
-                              borderColor: isBgLight ? 'rgba(0, 0, 0, 0.1)' : 'rgba(255, 255, 255, 0.12)',
-                              color: textColor
-                            }
-                        }
-                      >
-                        {slot}
-                      </button>
-                    ))}
-                  </div>
+                  {loadingSlots ? (
+                    <div className="py-6 text-center text-xs opacity-70" style={{ color: textColor }}>
+                      Consultando horários disponíveis...
+                    </div>
+                  ) : availableSlots.length === 0 ? (
+                    <div
+                      className="p-4 rounded-xl border text-center text-xs leading-relaxed"
+                      style={{
+                        backgroundColor: isBgLight ? 'rgba(0, 0, 0, 0.03)' : 'rgba(255, 255, 255, 0.04)',
+                        borderColor: isBgLight ? 'rgba(0, 0, 0, 0.1)' : 'rgba(255, 255, 255, 0.1)',
+                        color: textColor,
+                        opacity: 0.85
+                      }}
+                    >
+                      Nenhum horário disponível para esta data ou duração de {currentPreset.terms.service.toLowerCase()}. Por favor, escolha outro dia.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5">
+                      {availableSlots.map(slot => (
+                        <button
+                          key={slot}
+                          onClick={() => setFormData({ ...formData, time: slot })}
+                          className="py-2.5 rounded-xl border text-sm font-mono tabular-nums transition-all"
+                          style={formData.time === slot 
+                            ? { ...btnStyle, borderColor: primaryColor }
+                            : {
+                                backgroundColor: isBgLight ? 'rgba(0, 0, 0, 0.04)' : 'rgba(255, 255, 255, 0.06)',
+                                borderColor: isBgLight ? 'rgba(0, 0, 0, 0.1)' : 'rgba(255, 255, 255, 0.12)',
+                                color: textColor
+                              }
+                          }
+                        >
+                          {slot}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -718,6 +800,30 @@ function isLightColor(hexColor?: string): boolean {
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-semibold mb-1.5 uppercase tracking-wider" style={{ color: textColor, opacity: 0.7 }}>
+                  Observações / Briefing (Opcional)
+                </label>
+                <textarea
+                  rows={2}
+                  value={formData.notes}
+                  onChange={e => setFormData({ ...formData, notes: e.target.value })}
+                  placeholder={getNotesPlaceholder(currentPreset.id)}
+                  className="w-full rounded-xl p-3.5 border outline-none transition-all text-sm resize-none"
+                  style={{
+                    backgroundColor: isBgLight ? '#ffffff' : 'rgba(0, 0, 0, 0.45)',
+                    borderColor: isBgLight ? 'rgba(0, 0, 0, 0.15)' : 'rgba(255, 255, 255, 0.15)',
+                    color: isBgLight ? '#111827' : '#ffffff'
+                  }}
+                />
+              </div>
+
+              {submitError && (
+                <div className="p-3.5 rounded-xl border border-red-500/40 bg-red-500/10 text-red-400 text-xs font-medium">
+                  {submitError}
+                </div>
+              )}
+
               {/* Booking Summary Box */}
               <div 
                 className="p-4 rounded-xl border mt-4 space-y-2"
@@ -766,7 +872,7 @@ function isLightColor(hexColor?: string): boolean {
                     opacity: 0.8
                   }}
                 >
-                  📅 {formData.date.split('-').reverse().join('/')} às ⏰ {formData.time}
+                  📅 {formData.date.split('-').reverse().join('/')} às ⏰ {formData.time} • Duração: {formatDuration(availableServices.find(s => s.id.toString() === formData.service_id)?.durationMinutes)}
                 </div>
               </div>
 

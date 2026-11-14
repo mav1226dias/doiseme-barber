@@ -296,6 +296,40 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_saas_payments_shop
   ON saas_payments (barbershop_id, created_at DESC);
+
+  -- Projetos Criativos, Marcenaria, Arquitetura, Fotografia & Audiovisual
+  CREATE TABLE IF NOT EXISTS client_creative_projects (
+    id TEXT PRIMARY KEY,
+    barbershop_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    segment_type TEXT NOT NULL,
+    project_title TEXT NOT NULL,
+    category_or_style TEXT,
+    location_or_room TEXT,
+    dimensions_or_scope TEXT,
+    materials_or_specs TEXT,
+    status TEXT DEFAULT 'Briefing / Orçamento',
+    delivery_date TEXT,
+    deliverable_link TEXT,
+    estimated_value REAL,
+    notes TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_creative_projects_client
+  ON client_creative_projects (barbershop_id, client_id, created_at DESC);
+
+  -- Observações / Briefing de Agendamentos (fallback resiliente para appointments.notes)
+  CREATE TABLE IF NOT EXISTS appointment_notes (
+    appointment_id TEXT PRIMARY KEY,
+    barbershop_id TEXT NOT NULL,
+    notes TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_appointment_notes_shop
+  ON appointment_notes (barbershop_id);
 `);
 
 export interface ClinicalNote {
@@ -452,6 +486,25 @@ export interface ClientTattooRecord {
   aftercare_instructions?: string;
   notes?: string;
   created_at: string;
+}
+
+export interface ClientCreativeProject {
+  id: string;
+  barbershop_id: string;
+  client_id: string;
+  segment_type: string;
+  project_title: string;
+  category_or_style?: string;
+  location_or_room?: string;
+  dimensions_or_scope?: string;
+  materials_or_specs?: string;
+  status?: string;
+  delivery_date?: string;
+  deliverable_link?: string;
+  estimated_value?: number;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export const nicheDb = {
@@ -1019,6 +1072,95 @@ export const nicheDb = {
     return res.changes > 0;
   },
 
+  // --- PROJETOS CRIATIVOS (MARCENARIA, ARQUITETURA, FOTOGRAFIA, AUDIOVISUAL) ---
+  getCreativeProjects(barbershopId: string, clientId: string): ClientCreativeProject[] {
+    const stmt = db.prepare(`
+      SELECT * FROM client_creative_projects
+      WHERE barbershop_id = ? AND client_id = ?
+      ORDER BY created_at DESC
+    `);
+    return stmt.all(barbershopId, clientId) as ClientCreativeProject[];
+  },
+
+  createCreativeProject(data: Omit<ClientCreativeProject, 'created_at' | 'updated_at'>): ClientCreativeProject {
+    const now = new Date().toISOString();
+    const stmt = db.prepare(`
+      INSERT INTO client_creative_projects (
+        id, barbershop_id, client_id, segment_type, project_title,
+        category_or_style, location_or_room, dimensions_or_scope,
+        materials_or_specs, status, delivery_date, deliverable_link,
+        estimated_value, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    stmt.run(
+      data.id,
+      data.barbershop_id,
+      data.client_id,
+      data.segment_type,
+      data.project_title,
+      data.category_or_style || null,
+      data.location_or_room || null,
+      data.dimensions_or_scope || null,
+      data.materials_or_specs || null,
+      data.status || 'Briefing / Orçamento',
+      data.delivery_date || null,
+      data.deliverable_link || null,
+      data.estimated_value ?? null,
+      data.notes || null,
+      now,
+      now
+    );
+
+    return {
+      ...data,
+      status: data.status || 'Briefing / Orçamento',
+      created_at: now,
+      updated_at: now
+    };
+  },
+
+  updateCreativeProjectStatus(id: string, barbershopId: string, status: string): boolean {
+    const now = new Date().toISOString();
+    const res = db.prepare(`
+      UPDATE client_creative_projects
+      SET status = ?, updated_at = ?
+      WHERE id = ? AND barbershop_id = ?
+    `).run(status, now, id, barbershopId);
+    return res.changes > 0;
+  },
+
+  deleteCreativeProject(id: string, barbershopId: string): boolean {
+    const res = db.prepare(`
+      DELETE FROM client_creative_projects
+      WHERE id = ? AND barbershop_id = ?
+    `).run(id, barbershopId);
+    return res.changes > 0;
+  },
+
+  // --- APPOINTMENT NOTES ---
+  upsertAppointmentNote(appointmentId: string, barbershopId: string, notes: string): void {
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO appointment_notes (appointment_id, barbershop_id, notes, updated_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(appointment_id) DO UPDATE SET
+        notes = excluded.notes,
+        updated_at = excluded.updated_at
+    `).run(appointmentId, barbershopId, notes, now);
+  },
+
+  getAppointmentNotesMap(appointmentIds: string[]): Record<string, string> {
+    if (!appointmentIds.length) return {};
+    const placeholders = appointmentIds.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT appointment_id, notes FROM appointment_notes WHERE appointment_id IN (${placeholders})`).all(...appointmentIds) as any[];
+    const map: Record<string, string> = {};
+    rows.forEach((r) => {
+      if (r.notes) map[r.appointment_id] = r.notes;
+    });
+    return map;
+  },
+
   // --- ENTITY PHOTOS (PROFESSIONALS & SERVICES/PROCEDURES) ---
   upsertEntityPhoto(entityId: string, barbershopId: string, entityType: 'barber' | 'service', photoUrl: string | null): void {
     const now = new Date().toISOString();
@@ -1203,7 +1345,8 @@ export const nicheDb = {
       'client_vehicles',
       'client_style_preferences',
       'client_fitness_assessments',
-      'client_tattoo_records'
+      'client_tattoo_records',
+      'client_creative_projects'
     ];
     for (const table of clientTables) {
       try {
@@ -1229,6 +1372,8 @@ export const nicheDb = {
       'client_style_preferences',
       'client_fitness_assessments',
       'client_tattoo_records',
+      'client_creative_projects',
+      'appointment_notes',
       'entity_photos',
       'barber_metadata',
       'saas_payments'
@@ -1264,6 +1409,8 @@ export const nicheDb = {
       'client_style_preferences',
       'client_fitness_assessments',
       'client_tattoo_records',
+      'client_creative_projects',
+      'appointment_notes',
       'entity_photos',
       'barber_metadata',
       'password_reset_tokens',

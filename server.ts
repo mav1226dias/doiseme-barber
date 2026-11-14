@@ -628,133 +628,195 @@ async function startServer() {
     }
   });
 
+  // Helpers de fuso horário (Brasil - America/Sao_Paulo) e intervalos de agenda
+  const getSaoPauloNow = () => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Sao_Paulo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).formatToParts(new Date());
+    const map: Record<string, string> = {};
+    parts.forEach((p) => { map[p.type] = p.value; });
+    const rawHour = Number(map.hour);
+    const hour = rawHour === 24 ? 0 : rawHour;
+    const minute = Number(map.minute);
+    return {
+      dateStr: `${map.year}-${map.month}-${map.day}`,
+      hour,
+      minute,
+      totalMinutes: hour * 60 + minute
+    };
+  };
+
+  const timeToMinutes = (t?: string | null, fallback = 0): number => {
+    if (!t || typeof t !== 'string' || !t.includes(':')) return fallback;
+    const [hStr, mStr] = t.split(':');
+    const h = Number(hStr);
+    const m = Number(mStr);
+    if (Number.isNaN(h) || Number.isNaN(m)) return fallback;
+    return h * 60 + m;
+  };
+
+  const minutesToTime = (totalMins: number): string => {
+    const clamped = Math.max(0, Math.min(23 * 60 + 59, Math.round(totalMins)));
+    const h = Math.floor(clamped / 60);
+    const m = clamped % 60;
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  };
+
+  const buildOccupiedIntervals = (rows: any[]): Array<[number, number]> => {
+    return (rows || []).map((appt) => {
+      const startMin = timeToMinutes(appt.start_time, -1);
+      if (startMin < 0) return null;
+      const rawEnd = timeToMinutes(appt.end_time, -1);
+      const endMin = rawEnd > startMin ? rawEnd : startMin + 30;
+      return [startMin, endMin] as [number, number];
+    }).filter((x): x is [number, number] => Boolean(x));
+  };
+
   // Get available slots
   api.get('/barbershops/:id/availability', async (req, res) => {
-    const { date, barberId } = req.query;
-    if (!date || !barberId) return res.status(400).json({ error: 'Data e profissional são obrigatórios' });
-    
-    try {
-      const spTime = new Date().toLocaleString("en-US", {timeZone: "America/Sao_Paulo"});
-      const spDate = new Date(spTime);
-      const todayStr = `${spDate.getFullYear()}-${String(spDate.getMonth() + 1).padStart(2, '0')}-${String(spDate.getDate()).padStart(2, '0')}`;
-      
-      if ((date as string) < todayStr) return res.json([]);
+    const date = String(req.query.date || '').trim();
+    const barberId = String(req.query.barberId || '').trim();
+    const serviceId = String(req.query.serviceId || '').trim();
+    const durationQuery = Number(req.query.durationMinutes || 0);
 
-      // Get settings for the day
+    if (!date || !barberId) return res.status(400).json({ error: 'Data e profissional são obrigatórios' });
+
+    try {
+      const spNow = getSaoPauloNow();
+      if (date < spNow.dateStr) return res.json([]);
+
       const targetDate = new Date(`${date}T12:00:00Z`);
+      if (Number.isNaN(targetDate.getTime())) {
+        return res.status(400).json({ error: 'Data inválida' });
+      }
       const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-      const dayName = days[targetDate.getDay()];
-      
+      const dayName = days[targetDate.getUTCDay()];
+
       const config = await getShopSettings(req.params.id);
       const dayConfig = (config as any)[dayName];
-      
-      if (dayConfig.isClosed) return res.json([]); // Barbershop is closed this day
 
-      const currentHour = spDate.getHours();
-      const currentMinute = spDate.getMinutes();
+      if (!dayConfig || dayConfig.isClosed) return res.json([]);
 
-      const { data: existing, error } = await supabase
-        .from('appointments')
-        .select('*')
-        .eq('barber_id', barberId)
-        .eq('date', date)
-        .in('status', ['scheduled', 'blocked']);
-        
-      if (error) throw error;
-      
-      const slots = [];
-      const startH = parseInt(dayConfig.open.split(':')[0]);
-      const endH = parseInt(dayConfig.close.split(':')[0]);
-
-      // Lunch break info
-      const hasLunch = dayConfig.hasLunchBreak;
-      const lunchStartH = hasLunch ? parseInt(dayConfig.lunchOpen.split(':')[0]) : -1;
-      const lunchStartM = hasLunch ? parseInt(dayConfig.lunchOpen.split(':')[1]) : -1;
-      const lunchEndH = hasLunch ? parseInt(dayConfig.lunchClose.split(':')[0]) : -1;
-      const lunchEndM = hasLunch ? parseInt(dayConfig.lunchClose.split(':')[1]) : -1;
-
-      for (let i = startH; i <= endH; i++) {
-        const time = `${i.toString().padStart(2, '0')}:00`;
-        const time30 = `${i.toString().padStart(2, '0')}:30`;
-        
-        // Prevent booking exactly at closing hour
-        if (i === endH) continue;
-        
-        let isTimePast = false;
-        let isTime30Past = false;
-        
-        // Block times that have already passed today
-        if (date === todayStr) {
-          if (i < currentHour || (i === currentHour && currentMinute >= 0)) isTimePast = true;
-          if (i < currentHour || (i === currentHour && currentMinute >= 30)) isTime30Past = true;
+      // Resolver duração do serviço selecionado (suporta sessões longas de horas/diárias)
+      let serviceDuration = durationQuery > 0 ? Math.min(720, Math.max(15, durationQuery)) : 30;
+      if (serviceId && !serviceId.startsWith('sug-')) {
+        const { data: svc } = await supabase
+          .from('services')
+          .select('duration_minutes')
+          .eq('id', serviceId)
+          .maybeSingle();
+        if (svc?.duration_minutes) {
+          serviceDuration = Math.min(720, Math.max(15, Number(svc.duration_minutes)));
         }
-
-        // Check for lunch break
-        let isLunch00 = false;
-        let isLunch30 = false;
-        
-        if (hasLunch) {
-          // Block if time is within lunch range
-          // [lunchStart, lunchEnd)
-          const t00Val = i * 60;
-          const t30Val = i * 60 + 30;
-          const lStartVal = lunchStartH * 60 + lunchStartM;
-          const lEndVal = lunchEndH * 60 + lunchEndM;
-
-          if (t00Val >= lStartVal && t00Val < lEndVal) isLunch00 = true;
-          if (t30Val >= lStartVal && t30Val < lEndVal) isLunch30 = true;
-        }
-        
-        if (!isTimePast && !isLunch00 && !existing?.find(a => a.start_time === time)) slots.push(time);
-        if (!isTime30Past && !isLunch30 && !existing?.find(a => a.start_time === time30)) slots.push(time30);
       }
-      
+
+      let existing: any[] = [];
+      if (barberId !== 'prof-default-1') {
+        const { data: apptRows, error } = await supabase
+          .from('appointments')
+          .select('start_time, end_time, status')
+          .eq('barber_id', barberId)
+          .eq('date', date)
+          .in('status', ['scheduled', 'blocked']);
+
+        if (error) {
+          if (error.code !== '22P02') throw error;
+        } else {
+          existing = apptRows || [];
+        }
+      }
+
+      const occupiedIntervals = buildOccupiedIntervals(existing);
+
+      const openMinutes = timeToMinutes(dayConfig.open, 9 * 60);
+      const closeMinutes = timeToMinutes(dayConfig.close, 18 * 60);
+
+      const hasLunch = Boolean(dayConfig.hasLunchBreak);
+      const lunchStart = hasLunch ? timeToMinutes(dayConfig.lunchOpen, 12 * 60) : -1;
+      const lunchEnd = hasLunch ? timeToMinutes(dayConfig.lunchClose, 13 * 60) : -1;
+
+      const slots: string[] = [];
+      const isToday = date === spNow.dateStr;
+
+      for (let slotStart = openMinutes; slotStart + serviceDuration <= closeMinutes; slotStart += 30) {
+        const slotEnd = slotStart + serviceDuration;
+
+        // Bloqueia todos os horários que já passaram na data de hoje (inclusive o minuto atual)
+        if (isToday && slotStart <= spNow.totalMinutes) {
+          continue;
+        }
+
+        // Bloqueia se o atendimento invadir o horário de almoço
+        if (hasLunch && lunchEnd > lunchStart && slotStart < lunchEnd && slotEnd > lunchStart) {
+          continue;
+        }
+
+        // Bloqueia se o intervalo [slotStart, slotEnd) colidir com qualquer agendamento ou bloqueio
+        const hasConflict = occupiedIntervals.some(([apptStart, apptEnd]) => slotStart < apptEnd && slotEnd > apptStart);
+        if (hasConflict) {
+          continue;
+        }
+
+        slots.push(minutesToTime(slotStart));
+      }
+
       res.json(slots);
     } catch (error) {
-      console.error(error);
+      console.error('[AVAILABILITY_ERR]', error);
       res.status(500).json({ error: 'Erro ao buscar disponibilidade' });
     }
   });
 
-  // Create appointment (Refacted to fix saving issues)
+  // Create appointment
   api.post('/appointments', async (req, res) => {
-    // 1. ADICIONAR LOGS COMPLETOS NA ROTA
-    console.log('📥 BODY RECEBIDO:', req.body);
-
-    const { 
-      barbershopId, 
-      barberId, 
-      serviceId, 
-      clientName, 
-      clientPhone, 
-      date, 
-      startTime 
+    const {
+      barbershopId,
+      barberId,
+      serviceId,
+      clientName,
+      clientPhone,
+      date,
+      startTime,
+      notes,
+      durationMinutes
     } = req.body;
 
-    // 6. VALIDAR CAMPOS
     if (!barbershopId || !barberId || !serviceId || !clientName || !clientPhone || !date || !startTime) {
-      console.log('❌ VALIDAÇÃO FALHOU: Campos obrigatórios ausentes');
       return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
     }
 
     try {
-      // 7. VALIDAR TIPOS E GARANTIR CLIENTE
-      // Nota: A tabela appointments do banco usa client_id vinculado à tabela clients
-      let { data: client, error: clientFetchErr } = await supabase
+      const spNow = getSaoPauloNow();
+      const reqStartMinutes = timeToMinutes(String(startTime), -1);
+      if (reqStartMinutes < 0) {
+        return res.status(400).json({ error: 'Horário de início inválido.' });
+      }
+      if (String(date) < spNow.dateStr || (String(date) === spNow.dateStr && reqStartMinutes <= spNow.totalMinutes)) {
+        return res.status(400).json({ error: 'Este horário já passou. Por favor, escolha um horário futuro.' });
+      }
+
+      const cleanPhone = String(clientPhone).replace(/\D/g, '') || String(clientPhone).trim();
+      let { data: client } = await supabase
         .from('clients')
         .select('id')
-        .eq('phone', clientPhone)
         .eq('barbershop_id', barbershopId)
+        .or(`phone.eq.${cleanPhone},phone.eq.${String(clientPhone).trim()}`)
+        .limit(1)
         .maybeSingle();
 
       if (!client) {
-        console.log('📋 Criando novo cliente na tabela clients...');
         const { data: newC, error: createError } = await supabase
           .from('clients')
           .insert({
             id: crypto.randomUUID(),
-            name: clientName,
-            phone: clientPhone,
+            name: String(clientName).trim(),
+            phone: cleanPhone,
             barbershop_id: barbershopId
           })
           .select()
@@ -764,63 +826,88 @@ async function startServer() {
         client = newC;
       }
 
-      // Buscar duração do serviço
-      const { data: service } = await supabase
-        .from('services')
-        .select('duration_minutes')
-        .eq('id', serviceId)
-        .single();
-      
-      const duration = service?.duration_minutes || 30;
-      
-      // Cálculo de end_time
-      const [sh, sm] = startTime.split(':').map(Number);
-      const totalMinutes = sh * 60 + sm + duration;
-      const eh = Math.floor(totalMinutes / 60);
-      const em = totalMinutes % 60;
-      const endTime = `${String(eh).padStart(2, '0')}:${String(em).padStart(2, '0')}`;
+      // Buscar duração do serviço (suporta sessões longas)
+      let duration = Number(durationMinutes) > 0 ? Math.min(720, Math.max(15, Number(durationMinutes))) : 30;
+      let resolvedServiceId: string | null = String(serviceId);
+      if (!resolvedServiceId.startsWith('sug-')) {
+        const { data: service } = await supabase
+          .from('services')
+          .select('duration_minutes')
+          .eq('id', resolvedServiceId)
+          .maybeSingle();
+        if (service?.duration_minutes) {
+          duration = Math.min(720, Math.max(15, Number(service.duration_minutes)));
+        }
+      } else {
+        resolvedServiceId = null;
+      }
 
-      // 2. GARANTIR QUE O INSERT ESTÁ SENDO EXECUTADO
-      // Usando o padrão solicitado, mas ajustado para as colunas reais do banco
-      const insertData = {
-        id: crypto.randomUUID(),
+      const totalMinutes = reqStartMinutes + duration;
+      const endTime = minutesToTime(totalMinutes);
+
+      // Validar conflito de intervalo na agenda do profissional
+      if (barberId !== 'prof-default-1') {
+        const { data: dayAppts, error: conflictFetchErr } = await supabase
+          .from('appointments')
+          .select('start_time, end_time, status')
+          .eq('barber_id', barberId)
+          .eq('date', date)
+          .in('status', ['scheduled', 'blocked']);
+
+        if (!conflictFetchErr && dayAppts) {
+          const occupied = buildOccupiedIntervals(dayAppts);
+          const hasOverlap = occupied.some(([aStart, aEnd]) => reqStartMinutes < aEnd && totalMinutes > aStart);
+          if (hasOverlap) {
+            return res.status(409).json({ error: 'Este horário acabou de ser ocupado. Por favor, selecione outro horário.' });
+          }
+        }
+      }
+
+      const trimmedNotes = typeof notes === 'string' ? notes.trim() : '';
+      const appointmentId = crypto.randomUUID();
+      const baseInsert: Record<string, any> = {
+        id: appointmentId,
         barbershop_id: barbershopId,
-        barber_id: barberId,
-        service_id: serviceId,
-        client_id: client.id, // ID do cliente encontrado/criado
-        date: date,
-        start_time: startTime,
+        barber_id: barberId === 'prof-default-1' ? null : barberId,
+        service_id: resolvedServiceId,
+        client_id: client.id,
+        date,
+        start_time: minutesToTime(reqStartMinutes),
         end_time: endTime,
         status: 'scheduled'
       };
 
-      console.log('📝 TENTANDO INSERT NO SUPABASE:', insertData);
-
-      const { data, error } = await supabase
+      let insertResult = await supabase
         .from('appointments')
-        .insert([insertData])
+        .insert([trimmedNotes ? { ...baseInsert, notes: trimmedNotes } : baseInsert])
         .select();
 
-      // 3. TRATAR ERRO CORRETAMENTE
-      if (error) {
-        console.error('🚨 ERRO NO INSERT:', error.message);
+      // Fallback caso a coluna `notes` ainda não tenha sido adicionada na tabela appointments do Supabase
+      if (insertResult.error && trimmedNotes && /notes|column|schema cache/i.test(insertResult.error.message || '')) {
+        insertResult = await supabase.from('appointments').insert([baseInsert]).select();
+      }
+
+      if (insertResult.error) {
+        console.error('🚨 ERRO NO INSERT:', insertResult.error.message);
         return res.status(400).json({
-          error: error.message,
-          details: error
+          error: insertResult.error.message,
+          details: insertResult.error
         });
       }
 
-      // 5. GARANTIR RESPOSTA DE SUCESSO
+      if (trimmedNotes) {
+        await cloudNicheDb.upsertAppointmentNote(appointmentId, barbershopId, trimmedNotes);
+      }
+
       return res.json({
         success: true,
-        data
+        data: insertResult.data
       });
-
     } catch (e: any) {
       console.error('🔥 CRASH NA ROTA /api/appointments:', e);
-      return res.status(400).json({ 
-        error: e.message || 'Erro ao salvar agendamento', 
-        details: e 
+      return res.status(400).json({
+        error: e.message || 'Erro ao salvar agendamento',
+        details: e
       });
     }
   });
@@ -1748,19 +1835,19 @@ async function startServer() {
   api.get('/admin/appointments', authenticateToken, async (req: any, res) => {
     const { barbershopId } = req.user;
     const { date } = req.query;
-    
+
     try {
       let query = supabase
         .from('appointments')
         .select(`
-          id, date, start_time, end_time, status, client_id,
+          *,
           clients (id, name, phone),
           barbers (name),
-          services (name, price)
+          services (name, price, duration_minutes)
         `)
         .eq('barbershop_id', barbershopId)
         .order('start_time');
-        
+
       if (date) {
         query = query.eq('date', date);
       }
@@ -1768,18 +1855,23 @@ async function startServer() {
       const { data: rawAppointments, error } = await query;
       if (error) throw error;
 
-      const results = (rawAppointments || []).map(apt => ({
+      const apptIds = (rawAppointments || []).map((a: any) => a.id).filter(Boolean);
+      const sidecarNotesMap = await cloudNicheDb.getAppointmentNotesMap(apptIds);
+
+      const results = (rawAppointments || []).map((apt: any) => ({
         id: apt.id,
         date: apt.date,
         startTime: apt.start_time,
         endTime: apt.end_time,
         status: apt.status,
+        notes: apt.notes || sidecarNotesMap[apt.id] || '',
         clientId: (apt.clients as any)?.id || apt.client_id,
         clientName: (apt.clients as any)?.name,
         clientPhone: (apt.clients as any)?.phone,
         barberName: (apt.barbers as any)?.name,
         serviceName: (apt.services as any)?.name,
-        servicePrice: (apt.services as any)?.price
+        servicePrice: (apt.services as any)?.price,
+        durationMinutes: (apt.services as any)?.duration_minutes
       }));
 
       res.json(results);
@@ -1806,24 +1898,25 @@ async function startServer() {
   });
 
   api.post('/admin/appointments', authenticateToken, async (req: any, res) => {
-    const { barberId, serviceId, clientName, clientPhone, date, startTime } = req.body;
+    const { barberId, serviceId, clientName, clientPhone, date, startTime, notes } = req.body;
     const barbershopId = req.user.barbershopId;
-    
+
     try {
+      const cleanPhone = String(clientPhone || '').replace(/\D/g, '');
       let { data: client } = await supabase
         .from('clients')
         .select('*')
         .eq('barbershop_id', barbershopId)
-        .eq('phone', clientPhone.replace(/\D/g, ''))
-        .single();
-        
+        .eq('phone', cleanPhone)
+        .maybeSingle();
+
       if (!client) {
         const clientId = crypto.randomUUID();
         const { data: newClient, error: clientErr } = await supabase.from('clients').insert({
           id: clientId,
           barbershop_id: barbershopId,
           name: clientName,
-          phone: clientPhone.replace(/\D/g, ''),
+          phone: cleanPhone,
         }).select().single();
         if (clientErr) throw clientErr;
         client = newClient;
@@ -1834,39 +1927,54 @@ async function startServer() {
         .select('*')
         .eq('id', serviceId)
         .single();
-        
+
       if (svcErr || !service) return res.status(404).json({ error: 'Serviço não encontrado' });
 
-      const [hours, minutes] = startTime.split(':').map(Number);
-      const totalMinutes = hours * 60 + minutes + service.duration_minutes;
-      const endHours = Math.floor(totalMinutes / 60);
-      const endMins = totalMinutes % 60;
-      const endTime = `${endHours.toString().padStart(2, '0')}:${endMins.toString().padStart(2, '0')}`;
+      const startMin = timeToMinutes(startTime, -1);
+      if (startMin < 0) return res.status(400).json({ error: 'Horário de início inválido.' });
+      const endMin = startMin + Number(service.duration_minutes || 30);
+      const endTime = minutesToTime(endMin);
 
-      const { data: conflict } = await supabase.from('appointments').select('*')
+      const { data: dayAppts } = await supabase
+        .from('appointments')
+        .select('start_time, end_time, status')
         .eq('barber_id', barberId)
         .eq('date', date)
-        .eq('start_time', startTime)
-        .eq('status', 'scheduled')
-        .single();
-        
-      if (conflict) {
-        return res.status(409).json({ error: 'Horário já preenchido.' });
+        .in('status', ['scheduled', 'blocked']);
+
+      const occupied = buildOccupiedIntervals(dayAppts || []);
+      const hasOverlap = occupied.some(([aStart, aEnd]) => startMin < aEnd && endMin > aStart);
+      if (hasOverlap) {
+        return res.status(409).json({ error: 'Horário em conflito com outro atendimento ou bloqueio.' });
       }
 
+      const trimmedNotes = typeof notes === 'string' ? notes.trim() : '';
       const appointmentId = crypto.randomUUID();
-      const { error: apptErr } = await supabase.from('appointments').insert({
+      const baseInsert: Record<string, any> = {
         id: appointmentId,
         barbershop_id: barbershopId,
         barber_id: barberId,
         service_id: serviceId,
         client_id: client.id,
         date,
-        start_time: startTime,
+        start_time: minutesToTime(startMin),
         end_time: endTime,
         status: 'scheduled'
-      });
-      if (apptErr) throw apptErr;
+      };
+
+      let apptInsert = await supabase
+        .from('appointments')
+        .insert(trimmedNotes ? { ...baseInsert, notes: trimmedNotes } : baseInsert);
+
+      if (apptInsert.error && trimmedNotes && /notes|column|schema cache/i.test(apptInsert.error.message || '')) {
+        apptInsert = await supabase.from('appointments').insert(baseInsert);
+      }
+
+      if (apptInsert.error) throw apptInsert.error;
+
+      if (trimmedNotes) {
+        await cloudNicheDb.upsertAppointmentNote(appointmentId, barbershopId, trimmedNotes);
+      }
 
       res.json({ success: true, appointmentId });
     } catch (error) {
@@ -2472,11 +2580,15 @@ async function startServer() {
         .select('id, name')
         .eq('barbershop_id', barbershopId);
 
+      const apptIds = (appts || []).map((a: any) => a.id).filter(Boolean);
+      const sidecarNotesMap = await cloudNicheDb.getAppointmentNotesMap(apptIds);
+
       const enrichedAppts = (appts || []).map(a => {
         const s = (services || []).find(srv => srv.id === a.service_id);
         const b = (barbers || []).find(brb => brb.id === a.barber_id);
         return {
           ...a,
+          notes: a.notes || sidecarNotesMap[a.id] || '',
           serviceName: s?.name || 'Sessão / Consulta',
           barberName: b?.name || 'Profissional'
         };
@@ -3091,6 +3203,99 @@ async function startServer() {
     } catch (error: any) {
       console.error('[TATTOO_DEL_ERR]', error);
       res.status(500).json({ error: 'Erro ao excluir registro de tatuagem' });
+    }
+  });
+
+  // --- NICHE: PROJETOS CRIATIVOS (MARCENARIA, ARQUITETURA, FOTOGRAFIA, AUDIOVISUAL) ---
+  api.get('/admin/clients/:id/creative-projects', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+
+    try {
+      const projects = await cloudNicheDb.getCreativeProjects(barbershopId, clientId);
+      res.json({ projects });
+    } catch (error: any) {
+      console.error('[CREATIVE_PROJECTS_GET_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar projetos e produções' });
+    }
+  });
+
+  api.post('/admin/clients/:id/creative-projects', authenticateToken, async (req: any, res) => {
+    const clientId = req.params.id;
+    const barbershopId = req.user.barbershopId;
+    const {
+      segment_type,
+      project_title,
+      category_or_style,
+      location_or_room,
+      dimensions_or_scope,
+      materials_or_specs,
+      status,
+      delivery_date,
+      deliverable_link,
+      estimated_value,
+      notes
+    } = req.body;
+
+    if (!project_title || !String(project_title).trim()) {
+      return res.status(400).json({ error: 'O título do projeto / ensaio é obrigatório.' });
+    }
+
+    try {
+      const project = await cloudNicheDb.createCreativeProject({
+        id: crypto.randomUUID(),
+        barbershop_id: barbershopId,
+        client_id: clientId,
+        segment_type: segment_type || 'woodwork',
+        project_title: String(project_title).trim(),
+        category_or_style: category_or_style ? String(category_or_style).trim() : undefined,
+        location_or_room: location_or_room ? String(location_or_room).trim() : undefined,
+        dimensions_or_scope: dimensions_or_scope ? String(dimensions_or_scope).trim() : undefined,
+        materials_or_specs: materials_or_specs ? String(materials_or_specs).trim() : undefined,
+        status: status ? String(status).trim() : 'Briefing / Orçamento',
+        delivery_date: delivery_date ? String(delivery_date).trim() : undefined,
+        deliverable_link: deliverable_link ? String(deliverable_link).trim() : undefined,
+        estimated_value: estimated_value !== undefined && estimated_value !== '' ? Number(estimated_value) : undefined,
+        notes: notes ? String(notes).trim() : undefined
+      });
+
+      res.json({ success: true, project });
+    } catch (error: any) {
+      console.error('[CREATIVE_PROJECTS_POST_ERR]', error);
+      res.status(500).json({ error: 'Erro ao registrar projeto' });
+    }
+  });
+
+  api.patch('/admin/clients/:id/creative-projects/:projectId/status', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const projectId = req.params.projectId;
+    const { status } = req.body;
+
+    if (!status || !String(status).trim()) {
+      return res.status(400).json({ error: 'Status é obrigatório.' });
+    }
+
+    try {
+      const updated = await cloudNicheDb.updateCreativeProjectStatus(projectId, barbershopId, String(status).trim());
+      if (!updated) return res.status(404).json({ error: 'Projeto não encontrado.' });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[CREATIVE_PROJECTS_PATCH_ERR]', error);
+      res.status(500).json({ error: 'Erro ao atualizar status do projeto' });
+    }
+  });
+
+  api.delete('/admin/clients/:id/creative-projects/:projectId', authenticateToken, async (req: any, res) => {
+    const barbershopId = req.user.barbershopId;
+    const projectId = req.params.projectId;
+
+    try {
+      const deleted = await cloudNicheDb.deleteCreativeProject(projectId, barbershopId);
+      if (!deleted) return res.status(404).json({ error: 'Projeto não encontrado' });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('[CREATIVE_PROJECTS_DEL_ERR]', error);
+      res.status(500).json({ error: 'Erro ao excluir projeto' });
     }
   });
 
