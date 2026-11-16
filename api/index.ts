@@ -26,10 +26,11 @@ export default async function handler(req: any, res: any) {
     if (!res.headersSent) {
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');
+      const isProd = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
       res.end(
         JSON.stringify({
           error: 'Erro interno na API serverless',
-          details: err?.message || String(err)
+          ...(isProd ? {} : { details: err?.message || String(err) })
         })
       );
     }

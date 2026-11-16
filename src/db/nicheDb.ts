@@ -24,12 +24,12 @@ let db: any = noopDb;
 if (!isVercelRuntime) {
   try {
     if (!fs.existsSync(dataDir)) {
-      fs.mkdirSync(dataDir, { recursive: true });
+      fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     }
 
     const uploadsDir = path.join(dataDir, 'uploads');
     if (!fs.existsSync(uploadsDir)) {
-      fs.mkdirSync(uploadsDir, { recursive: true });
+      fs.mkdirSync(uploadsDir, { recursive: true, mode: 0o750 });
     }
 
     const require = createRequire(import.meta.url);
@@ -37,6 +37,11 @@ if (!isVercelRuntime) {
     const Database = require(sqlitePkg);
     const dbPath = path.join(dataDir, 'niche_records.db');
     db = new Database(dbPath);
+    try {
+      fs.chmodSync(dbPath, 0o600);
+    } catch {
+      // Ignore chmod errors on non-POSIX filesystems
+    }
     // Enable WAL mode for high concurrency
     db.pragma('journal_mode = WAL');
   } catch (err) {
@@ -385,6 +390,85 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_appt_event
   ON whatsapp_logs (appointment_id, event_type, status);
+
+  -- Auditoria e Monitoramento de Eventos Suspeitos
+  CREATE TABLE IF NOT EXISTS security_logs (
+    id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    ip TEXT,
+    method TEXT,
+    path TEXT,
+    user_id TEXT,
+    user_email TEXT,
+    barbershop_id TEXT,
+    details TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_security_logs_created
+  ON security_logs (created_at DESC);
+
+  -- Programa de Afiliados & Comissões Recorrentes
+  CREATE TABLE IF NOT EXISTS affiliates (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    phone_whatsapp TEXT,
+    pix_key TEXT,
+    code TEXT NOT NULL,
+    commission_rate REAL NOT NULL DEFAULT 0.25,
+    niche TEXT,
+    notes TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_affiliates_code
+  ON affiliates (code);
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_affiliates_email
+  ON affiliates (email);
+
+  CREATE TABLE IF NOT EXISTS affiliate_referrals (
+    shop_id TEXT PRIMARY KEY,
+    affiliate_id TEXT NOT NULL,
+    affiliate_code TEXT NOT NULL,
+    referred_email TEXT,
+    created_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_affiliate_referrals_aff
+  ON affiliate_referrals (affiliate_id, created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS affiliate_commissions (
+    id TEXT PRIMARY KEY,
+    affiliate_id TEXT NOT NULL,
+    shop_id TEXT NOT NULL,
+    payment_id TEXT NOT NULL,
+    plan_id TEXT NOT NULL,
+    plan_name TEXT NOT NULL,
+    gross_amount REAL NOT NULL,
+    commission_rate REAL NOT NULL,
+    commission_amount REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    available_at TEXT NOT NULL,
+    paid_at TEXT,
+    payout_reference TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_affiliate_commissions_payment
+  ON affiliate_commissions (payment_id);
+
+  CREATE INDEX IF NOT EXISTS idx_affiliate_commissions_aff
+  ON affiliate_commissions (affiliate_id, created_at DESC);
+
+  CREATE INDEX IF NOT EXISTS idx_affiliate_commissions_status
+  ON affiliate_commissions (status, available_at);
 `);
 
 export interface ClinicalNote {
@@ -558,6 +642,48 @@ export interface ClientCreativeProject {
   deliverable_link?: string;
   estimated_value?: number;
   notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AffiliateRecord {
+  id: string;
+  name: string;
+  email: string;
+  password_hash: string;
+  phone_whatsapp?: string | null;
+  pix_key?: string | null;
+  code: string;
+  commission_rate: number;
+  niche?: string | null;
+  notes?: string | null;
+  active: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AffiliateReferralRecord {
+  shop_id: string;
+  affiliate_id: string;
+  affiliate_code: string;
+  referred_email?: string | null;
+  created_at: string;
+}
+
+export interface AffiliateCommissionRecord {
+  id: string;
+  affiliate_id: string;
+  shop_id: string;
+  payment_id: string;
+  plan_id: string;
+  plan_name: string;
+  gross_amount: number;
+  commission_rate: number;
+  commission_amount: number;
+  status: 'pending' | 'available' | 'paid' | 'reversed';
+  available_at: string;
+  paid_at?: string | null;
+  payout_reference?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -1432,7 +1558,7 @@ export const nicheDb = {
     const cleanIds = Array.from(new Set(clientIds.map(id => String(id || '').trim()).filter(Boolean)));
     if (cleanIds.length === 0) return;
     const placeholders = cleanIds.map(() => '?').join(',');
-    const clientTables = [
+    const clientTables = new Set([
       'client_clinical_notes',
       'patient_anamnesis',
       'aesthetics_anamnesis',
@@ -1444,8 +1570,9 @@ export const nicheDb = {
       'client_fitness_assessments',
       'client_tattoo_records',
       'client_creative_projects'
-    ];
+    ]);
     for (const table of clientTables) {
+      if (!/^[a-z_]+$/.test(table)) continue;
       try {
         db.prepare(`DELETE FROM ${table} WHERE barbershop_id = ? AND client_id IN (${placeholders})`).run(
           barbershopId,
@@ -1458,7 +1585,7 @@ export const nicheDb = {
   },
 
   deleteShopData(barbershopId: string, userIds: string[] = []): void {
-    const shopTables = [
+    const shopTables = new Set([
       'client_clinical_notes',
       'patient_anamnesis',
       'aesthetics_anamnesis',
@@ -1477,8 +1604,9 @@ export const nicheDb = {
       'saas_payments',
       'whatsapp_integrations',
       'whatsapp_logs'
-    ];
+    ]);
     for (const table of shopTables) {
+      if (!/^[a-z_]+$/.test(table)) continue;
       try {
         db.prepare(`DELETE FROM ${table} WHERE barbershop_id = ?`).run(barbershopId);
       } catch {
@@ -1494,6 +1622,13 @@ export const nicheDb = {
       } catch {
         // Ignore non-critical cleanup errors
       }
+    }
+
+    try {
+      db.prepare(`DELETE FROM affiliate_referrals WHERE shop_id = ?`).run(barbershopId);
+      db.prepare(`DELETE FROM affiliate_commissions WHERE shop_id = ? AND status != 'paid'`).run(barbershopId);
+    } catch {
+      // Ignore non-critical cleanup errors
     }
   },
 
@@ -1653,6 +1788,280 @@ export const nicheDb = {
     return Boolean(row);
   },
 
+  createSecurityLog(entry: {
+    id: string;
+    event_type: string;
+    severity: string;
+    ip?: string | null;
+    method?: string | null;
+    path?: string | null;
+    user_id?: string | null;
+    user_email?: string | null;
+    barbershop_id?: string | null;
+    details?: string | null;
+    created_at?: string;
+  }): void {
+    const now = entry.created_at || new Date().toISOString();
+    try {
+      db.prepare(`
+        INSERT INTO security_logs (
+          id, event_type, severity, ip, method, path, user_id, user_email, barbershop_id, details, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        entry.id,
+        entry.event_type,
+        entry.severity,
+        entry.ip || null,
+        entry.method || null,
+        entry.path || null,
+        entry.user_id || null,
+        entry.user_email || null,
+        entry.barbershop_id || null,
+        entry.details || null,
+        now
+      );
+    } catch {
+      // Never crash caller on log failure
+    }
+  },
+
+  getRecentSecurityLogs(limit = 100): any[] {
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)));
+    return db
+      .prepare(`SELECT * FROM security_logs ORDER BY created_at DESC LIMIT ?`)
+      .all(safeLimit) as any[];
+  },
+
+  // --- AFFILIATES & RECURRING COMMISSIONS ---
+  createAffiliate(data: Omit<AffiliateRecord, 'created_at' | 'updated_at'>): AffiliateRecord {
+    const now = new Date().toISOString();
+    const record: AffiliateRecord = {
+      ...data,
+      email: String(data.email).trim().toLowerCase(),
+      code: String(data.code).trim().toLowerCase(),
+      phone_whatsapp: data.phone_whatsapp || null,
+      pix_key: data.pix_key || null,
+      niche: data.niche || null,
+      notes: data.notes || null,
+      active: data.active ?? 1,
+      created_at: now,
+      updated_at: now
+    };
+    db.prepare(`
+      INSERT INTO affiliates (
+        id, name, email, password_hash, phone_whatsapp, pix_key, code,
+        commission_rate, niche, notes, active, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.name,
+      record.email,
+      record.password_hash,
+      record.phone_whatsapp,
+      record.pix_key,
+      record.code,
+      record.commission_rate,
+      record.niche,
+      record.notes,
+      record.active,
+      record.created_at,
+      record.updated_at
+    );
+    return record;
+  },
+
+  getAffiliateById(id: string): AffiliateRecord | null {
+    return (db.prepare(`SELECT * FROM affiliates WHERE id = ? LIMIT 1`).get(id) as AffiliateRecord) || null;
+  },
+
+  getAffiliateByCode(code: string): AffiliateRecord | null {
+    const clean = String(code || '').trim().toLowerCase();
+    if (!clean) return null;
+    return (db.prepare(`SELECT * FROM affiliates WHERE code = ? LIMIT 1`).get(clean) as AffiliateRecord) || null;
+  },
+
+  getAffiliateByEmail(email: string): AffiliateRecord | null {
+    const clean = String(email || '').trim().toLowerCase();
+    if (!clean) return null;
+    return (db.prepare(`SELECT * FROM affiliates WHERE email = ? LIMIT 1`).get(clean) as AffiliateRecord) || null;
+  },
+
+  listAffiliates(): AffiliateRecord[] {
+    return db.prepare(`SELECT * FROM affiliates ORDER BY created_at DESC`).all() as AffiliateRecord[];
+  },
+
+  updateAffiliate(
+    id: string,
+    updates: Partial<Omit<AffiliateRecord, 'id' | 'created_at'>>
+  ): AffiliateRecord | null {
+    const allowed = [
+      'name',
+      'email',
+      'password_hash',
+      'phone_whatsapp',
+      'pix_key',
+      'code',
+      'commission_rate',
+      'niche',
+      'notes',
+      'active'
+    ];
+    const normalized: Record<string, any> = {};
+    for (const [k, v] of Object.entries(updates)) {
+      if (!allowed.includes(k) || v === undefined) continue;
+      if (k === 'email' || k === 'code') {
+        normalized[k] = String(v).trim().toLowerCase();
+      } else {
+        normalized[k] = v;
+      }
+    }
+    normalized.updated_at = updates.updated_at || new Date().toISOString();
+    const entries = Object.entries(normalized);
+    if (entries.length === 0) return this.getAffiliateById(id);
+    const sets = entries.map(([k]) => `${k} = ?`).join(', ');
+    db.prepare(`UPDATE affiliates SET ${sets} WHERE id = ?`).run(...entries.map(([, v]) => v), id);
+    return this.getAffiliateById(id);
+  },
+
+  deleteAffiliate(id: string): boolean {
+    const res = db.prepare(`DELETE FROM affiliates WHERE id = ?`).run(id);
+    db.prepare(`DELETE FROM affiliate_referrals WHERE affiliate_id = ?`).run(id);
+    db.prepare(`DELETE FROM affiliate_commissions WHERE affiliate_id = ? AND status != 'paid'`).run(id);
+    return res.changes > 0;
+  },
+
+  createReferralAttribution(data: Omit<AffiliateReferralRecord, 'created_at'> & { created_at?: string }): AffiliateReferralRecord {
+    const existing = this.getReferralByShopId(data.shop_id);
+    if (existing) return existing;
+    const now = data.created_at || new Date().toISOString();
+    const record: AffiliateReferralRecord = {
+      shop_id: data.shop_id,
+      affiliate_id: data.affiliate_id,
+      affiliate_code: String(data.affiliate_code).trim().toLowerCase(),
+      referred_email: data.referred_email || null,
+      created_at: now
+    };
+    db.prepare(`
+      INSERT OR IGNORE INTO affiliate_referrals (shop_id, affiliate_id, affiliate_code, referred_email, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(record.shop_id, record.affiliate_id, record.affiliate_code, record.referred_email, record.created_at);
+    return this.getReferralByShopId(data.shop_id) || record;
+  },
+
+  getReferralByShopId(shopId: string): AffiliateReferralRecord | null {
+    return (db.prepare(`SELECT * FROM affiliate_referrals WHERE shop_id = ? LIMIT 1`).get(shopId) as AffiliateReferralRecord) || null;
+  },
+
+  listReferralsByAffiliateId(affiliateId: string): AffiliateReferralRecord[] {
+    return db
+      .prepare(`SELECT * FROM affiliate_referrals WHERE affiliate_id = ? ORDER BY created_at DESC`)
+      .all(affiliateId) as AffiliateReferralRecord[];
+  },
+
+  listAllReferrals(): AffiliateReferralRecord[] {
+    return db.prepare(`SELECT * FROM affiliate_referrals ORDER BY created_at DESC`).all() as AffiliateReferralRecord[];
+  },
+
+  createAffiliateCommissionIdempotent(
+    data: Omit<AffiliateCommissionRecord, 'created_at' | 'updated_at'> & { created_at?: string; updated_at?: string }
+  ): { created: boolean; commission: AffiliateCommissionRecord } {
+    const existing = db
+      .prepare(`SELECT * FROM affiliate_commissions WHERE payment_id = ? LIMIT 1`)
+      .get(data.payment_id) as AffiliateCommissionRecord | undefined;
+    if (existing) {
+      return { created: false, commission: existing };
+    }
+    const now = new Date().toISOString();
+    const record: AffiliateCommissionRecord = {
+      ...data,
+      paid_at: data.paid_at || null,
+      payout_reference: data.payout_reference || null,
+      created_at: data.created_at || now,
+      updated_at: data.updated_at || now
+    };
+    db.prepare(`
+      INSERT OR IGNORE INTO affiliate_commissions (
+        id, affiliate_id, shop_id, payment_id, plan_id, plan_name,
+        gross_amount, commission_rate, commission_amount, status,
+        available_at, paid_at, payout_reference, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      record.id,
+      record.affiliate_id,
+      record.shop_id,
+      record.payment_id,
+      record.plan_id,
+      record.plan_name,
+      record.gross_amount,
+      record.commission_rate,
+      record.commission_amount,
+      record.status,
+      record.available_at,
+      record.paid_at,
+      record.payout_reference,
+      record.created_at,
+      record.updated_at
+    );
+    const saved = db
+      .prepare(`SELECT * FROM affiliate_commissions WHERE payment_id = ? LIMIT 1`)
+      .get(data.payment_id) as AffiliateCommissionRecord;
+    return { created: true, commission: saved || record };
+  },
+
+  promoteMaturedCommissions(nowIso = new Date().toISOString()): number {
+    const res = db
+      .prepare(`
+        UPDATE affiliate_commissions
+        SET status = 'available', updated_at = ?
+        WHERE status = 'pending' AND available_at <= ?
+      `)
+      .run(nowIso, nowIso);
+    return Number(res.changes || 0);
+  },
+
+  listAffiliateCommissions(affiliateId?: string, limit = 500): AffiliateCommissionRecord[] {
+    const safeLimit = Math.max(1, Math.min(2000, Math.floor(Number(limit) || 500)));
+    if (affiliateId) {
+      return db
+        .prepare(`SELECT * FROM affiliate_commissions WHERE affiliate_id = ? ORDER BY created_at DESC LIMIT ?`)
+        .all(affiliateId, safeLimit) as AffiliateCommissionRecord[];
+    }
+    return db
+      .prepare(`SELECT * FROM affiliate_commissions ORDER BY created_at DESC LIMIT ?`)
+      .all(safeLimit) as AffiliateCommissionRecord[];
+  },
+
+  markAffiliateCommissionsPaid(
+    affiliateId: string,
+    options?: { includePending?: boolean; payoutReference?: string | null }
+  ): { count: number; totalAmount: number } {
+    const now = new Date().toISOString();
+    const statuses = options?.includePending ? ['available', 'pending'] : ['available'];
+    const placeholders = statuses.map(() => '?').join(',');
+    const rows = db
+      .prepare(
+        `SELECT id, commission_amount FROM affiliate_commissions WHERE affiliate_id = ? AND status IN (${placeholders})`
+      )
+      .all(affiliateId, ...statuses) as Array<{ id: string; commission_amount: number }>;
+
+    if (!rows.length) {
+      return { count: 0, totalAmount: 0 };
+    }
+
+    const totalAmount = Number(
+      rows.reduce((sum, r) => sum + (Number(r.commission_amount) || 0), 0).toFixed(2)
+    );
+    const ref = options?.payoutReference || null;
+
+    db.prepare(
+      `UPDATE affiliate_commissions
+       SET status = 'paid', paid_at = ?, payout_reference = ?, updated_at = ?
+       WHERE affiliate_id = ? AND status IN (${placeholders})`
+    ).run(now, ref, now, affiliateId, ...statuses);
+
+    return { count: rows.length, totalAmount };
+  },
+
   getAllForMigration(): Record<string, any[]> {
     const tables = [
       'client_clinical_notes',
@@ -1674,10 +2083,15 @@ export const nicheDb = {
       'platform_settings',
       'saas_payments',
       'whatsapp_integrations',
-      'whatsapp_logs'
+      'whatsapp_logs',
+      'security_logs',
+      'affiliates',
+      'affiliate_referrals',
+      'affiliate_commissions'
     ];
     const result: Record<string, any[]> = {};
     for (const table of tables) {
+      if (!/^[a-z_]+$/.test(table)) continue;
       try {
         result[table] = db.prepare(`SELECT * FROM ${table}`).all();
       } catch {

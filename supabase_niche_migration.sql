@@ -375,56 +375,145 @@ ON whatsapp_logs (barbershop_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_appt_event
 ON whatsapp_logs (appointment_id, event_type, status);
 
+-- 13f. Logs e Monitoramento de Segurança (Auditoria)
+CREATE TABLE IF NOT EXISTS security_logs (
+  id TEXT PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  ip TEXT,
+  method TEXT,
+  path TEXT,
+  user_id TEXT,
+  user_email TEXT,
+  barbershop_id TEXT,
+  details TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_logs_created
+ON security_logs (created_at DESC);
+
+-- 13g. Programa de Afiliados & Comissões Recorrentes (20%–25%)
+CREATE TABLE IF NOT EXISTS affiliates (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  phone_whatsapp TEXT,
+  pix_key TEXT,
+  code TEXT NOT NULL,
+  commission_rate REAL NOT NULL DEFAULT 0.25,
+  niche TEXT,
+  notes TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_affiliates_code
+ON affiliates (code);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_affiliates_email
+ON affiliates (email);
+
+CREATE TABLE IF NOT EXISTS affiliate_referrals (
+  shop_id TEXT PRIMARY KEY,
+  affiliate_id TEXT NOT NULL,
+  affiliate_code TEXT NOT NULL,
+  referred_email TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_affiliate_referrals_aff
+ON affiliate_referrals (affiliate_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS affiliate_commissions (
+  id TEXT PRIMARY KEY,
+  affiliate_id TEXT NOT NULL,
+  shop_id TEXT NOT NULL,
+  payment_id TEXT NOT NULL,
+  plan_id TEXT NOT NULL,
+  plan_name TEXT NOT NULL,
+  gross_amount REAL NOT NULL,
+  commission_rate REAL NOT NULL,
+  commission_amount REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  available_at TEXT NOT NULL,
+  paid_at TEXT,
+  payout_reference TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_affiliate_commissions_payment
+ON affiliate_commissions (payment_id);
+
+CREATE INDEX IF NOT EXISTS idx_affiliate_commissions_aff
+ON affiliate_commissions (affiliate_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_affiliate_commissions_status
+ON affiliate_commissions (status, available_at);
+
 -- 14. Garantir Bucket de Storage para Imagens (Logos, Banners, Fotos)
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('barbearias-assets', 'barbearias-assets', true)
 ON CONFLICT (id) DO NOTHING;
 
--- Políticas de Storage (idempotentes)
+-- Políticas de Storage (leitura pública de vitrine; escrita exclusiva via backend service_role)
 DROP POLICY IF EXISTS "Public Access" ON storage.objects;
 CREATE POLICY "Public Access" ON storage.objects
   FOR SELECT USING (bucket_id = 'barbearias-assets');
 
 DROP POLICY IF EXISTS "Admin Insert" ON storage.objects;
-CREATE POLICY "Admin Insert" ON storage.objects
-  FOR INSERT WITH CHECK (bucket_id = 'barbearias-assets');
+DROP POLICY IF EXISTS "Service Role Insert" ON storage.objects;
+CREATE POLICY "Service Role Insert" ON storage.objects
+  FOR INSERT WITH CHECK (bucket_id = 'barbearias-assets' AND auth.role() = 'service_role');
 
 DROP POLICY IF EXISTS "Admin Update" ON storage.objects;
-CREATE POLICY "Admin Update" ON storage.objects
-  FOR UPDATE USING (bucket_id = 'barbearias-assets');
+DROP POLICY IF EXISTS "Service Role Update" ON storage.objects;
+CREATE POLICY "Service Role Update" ON storage.objects
+  FOR UPDATE USING (bucket_id = 'barbearias-assets' AND auth.role() = 'service_role');
 
 DROP POLICY IF EXISTS "Admin Delete" ON storage.objects;
-CREATE POLICY "Admin Delete" ON storage.objects
-  FOR DELETE USING (bucket_id = 'barbearias-assets');
+DROP POLICY IF EXISTS "Service Role Delete" ON storage.objects;
+CREATE POLICY "Service Role Delete" ON storage.objects
+  FOR DELETE USING (bucket_id = 'barbearias-assets' AND auth.role() = 'service_role');
 
 -- ============================================================================
--- SEGURANÇA / RLS (Opcional - Recomendado quando SUPABASE_SERVICE_ROLE_KEY
--- estiver configurada no servidor Backend!):
---
--- ALTER TABLE barbershops ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE users ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE barbers ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE services ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE shop_settings ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE finances ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE client_clinical_notes ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE patient_anamnesis ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE aesthetics_anamnesis ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE aesthetics_photos ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE aesthetics_touchups ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE client_pets ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE client_vehicles ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE client_style_preferences ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE client_fitness_assessments ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE client_tattoo_records ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE entity_photos ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE barber_metadata ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE barber_accounts ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE password_reset_tokens ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE platform_settings ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE saas_payments ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE whatsapp_integrations ENABLE ROW LEVEL SECURITY;
--- ALTER TABLE whatsapp_logs ENABLE ROW LEVEL SECURITY;
+-- SEGURANÇA / RLS ATIVADO POR PADRÃO (Exige SUPABASE_SERVICE_ROLE_KEY no servidor!)
+-- Bloqueia qualquer acesso direto via chave pública ANON na API REST do Supabase.
 -- ============================================================================
+ALTER TABLE barbershops ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE barbers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE services ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shop_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE finances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS client_packages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE IF EXISTS notifications ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_clinical_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE patient_anamnesis ENABLE ROW LEVEL SECURITY;
+ALTER TABLE aesthetics_anamnesis ENABLE ROW LEVEL SECURITY;
+ALTER TABLE aesthetics_photos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE aesthetics_touchups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_pets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_vehicles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_style_preferences ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_fitness_assessments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_tattoo_records ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_creative_projects ENABLE ROW LEVEL SECURITY;
+ALTER TABLE appointment_notes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entity_photos ENABLE ROW LEVEL SECURITY;
+ALTER TABLE barber_metadata ENABLE ROW LEVEL SECURITY;
+ALTER TABLE barber_accounts ENABLE ROW LEVEL SECURITY;
+ALTER TABLE password_reset_tokens ENABLE ROW LEVEL SECURITY;
+ALTER TABLE platform_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE saas_payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whatsapp_integrations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE whatsapp_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE security_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE affiliates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE affiliate_referrals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE affiliate_commissions ENABLE ROW LEVEL SECURITY;

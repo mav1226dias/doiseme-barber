@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { ThemeProvider } from 'next-themes';
+import { ThemeProvider } from './context/ThemeContext';
 import { Toaster } from 'sonner';
 import PublicLayout from './layouts/PublicLayout';
 import AdminLayout from './layouts/AdminLayout';
@@ -13,6 +13,8 @@ import Landing from './pages/public/Landing';
 import Booking from './pages/public/Booking';
 import Terms from './pages/public/Terms';
 import Privacy from './pages/public/Privacy';
+import AffiliatePortal from './pages/public/AffiliatePortal';
+import AffiliateSalesPage from './pages/public/AffiliateSalesPage';
 import Login from './pages/admin/Login';
 import Register from './pages/admin/Register';
 import ForgotPassword from './pages/admin/ForgotPassword';
@@ -34,10 +36,48 @@ import MasterAdmin from './pages/admin/MasterAdmin';
 import Subscription from './pages/admin/Subscription';
 import ErrorBoundary from './components/ErrorBoundary';
 import { BusinessConfigProvider } from './context/BusinessConfigContext';
+import { getSessionAuth, getHomePathForRole } from './lib/auth';
+
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const session = getSessionAuth();
+  if (!session.isAuthenticated) {
+    return <Navigate to="/admin/login" replace />;
+  }
+  return <>{children}</>;
+}
+
+function RequireMaster({ children }: { children: React.ReactNode }) {
+  const session = getSessionAuth();
+  if (!session.isAuthenticated) {
+    return <Navigate to="/admin/login" replace />;
+  }
+  if (session.role !== 'master') {
+    return <Navigate to={getHomePathForRole(session.role)} replace />;
+  }
+  return <>{children}</>;
+}
+
+function RequireOwnerOrMaster({ children }: { children: React.ReactNode }) {
+  const session = getSessionAuth();
+  if (!session.isAuthenticated) {
+    return <Navigate to="/admin/login" replace />;
+  }
+  if (session.role === 'barber') {
+    return <Navigate to="/admin/agenda" replace />;
+  }
+  return <>{children}</>;
+}
+
+function AdminCatchAllRedirect() {
+  const session = getSessionAuth();
+  if (!session.isAuthenticated) {
+    return <Navigate to="/admin/login" replace />;
+  }
+  return <Navigate to={getHomePathForRole(session.role)} replace />;
+}
 
 export default function App() {
   return (
-    // @ts-ignore
     <ThemeProvider attribute="class" defaultTheme="light">
       <Toaster richColors position="top-right" />
       <ErrorBoundary>
@@ -48,6 +88,9 @@ export default function App() {
             <Route path="/" element={<Landing />} />
             <Route path="/termos" element={<Terms />} />
             <Route path="/privacidade" element={<Privacy />} />
+            <Route path="/afiliado" element={<AffiliatePortal />} />
+            <Route path="/parceiros" element={<AffiliatePortal />} />
+            <Route path="/r/:code" element={<AffiliateSalesPage />} />
             <Route path="/b/:slug" element={<PublicLayout />}>
               <Route index element={<Booking />} />
             </Route>
@@ -60,24 +103,27 @@ export default function App() {
 
             {/* Admin Routes */}
             <Route path="/admin/login" element={<Login />} />
-            <Route path="/admin" element={<AdminLayout />}>
-              <Route index element={<Dashboard />} />
+            <Route path="/admin" element={<RequireAuth><AdminLayout /></RequireAuth>}>
+              <Route index element={<RequireOwnerOrMaster><Dashboard /></RequireOwnerOrMaster>} />
               <Route path="agenda" element={<Agenda />} />
-              <Route path="barbers" element={<Barbers />} />
-              <Route path="services" element={<Services />} />
+              <Route path="barbers" element={<RequireOwnerOrMaster><Barbers /></RequireOwnerOrMaster>} />
+              <Route path="services" element={<RequireOwnerOrMaster><Services /></RequireOwnerOrMaster>} />
               <Route path="clients" element={<Clients />} />
-              <Route path="finances" element={<Finances />} />
+              <Route path="finances" element={<RequireOwnerOrMaster><Finances /></RequireOwnerOrMaster>} />
               <Route path="packages" element={<Navigate to="/admin/services" replace />} />
-              <Route path="profile" element={<Profile />} />
-              <Route path="campaigns" element={<Campaigns />} />
+              <Route path="profile" element={<RequireOwnerOrMaster><Profile /></RequireOwnerOrMaster>} />
+              <Route path="campaigns" element={<RequireOwnerOrMaster><Campaigns /></RequireOwnerOrMaster>} />
               <Route path="notifications" element={<Navigate to="/admin/campaigns" replace />} />
               <Route path="booking-site" element={<Navigate to="/admin/profile" replace />} />
-              <Route path="master" element={<MasterAdmin />} />
-              <Route path="assinatura" element={<Subscription />} />
+              <Route path="master" element={<RequireMaster><MasterAdmin /></RequireMaster>} />
+              <Route path="assinatura" element={<RequireOwnerOrMaster><Subscription /></RequireOwnerOrMaster>} />
               <Route path="comissoes" element={<MyCommissions />} />
               <Route path="automacoes" element={<Navigate to="/admin" replace />} />
-              <Route path="settings" element={<Settings />} />
+              <Route path="settings" element={<RequireOwnerOrMaster><Settings /></RequireOwnerOrMaster>} />
+              <Route path="*" element={<AdminCatchAllRedirect />} />
             </Route>
+
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
       </BusinessConfigProvider>

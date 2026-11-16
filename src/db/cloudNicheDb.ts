@@ -11,10 +11,14 @@ import {
   ClientStylePreference,
   ClientFitnessAssessment,
   ClientTattooRecord,
-  ClientCreativeProject
+  ClientCreativeProject,
+  AffiliateRecord,
+  AffiliateReferralRecord,
+  AffiliateCommissionRecord
 } from './nicheDb.js';
 
 const warnedTables = new Set<string>();
+let affiliateClickWriteLock: Promise<any> = Promise.resolve();
 
 function isTableMissingOrUnmigrated(error: any): boolean {
   if (!error) return false;
@@ -56,7 +60,11 @@ export const NICHE_CLOUD_TABLES = [
   'platform_settings',
   'saas_payments',
   'whatsapp_integrations',
-  'whatsapp_logs'
+  'whatsapp_logs',
+  'security_logs',
+  'affiliates',
+  'affiliate_referrals',
+  'affiliate_commissions'
 ] as const;
 
 const CONFLICT_KEYS: Record<string, string> = {
@@ -79,7 +87,11 @@ const CONFLICT_KEYS: Record<string, string> = {
   platform_settings: 'key',
   saas_payments: 'id',
   whatsapp_integrations: 'barbershop_id',
-  whatsapp_logs: 'id'
+  whatsapp_logs: 'id',
+  security_logs: 'id',
+  affiliates: 'id',
+  affiliate_referrals: 'shop_id',
+  affiliate_commissions: 'id'
 };
 
 export const cloudNicheDb = {
@@ -1330,6 +1342,23 @@ export const cloudNicheDb = {
       }
     }
 
+    const { error: refDelErr } = await supabaseAdmin
+      .from('affiliate_referrals')
+      .delete()
+      .eq('shop_id', barbershopId);
+    if (refDelErr && !isTableMissingOrUnmigrated(refDelErr)) {
+      console.warn('[CLOUD_DB_SHOP_CLEANUP_WARN] affiliate_referrals:', refDelErr.message);
+    }
+
+    const { error: commDelErr } = await supabaseAdmin
+      .from('affiliate_commissions')
+      .delete()
+      .eq('shop_id', barbershopId)
+      .neq('status', 'paid');
+    if (commDelErr && !isTableMissingOrUnmigrated(commDelErr)) {
+      console.warn('[CLOUD_DB_SHOP_CLEANUP_WARN] affiliate_commissions:', commDelErr.message);
+    }
+
     nicheDb.deleteShopData(barbershopId, cleanUserIds);
   },
 
@@ -1507,5 +1536,555 @@ export const cloudNicheDb = {
       throw error;
     }
     return Boolean(data && data.length > 0);
+  },
+
+  async createSecurityLog(entry: {
+    id: string;
+    event_type: string;
+    severity: string;
+    ip?: string | null;
+    method?: string | null;
+    path?: string | null;
+    user_id?: string | null;
+    user_email?: string | null;
+    barbershop_id?: string | null;
+    details?: string | null;
+  }): Promise<void> {
+    const payload = {
+      id: entry.id,
+      event_type: entry.event_type,
+      severity: entry.severity,
+      ip: entry.ip || null,
+      method: entry.method || null,
+      path: entry.path || null,
+      user_id: entry.user_id || null,
+      user_email: entry.user_email || null,
+      barbershop_id: entry.barbershop_id || null,
+      details: entry.details || null,
+      created_at: new Date().toISOString()
+    };
+
+    try {
+      const { error } = await supabaseAdmin.from('security_logs').insert(payload);
+      if (error) {
+        if (isTableMissingOrUnmigrated(error)) {
+          logFallbackOnce('security_logs', error);
+        }
+        nicheDb.createSecurityLog(payload);
+      }
+    } catch {
+      nicheDb.createSecurityLog(payload);
+    }
+  },
+
+  async getRecentSecurityLogs(limit = 100): Promise<any[]> {
+    const safeLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)));
+    try {
+      const { data, error } = await supabaseAdmin
+        .from('security_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(safeLimit);
+
+      if (error) {
+        if (isTableMissingOrUnmigrated(error)) {
+          logFallbackOnce('security_logs', error);
+          return nicheDb.getRecentSecurityLogs(safeLimit);
+        }
+        throw error;
+      }
+      return data || [];
+    } catch {
+      return nicheDb.getRecentSecurityLogs(safeLimit);
+    }
+  },
+
+  // --- AFFILIATES & RECURRING COMMISSIONS ---
+  async createAffiliate(data: Omit<AffiliateRecord, 'created_at' | 'updated_at'>): Promise<AffiliateRecord> {
+    const now = new Date().toISOString();
+    const record: AffiliateRecord = {
+      ...data,
+      email: String(data.email).trim().toLowerCase(),
+      code: String(data.code).trim().toLowerCase(),
+      phone_whatsapp: data.phone_whatsapp || null,
+      pix_key: data.pix_key || null,
+      niche: data.niche || null,
+      notes: data.notes || null,
+      active: data.active ?? 1,
+      created_at: now,
+      updated_at: now
+    };
+
+    const { error } = await supabaseAdmin.from('affiliates').insert(record);
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliates', error);
+        return nicheDb.createAffiliate(data);
+      }
+      throw error;
+    }
+    return record;
+  },
+
+  async getAffiliateById(id: string): Promise<AffiliateRecord | null> {
+    const { data, error } = await supabaseAdmin.from('affiliates').select('*').eq('id', id).maybeSingle();
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliates', error);
+        return nicheDb.getAffiliateById(id);
+      }
+      throw error;
+    }
+    return (data as AffiliateRecord) || null;
+  },
+
+  async getAffiliateByCode(code: string): Promise<AffiliateRecord | null> {
+    const clean = String(code || '').trim().toLowerCase();
+    if (!clean) return null;
+    const { data, error } = await supabaseAdmin.from('affiliates').select('*').ilike('code', clean).maybeSingle();
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliates', error);
+        return nicheDb.getAffiliateByCode(clean);
+      }
+      throw error;
+    }
+    return (data as AffiliateRecord) || null;
+  },
+
+  async getAffiliateByEmail(email: string): Promise<AffiliateRecord | null> {
+    const clean = String(email || '').trim().toLowerCase();
+    if (!clean) return null;
+    const { data, error } = await supabaseAdmin.from('affiliates').select('*').ilike('email', clean).maybeSingle();
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliates', error);
+        return nicheDb.getAffiliateByEmail(clean);
+      }
+      throw error;
+    }
+    return (data as AffiliateRecord) || null;
+  },
+
+  async listAffiliates(): Promise<AffiliateRecord[]> {
+    const { data, error } = await supabaseAdmin
+      .from('affiliates')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliates', error);
+        return nicheDb.listAffiliates();
+      }
+      throw error;
+    }
+    return (data || []) as AffiliateRecord[];
+  },
+
+  async updateAffiliate(
+    id: string,
+    updates: Partial<Omit<AffiliateRecord, 'id' | 'created_at'>>
+  ): Promise<AffiliateRecord | null> {
+    const allowed = [
+      'name',
+      'email',
+      'password_hash',
+      'phone_whatsapp',
+      'pix_key',
+      'code',
+      'commission_rate',
+      'niche',
+      'notes',
+      'active'
+    ];
+    const payload: Record<string, any> = {
+      updated_at: updates.updated_at || new Date().toISOString()
+    };
+    for (const [k, v] of Object.entries(updates)) {
+      if (!allowed.includes(k) || v === undefined) continue;
+      if (k === 'email' || k === 'code') {
+        payload[k] = String(v).trim().toLowerCase();
+      } else {
+        payload[k] = v;
+      }
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('affiliates')
+      .update(payload)
+      .eq('id', id)
+      .select('*')
+      .maybeSingle();
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliates', error);
+        return nicheDb.updateAffiliate(id, payload);
+      }
+      throw error;
+    }
+    return (data as AffiliateRecord) || null;
+  },
+
+  async deleteAffiliate(id: string): Promise<boolean> {
+    const { data: deleted, error } = await supabaseAdmin
+      .from('affiliates')
+      .delete()
+      .eq('id', id)
+      .select('id');
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliates', error);
+        return nicheDb.deleteAffiliate(id);
+      }
+      throw error;
+    }
+
+    const { error: refErr } = await supabaseAdmin.from('affiliate_referrals').delete().eq('affiliate_id', id);
+    if (refErr && !isTableMissingOrUnmigrated(refErr)) {
+      console.warn('[AFFILIATE_DELETE_REF_WARN]', refErr.message);
+    }
+    const { error: commErr } = await supabaseAdmin
+      .from('affiliate_commissions')
+      .delete()
+      .eq('affiliate_id', id)
+      .neq('status', 'paid');
+    if (commErr && !isTableMissingOrUnmigrated(commErr)) {
+      console.warn('[AFFILIATE_DELETE_COMM_WARN]', commErr.message);
+    }
+
+    const wasDeleted = Boolean(deleted && deleted.length > 0);
+    if (wasDeleted) {
+      try {
+        await this.removeAffiliateClickStats(id);
+      } catch (clickErr: any) {
+        console.warn('[AFFILIATE_DELETE_CLICK_WARN]', clickErr?.message || clickErr);
+      }
+    }
+
+    return wasDeleted;
+  },
+
+  async createReferralAttribution(
+    data: Omit<AffiliateReferralRecord, 'created_at'> & { created_at?: string }
+  ): Promise<AffiliateReferralRecord> {
+    const existing = await this.getReferralByShopId(data.shop_id);
+    if (existing) return existing;
+
+    const record: AffiliateReferralRecord = {
+      shop_id: data.shop_id,
+      affiliate_id: data.affiliate_id,
+      affiliate_code: String(data.affiliate_code).trim().toLowerCase(),
+      referred_email: data.referred_email || null,
+      created_at: data.created_at || new Date().toISOString()
+    };
+
+    const { error } = await supabaseAdmin
+      .from('affiliate_referrals')
+      .upsert(record, { onConflict: 'shop_id', ignoreDuplicates: true });
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliate_referrals', error);
+        return nicheDb.createReferralAttribution(record);
+      }
+      throw error;
+    }
+    return (await this.getReferralByShopId(data.shop_id)) || record;
+  },
+
+  async getReferralByShopId(shopId: string): Promise<AffiliateReferralRecord | null> {
+    const { data, error } = await supabaseAdmin
+      .from('affiliate_referrals')
+      .select('*')
+      .eq('shop_id', shopId)
+      .maybeSingle();
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliate_referrals', error);
+        return nicheDb.getReferralByShopId(shopId);
+      }
+      throw error;
+    }
+    return (data as AffiliateReferralRecord) || null;
+  },
+
+  async listReferralsByAffiliateId(affiliateId: string): Promise<AffiliateReferralRecord[]> {
+    const { data, error } = await supabaseAdmin
+      .from('affiliate_referrals')
+      .select('*')
+      .eq('affiliate_id', affiliateId)
+      .order('created_at', { ascending: false });
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliate_referrals', error);
+        return nicheDb.listReferralsByAffiliateId(affiliateId);
+      }
+      throw error;
+    }
+    return (data || []) as AffiliateReferralRecord[];
+  },
+
+  async listAllReferrals(): Promise<AffiliateReferralRecord[]> {
+    const { data, error } = await supabaseAdmin
+      .from('affiliate_referrals')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliate_referrals', error);
+        return nicheDb.listAllReferrals();
+      }
+      throw error;
+    }
+    return (data || []) as AffiliateReferralRecord[];
+  },
+
+  async createAffiliateCommissionIdempotent(
+    data: Omit<AffiliateCommissionRecord, 'created_at' | 'updated_at'> & { created_at?: string; updated_at?: string }
+  ): Promise<{ created: boolean; commission: AffiliateCommissionRecord }> {
+    const { data: existing, error: lookupErr } = await supabaseAdmin
+      .from('affiliate_commissions')
+      .select('*')
+      .eq('payment_id', data.payment_id)
+      .maybeSingle();
+
+    if (lookupErr) {
+      if (isTableMissingOrUnmigrated(lookupErr)) {
+        logFallbackOnce('affiliate_commissions', lookupErr);
+        return nicheDb.createAffiliateCommissionIdempotent(data);
+      }
+      throw lookupErr;
+    }
+
+    if (existing) {
+      return { created: false, commission: existing as AffiliateCommissionRecord };
+    }
+
+    const now = new Date().toISOString();
+    const record: AffiliateCommissionRecord = {
+      ...data,
+      paid_at: data.paid_at || null,
+      payout_reference: data.payout_reference || null,
+      created_at: data.created_at || now,
+      updated_at: data.updated_at || now
+    };
+
+    const { error: insertErr } = await supabaseAdmin
+      .from('affiliate_commissions')
+      .upsert(record, { onConflict: 'payment_id', ignoreDuplicates: true });
+
+    if (insertErr) {
+      if (isTableMissingOrUnmigrated(insertErr)) {
+        logFallbackOnce('affiliate_commissions', insertErr);
+        return nicheDb.createAffiliateCommissionIdempotent(record);
+      }
+      throw insertErr;
+    }
+
+    return { created: true, commission: record };
+  },
+
+  async promoteMaturedCommissions(nowIso = new Date().toISOString()): Promise<number> {
+    const { data, error } = await supabaseAdmin
+      .from('affiliate_commissions')
+      .update({ status: 'available', updated_at: nowIso })
+      .eq('status', 'pending')
+      .lte('available_at', nowIso)
+      .select('id');
+
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliate_commissions', error);
+        return nicheDb.promoteMaturedCommissions(nowIso);
+      }
+      throw error;
+    }
+    return (data || []).length;
+  },
+
+  async listAffiliateCommissions(affiliateId?: string, limit = 500): Promise<AffiliateCommissionRecord[]> {
+    const safeLimit = Math.max(1, Math.min(2000, Math.floor(Number(limit) || 500)));
+    let query = supabaseAdmin
+      .from('affiliate_commissions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(safeLimit);
+
+    if (affiliateId) {
+      query = query.eq('affiliate_id', affiliateId);
+    }
+
+    const { data, error } = await query;
+    if (error) {
+      if (isTableMissingOrUnmigrated(error)) {
+        logFallbackOnce('affiliate_commissions', error);
+        return nicheDb.listAffiliateCommissions(affiliateId, safeLimit);
+      }
+      throw error;
+    }
+    return (data || []) as AffiliateCommissionRecord[];
+  },
+
+  async markAffiliateCommissionsPaid(
+    affiliateId: string,
+    options?: { includePending?: boolean; payoutReference?: string | null }
+  ): Promise<{ count: number; totalAmount: number }> {
+    const now = new Date().toISOString();
+    const statuses = options?.includePending ? ['available', 'pending'] : ['available'];
+
+    const { data: rows, error: fetchErr } = await supabaseAdmin
+      .from('affiliate_commissions')
+      .select('id, commission_amount')
+      .eq('affiliate_id', affiliateId)
+      .in('status', statuses);
+
+    if (fetchErr) {
+      if (isTableMissingOrUnmigrated(fetchErr)) {
+        logFallbackOnce('affiliate_commissions', fetchErr);
+        return nicheDb.markAffiliateCommissionsPaid(affiliateId, options);
+      }
+      throw fetchErr;
+    }
+
+    const list = (rows || []) as Array<{ id: string; commission_amount: number }>;
+    if (!list.length) return { count: 0, totalAmount: 0 };
+
+    const totalAmount = Number(
+      list.reduce((sum, r) => sum + (Number(r.commission_amount) || 0), 0).toFixed(2)
+    );
+
+    const { error: updErr } = await supabaseAdmin
+      .from('affiliate_commissions')
+      .update({
+        status: 'paid',
+        paid_at: now,
+        payout_reference: options?.payoutReference || null,
+        updated_at: now
+      })
+      .eq('affiliate_id', affiliateId)
+      .in('status', statuses);
+
+    if (updErr) {
+      if (isTableMissingOrUnmigrated(updErr)) {
+        logFallbackOnce('affiliate_commissions', updErr);
+        return nicheDb.markAffiliateCommissionsPaid(affiliateId, options);
+      }
+      throw updErr;
+    }
+
+    return { count: list.length, totalAmount };
+  },
+
+  async getAffiliateClicksMap(): Promise<
+    Record<string, { totalClicks: number; uniqueClicks: number; lastClickedAt: string | null }>
+  > {
+    try {
+      const raw = await this.getPlatformSetting('affiliate_clicks_map');
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return {};
+      const result: Record<string, { totalClicks: number; uniqueClicks: number; lastClickedAt: string | null }> = {};
+      for (const [affId, entry] of Object.entries(parsed as Record<string, any>)) {
+        if (!entry || typeof entry !== 'object') continue;
+        result[affId] = {
+          totalClicks: Math.max(0, Math.floor(Number(entry.totalClicks) || 0)),
+          uniqueClicks: Math.max(0, Math.floor(Number(entry.uniqueClicks) || 0)),
+          lastClickedAt: typeof entry.lastClickedAt === 'string' ? entry.lastClickedAt : null
+        };
+      }
+      return result;
+    } catch {
+      return {};
+    }
+  },
+
+  async recordAffiliateClick(
+    affiliateId: string,
+    visitorHash?: string | null
+  ): Promise<{ totalClicks: number; uniqueClicks: number; lastClickedAt: string | null }> {
+    const runTask = affiliateClickWriteLock.then(async () => {
+      let map: Record<
+        string,
+        {
+          totalClicks: number;
+          uniqueClicks: number;
+          recentVisitorHashes: string[];
+          lastClickedAt: string | null;
+        }
+      > = {};
+
+      try {
+        const raw = await this.getPlatformSetting('affiliate_clicks_map');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            map = parsed;
+          }
+        }
+      } catch {
+        map = {};
+      }
+
+      const existing = map[affiliateId] || {
+        totalClicks: 0,
+        uniqueClicks: 0,
+        recentVisitorHashes: [],
+        lastClickedAt: null
+      };
+
+      const hashes = Array.isArray(existing.recentVisitorHashes) ? [...existing.recentVisitorHashes] : [];
+      const cleanHash = typeof visitorHash === 'string' && visitorHash.trim() ? visitorHash.trim().slice(0, 48) : '';
+      let isUnique = true;
+      if (cleanHash) {
+        if (hashes.includes(cleanHash)) {
+          isUnique = false;
+        } else {
+          hashes.push(cleanHash);
+          if (hashes.length > 1000) {
+            hashes.splice(0, hashes.length - 1000);
+          }
+        }
+      }
+
+      const now = new Date().toISOString();
+      const updatedEntry = {
+        totalClicks: Math.max(0, Math.floor(Number(existing.totalClicks) || 0)) + 1,
+        uniqueClicks: Math.max(0, Math.floor(Number(existing.uniqueClicks) || 0)) + (isUnique ? 1 : 0),
+        recentVisitorHashes: hashes,
+        lastClickedAt: now
+      };
+
+      map[affiliateId] = updatedEntry;
+      await this.setPlatformSetting('affiliate_clicks_map', JSON.stringify(map));
+
+      return {
+        totalClicks: updatedEntry.totalClicks,
+        uniqueClicks: updatedEntry.uniqueClicks,
+        lastClickedAt: updatedEntry.lastClickedAt
+      };
+    });
+
+    affiliateClickWriteLock = runTask.catch(() => {});
+    return runTask;
+  },
+
+  async removeAffiliateClickStats(affiliateId: string): Promise<void> {
+    const runTask = affiliateClickWriteLock.then(async () => {
+      try {
+        const raw = await this.getPlatformSetting('affiliate_clicks_map');
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && affiliateId in parsed) {
+          delete parsed[affiliateId];
+          await this.setPlatformSetting('affiliate_clicks_map', JSON.stringify(parsed));
+        }
+      } catch {
+        // Ignore cleanup errors
+      }
+    });
+    affiliateClickWriteLock = runTask.catch(() => {});
+    return runTask;
   }
 };

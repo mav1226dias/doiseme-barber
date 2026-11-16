@@ -302,8 +302,8 @@ function isLightColor(hexColor?: string): boolean {
           {errorDetails || `O estabelecimento com o link "${slug}" não foi encontrado. Verifique se o link está correto.`}
         </p>
         <div className="flex flex-col gap-3 w-full max-w-xs">
-          <a href="/admin" className="bg-white text-black font-bold py-3 px-8 rounded-xl hover:bg-gray-200 transition-colors">
-            Ir para o Painel
+          <a href="/" className="bg-white text-black font-bold py-3 px-8 rounded-xl hover:bg-gray-200 transition-colors">
+            Voltar para o Início
           </a>
           <button onClick={() => window.location.reload()} className="text-white/50 hover:text-white text-sm">
             Tentar novamente

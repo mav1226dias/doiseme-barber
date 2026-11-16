@@ -14,6 +14,29 @@ import { supabaseAdmin as supabase, hasServiceRoleKey } from './src/db/supabaseA
 import { cloudNicheDb } from './src/db/cloudNicheDb.js';
 import { getSegment } from './src/lib/segments.js';
 import {
+  AffiliateCodeSchema,
+  AffiliateLoginSchema,
+  AffiliateProfileUpdateSchema,
+  ApplyAffiliateCouponSchema,
+  ALLOWED_IMAGE_MIME_TYPES,
+  MAX_IMAGE_UPLOAD_BYTES,
+  BillingCheckoutSchema,
+  BillingLinkIntentSchema,
+  CreateAffiliateSchema,
+  CreateExpenseSchema,
+  CreatePackageSchema,
+  CreatePublicAppointmentSchema,
+  CreateServiceSchema,
+  LoginSchema,
+  RegisterSchema,
+  UpdateAffiliateSchema,
+  UpdateServiceSchema,
+  detectImageMagicType,
+  sanitizePlainText,
+  sanitizeSafeUrl,
+  validatePasswordStrength
+} from './src/lib/validation.js';
+import {
   DEFAULT_WHATSAPP_TEMPLATES,
   buildInstanceName,
   formatBrDate,
@@ -27,15 +50,56 @@ import {
   sendEvolutionTextMessage
 } from './src/services/evolutionService.js';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-for-doiseme';
-if (!process.env.JWT_SECRET) {
-  console.warn('[SECURITY] JWT_SECRET não definido nas variáveis de ambiente. Usando chave padrão apenas para desenvolvimento.');
+const IS_PRODUCTION =
+  process.env.NODE_ENV === 'production' ||
+  process.env.VERCEL_ENV === 'production';
+
+const isVercel = process.env.VERCEL === '1' || Boolean(process.env.VERCEL_ENV);
+
+function resolveJwtSecret(): { secret: string; configuredInEnv: boolean } {
+  const envSecret = process.env.JWT_SECRET?.trim();
+  if (envSecret && envSecret.length >= 16) {
+    return { secret: envSecret, configuredInEnv: true };
+  }
+
+  if (IS_PRODUCTION) {
+    console.error(
+      '[SECURITY_CRITICAL] JWT_SECRET não definido ou curto demais (< 16 caracteres) em produção! Configure JWT_SECRET nas variáveis de ambiente imediatamente.'
+    );
+    // Ephemeral CSPRNG secret — never uses a static predictable string in source code
+    return { secret: nodeCrypto.randomBytes(48).toString('hex'), configuredInEnv: false };
+  }
+
+  // Local dev fallback: persist an ephemeral CSPRNG key in /tmp so restarts don't invalidate active dev sessions
+  const devSecretFile = '/tmp/.doiseme-dev-jwt-secret';
+  try {
+    if (fs.existsSync(devSecretFile)) {
+      const existing = fs.readFileSync(devSecretFile, 'utf8').trim();
+      if (existing.length >= 32) {
+        return { secret: existing, configuredInEnv: false };
+      }
+    }
+    const generated = nodeCrypto.randomBytes(48).toString('hex');
+    fs.writeFileSync(devSecretFile, generated, { mode: 0o600 });
+    console.warn('[SECURITY] JWT_SECRET ausente em dev. Chave aleatória temporária gerada em /tmp.');
+    return { secret: generated, configuredInEnv: false };
+  } catch {
+    return { secret: nodeCrypto.randomBytes(48).toString('hex'), configuredInEnv: false };
+  }
 }
+
+const { secret: JWT_SECRET, configuredInEnv: hasJwtSecretEnv } = resolveJwtSecret();
+
+const SESSION_COOKIE_NAME = 'doiseme_session';
+const AUTHORIZED_MASTER_EMAILS = [
+  'marcusdoiseme@doiseme.com',
+  'marcusdias2014mv@gmail.com',
+  'admin@doiseme.com'
+];
 
 const app = express();
 app.set('trust proxy', 1);
 
-const isVercel = process.env.VERCEL === '1' || Boolean(process.env.VERCEL_ENV);
 const uploadsBaseDir = isVercel
   ? path.join('/tmp', 'doiseme-data', 'uploads')
   : path.join(process.cwd(), 'data', 'uploads');
@@ -83,10 +147,11 @@ export async function ensureStartupSync() {
         }
       }
 
+      const masterBootstrapPass = process.env.MASTER_BOOTSTRAP_PASSWORD?.trim();
       const masterUsers = [
-        { email: 'marcusdoiseme@doiseme.com', name: 'Marcus Doiseme', pass: 'Luna2025' },
-        { email: 'admin@doiseme.com', name: 'Admin Doiseme', pass: 'admin123' },
-        { email: 'marcusdias2014mv@gmail.com', name: 'Marcus Dias', pass: 'admin123' }
+        { email: 'marcusdoiseme@doiseme.com', name: 'Marcus Doiseme' },
+        { email: 'admin@doiseme.com', name: 'Admin Doiseme' },
+        { email: 'marcusdias2014mv@gmail.com', name: 'Marcus Dias' }
       ];
 
       for (const u of masterUsers) {
@@ -110,10 +175,11 @@ export async function ensureStartupSync() {
 
         if (existingUser) {
           const { error } = await supabase.from('users').update({ role: 'master' }).eq('id', existingUser.id);
-          if (!error) console.log(`[STARTUP] Updated ${u.email} to master.`);
-        } else {
-          console.log(`[STARTUP] Creating master user: ${u.email}`);
-          const passwordHash = await bcrypt.hash(u.pass, 10);
+          if (!error) console.log(`[STARTUP] Verified master role for ${u.email}.`);
+        } else if (masterBootstrapPass || !IS_PRODUCTION) {
+          const initialPass = masterBootstrapPass || nodeCrypto.randomBytes(18).toString('base64url');
+          console.log(`[STARTUP] Bootstrapping master user: ${u.email}`);
+          const passwordHash = await bcrypt.hash(initialPass, 12);
           const { error } = await supabase.from('users').insert({
             id: crypto.randomUUID(),
             barbershop_id: 'shop-1',
@@ -155,23 +221,371 @@ export async function ensureStartupSync() {
 async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
 
-  // Security Headers
-  app.use(helmet({ contentSecurityPolicy: false })); // Disabled CSP to avoid breaking React dev server inline scripts
+  const getClientIp = (req: any): string => {
+    const xff = req.headers?.['x-forwarded-for'];
+    if (typeof xff === 'string' && xff.trim()) {
+      return xff.split(',')[0].trim();
+    }
+    return req.ip || req.socket?.remoteAddress || 'unknown';
+  };
+
+  const recordSecurityEvent = (
+    req: any,
+    params: {
+      eventType: string;
+      severity: 'low' | 'medium' | 'high' | 'critical';
+      details?: string;
+      userEmail?: string;
+    }
+  ) => {
+    const ip = getClientIp(req);
+    const email = params.userEmail || req.user?.email || null;
+    if (params.severity === 'high' || params.severity === 'critical') {
+      console.warn(
+        `[SECURITY_AUDIT:${params.severity.toUpperCase()}] ${params.eventType} | ip=${ip} | ${req.method} ${req.originalUrl || req.path}${email ? ` | user=${email}` : ''}${params.details ? ` | ${params.details}` : ''}`
+      );
+    }
+    void cloudNicheDb.createSecurityLog({
+      id: crypto.randomUUID(),
+      event_type: params.eventType,
+      severity: params.severity,
+      ip,
+      method: req.method,
+      path: String(req.originalUrl || req.path || '').slice(0, 200),
+      user_id: req.user?.id ? String(req.user.id) : null,
+      user_email: email ? String(email).slice(0, 150) : null,
+      barbershop_id: req.user?.barbershopId ? String(req.user.barbershopId) : null,
+      details: params.details ? String(params.details).slice(0, 500) : null
+    });
+  };
+
+  const safeErrorResponse = (err: any, fallbackMessage: string) => {
+    if (IS_PRODUCTION) {
+      return { error: fallbackMessage };
+    }
+    return {
+      error: fallbackMessage,
+      ...(err?.message ? { details: err.message } : {})
+    };
+  };
+
+  // Origin Allowlist for CORS & CSRF
+  const buildStaticAllowedOrigins = (): Set<string> => {
+    const set = new Set<string>();
+    const addUrlOrigin = (raw?: string) => {
+      if (!raw) return;
+      const trimmed = raw.trim().replace(/^["']|["']$/g, '');
+      if (!trimmed || trimmed === 'MY_APP_URL') return;
+      try {
+        set.add(new URL(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`).origin);
+      } catch {
+        // ignore invalid URL
+      }
+    };
+    addUrlOrigin(process.env.APP_URL);
+    addUrlOrigin(process.env.VERCEL_URL);
+    addUrlOrigin(process.env.VERCEL_PROJECT_PRODUCTION_URL);
+    if (process.env.TRUSTED_ORIGINS) {
+      process.env.TRUSTED_ORIGINS.split(',').forEach((item) => addUrlOrigin(item));
+    }
+    if (!IS_PRODUCTION) {
+      set.add('http://localhost:3000');
+      set.add('http://127.0.0.1:3000');
+      set.add(`http://localhost:${PORT}`);
+    }
+    return set;
+  };
+
+  const staticAllowedOrigins = buildStaticAllowedOrigins();
+
+  const isAllowedOrigin = (originHeader: string | undefined, req?: any): boolean => {
+    if (!originHeader) return true; // Non-browser / same-origin tool / webhook calls without Origin
+    try {
+      const parsed = new URL(originHeader);
+      if (staticAllowedOrigins.has(parsed.origin)) return true;
+
+      // Match same host dynamically
+      const reqHost = req?.get?.('host');
+      if (reqHost && parsed.host === reqHost) return true;
+
+      // Allow Google AI Studio preview frames & Vercel deployment previews over HTTPS
+      if (parsed.protocol === 'https:') {
+        if (
+          parsed.hostname === 'aistudio.google.com' ||
+          parsed.hostname.endsWith('.run.app') ||
+          parsed.hostname.endsWith('.vercel.app')
+        ) {
+          return true;
+        }
+      }
+      if (!IS_PRODUCTION && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  };
+
+  const parseCookies = (cookieHeader?: string): Record<string, string> => {
+    const out: Record<string, string> = {};
+    if (!cookieHeader || typeof cookieHeader !== 'string') return out;
+    cookieHeader.split(';').forEach((part) => {
+      const idx = part.indexOf('=');
+      if (idx <= 0) return;
+      const key = part.slice(0, idx).trim();
+      const val = part.slice(idx + 1).trim();
+      try {
+        out[key] = decodeURIComponent(val);
+      } catch {
+        out[key] = val;
+      }
+    });
+    return out;
+  };
+
+  const isSecureRequest = (req: any): boolean => {
+    const proto = String(req.headers?.['x-forwarded-proto'] || req.protocol || '').split(',')[0].trim().toLowerCase();
+    return req.secure || proto === 'https';
+  };
+
+  const setSessionCookie = (res: any, req: any, token: string, maxAgeMs = 7 * 24 * 60 * 60 * 1000) => {
+    const secure = isSecureRequest(req) || IS_PRODUCTION;
+    res.cookie(SESSION_COOKIE_NAME, token, {
+      httpOnly: true,
+      secure,
+      sameSite: secure ? 'none' : 'lax',
+      path: '/api',
+      maxAge: maxAgeMs
+    });
+  };
+
+  const clearSessionCookie = (res: any, req: any) => {
+    const secure = isSecureRequest(req) || IS_PRODUCTION;
+    res.clearCookie(SESSION_COOKIE_NAME, {
+      httpOnly: true,
+      secure,
+      sameSite: secure ? 'none' : 'lax',
+      path: '/api'
+    });
+  };
+
   app.disable('x-powered-by');
 
-  app.use(cors());
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ limit: '50mb', extended: true }));
-  app.use('/uploads', express.static(uploadsBaseDir));
+  // 1. Block direct HTTP exposure of sensitive files (.env, SQLite DBs, SQL scripts, source files)
+  app.use((req, res, next) => {
+    const p = (req.path || '').toLowerCase();
+    if (
+      /(\/\.env|\/\.git|\.db($|-)|\.sql$|\/data\/|\/package(-lock)?\.json$|\/tsconfig\.json$|\/server\.ts$|\/vercel\.json$)/i.test(
+        p
+      )
+    ) {
+      recordSecurityEvent(req, {
+        eventType: 'EXPOSED_FILE_PROBE',
+        severity: 'high',
+        details: `Tentativa de acesso direto a arquivo protegido: ${req.path}`
+      });
+      return res.status(404).json({ error: 'Recurso não encontrado' });
+    }
+    next();
+  });
+
+  // 2. Enforce HTTPS in production behind reverse proxy (Vercel / Cloud Run / Nginx)
+  app.use((req, res, next) => {
+    if (!IS_PRODUCTION || process.env.ALLOW_INSECURE_HTTP === 'true') {
+      return next();
+    }
+    const host = String(req.get('host') || '');
+    if (host.startsWith('localhost') || host.startsWith('127.0.0.1')) {
+      return next();
+    }
+    const xfProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+    if (xfProto === 'http') {
+      if (req.method === 'GET' || req.method === 'HEAD') {
+        return res.redirect(301, `https://${host}${req.originalUrl}`);
+      }
+      return res.status(403).json({ error: 'HTTPS é obrigatório em produção.' });
+    }
+    next();
+  });
+
+  // 3. Comprehensive Security Headers (Helmet + strict CSP + HSTS + Referrer + Permissions-Policy)
+  app.use(
+    helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'"],
+          styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          fontSrc: ["'self'", 'data:', 'https://fonts.gstatic.com'],
+          imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
+          connectSrc: [
+            "'self'",
+            'https://*.supabase.co',
+            'wss://*.supabase.co',
+            'https://api.mercadopago.com'
+          ],
+          objectSrc: ["'none'"],
+          baseUri: ["'self'"],
+          formAction: ["'self'"],
+          frameAncestors: [
+            "'self'",
+            'https://aistudio.google.com',
+            'https://*.google.com',
+            'https://*.googleusercontent.com',
+            'https://*.run.app'
+          ]
+        }
+      },
+      strictTransportSecurity: {
+        maxAge: 31536000,
+        includeSubDomains: true,
+        preload: true
+      },
+      referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+      crossOriginEmbedderPolicy: false,
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+      frameguard: false // Managed strictly via CSP frame-ancestors so AI Studio iframe remains functional
+    })
+  );
+
+  app.use((_req, res, next) => {
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(self)');
+    next();
+  });
+
+  // 4. Restricted CORS Middleware
+  app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    if (origin && !isAllowedOrigin(origin, req)) {
+      recordSecurityEvent(req, {
+        eventType: 'CORS_BLOCKED',
+        severity: 'medium',
+        details: `Origem CORS não autorizada: ${origin}`
+      });
+      return res.status(403).json({ error: 'Origem não permitida pela política de CORS.' });
+    }
+    next();
+  });
+
+  app.use(
+    cors((req, callback) => {
+      const origin = req.headers.origin;
+      if (!origin || isAllowedOrigin(origin, req)) {
+        callback(null, {
+          origin: origin || true,
+          credentials: true,
+          methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+          allowedHeaders: ['Content-Type', 'Authorization', 'X-CSRF-Token', 'X-Requested-With']
+        });
+      } else {
+        callback(new Error('Origin not allowed by CORS'));
+      }
+    })
+  );
+
+  // Route-scoped larger JSON payload parser ONLY for image upload endpoint
+  app.use('/api/admin/upload', express.json({ limit: '10mb' }));
+  // Tight default payload limits elsewhere
+  app.use(express.json({ limit: '2mb' }));
+  app.use(express.urlencoded({ limit: '2mb', extended: true }));
+
+  app.use(
+    '/uploads',
+    express.static(uploadsBaseDir, {
+      maxAge: '1d',
+      setHeaders: (res) => {
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+      }
+    })
+  );
 
   // API Routes
   const api = express.Router();
-  
-  // LOG ALL API REQUESTS FOR DEBUGGING
+
+  // Global Rate Limiter for all /api routes
+  const globalApiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: false,
+    handler: (req, res) => {
+      recordSecurityEvent(req, {
+        eventType: 'RATE_LIMIT_GLOBAL',
+        severity: 'medium',
+        details: 'Limite global de requisições excedido'
+      });
+      res.status(429).json({ error: 'Muitas requisições deste endereço IP. Aguarde alguns minutos.' });
+    }
+  });
+  api.use(globalApiLimiter);
+
+  // CSRF Protection on state-changing API routes
   api.use((req, res, next) => {
-    console.log(`[API_REQ] ${req.method} ${req.path}`);
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+      return next();
+    }
+    // Machine-to-machine webhooks / cron use their own signature / secret validation
+    if (req.path === '/webhooks/mercadopago' || req.path.startsWith('/cron/')) {
+      return next();
+    }
+
+    const origin = req.headers.origin;
+    const referer = req.headers.referer;
+    const authHeader = req.headers.authorization;
+    const hasBearer = typeof authHeader === 'string' && authHeader.startsWith('Bearer ');
+    const cookies = parseCookies(req.headers.cookie);
+    const hasSessionCookie = Boolean(cookies[SESSION_COOKIE_NAME]);
+
+    if (origin && !isAllowedOrigin(origin, req)) {
+      recordSecurityEvent(req, {
+        eventType: 'CSRF_BLOCKED',
+        severity: 'high',
+        details: `Origin inválido em mutação: ${origin}`
+      });
+      return res.status(403).json({ error: 'Requisição bloqueada pela proteção CSRF.' });
+    }
+
+    if (!origin && referer) {
+      try {
+        const refOrigin = new URL(referer).origin;
+        if (!isAllowedOrigin(refOrigin, req)) {
+          recordSecurityEvent(req, {
+            eventType: 'CSRF_BLOCKED',
+            severity: 'high',
+            details: `Referer inválido em mutação: ${refOrigin}`
+          });
+          return res.status(403).json({ error: 'Origem da requisição não autorizada (CSRF).' });
+        }
+      } catch {
+        return res.status(403).json({ error: 'Cabeçalho Referer inválido.' });
+      }
+    }
+
+    // If authenticating exclusively via HttpOnly cookie without Bearer token, require valid Origin/Referer or custom X-Requested-With header
+    if (hasSessionCookie && !hasBearer) {
+      const hasCustomHeader = Boolean(req.headers['x-requested-with'] || req.headers['x-csrf-token']);
+      if (!origin && !referer && !hasCustomHeader) {
+        recordSecurityEvent(req, {
+          eventType: 'CSRF_MISSING_PROOF',
+          severity: 'high',
+          details: 'Mutação com cookie de sessão sem Origin/Referer ou cabeçalho customizado'
+        });
+        return res.status(403).json({ error: 'Validação CSRF necessária para esta operação.' });
+      }
+    }
+
     next();
   });
+
+  if (!IS_PRODUCTION) {
+    api.use((req, _res, next) => {
+      console.log(`[API_REQ] ${req.method} ${req.path}`);
+      next();
+    });
+  }
   const DEFAULT_SETTINGS = {
     monday: { isClosed: true, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' },
     tuesday: { isClosed: false, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' },
@@ -237,23 +651,111 @@ async function startServer() {
 </urlset>`);
   });
 
-  // Rate limiting for login & public auth endpoints
+  // Rate limiters for authentication, public booking, billing, reset, and file uploads
   const loginLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 mins
-    max: 15,
-    message: { error: 'Muitas tentativas de login. Tente novamente mais tarde.' },
+    windowMs: 15 * 60 * 1000,
+    max: 12,
     standardHeaders: true,
     legacyHeaders: false,
     validate: false,
+    handler: (req, res) => {
+      recordSecurityEvent(req, {
+        eventType: 'RATE_LIMIT_LOGIN',
+        severity: 'high',
+        details: `Bloqueio temporário de força bruta no login`,
+        userEmail: req.body?.email ? String(req.body.email).trim().toLowerCase() : undefined
+      });
+      res.status(429).json({ error: 'Muitas tentativas de login. Tente novamente mais tarde.' });
+    }
   });
 
   const registerLimiter = rateLimit({
     windowMs: 15 * 60 * 1000,
-    max: 10,
-    message: { error: 'Muitas tentativas de cadastro. Aguarde alguns minutos e tente novamente.' },
+    max: 8,
     standardHeaders: true,
     legacyHeaders: false,
     validate: false,
+    handler: (req, res) => {
+      recordSecurityEvent(req, {
+        eventType: 'RATE_LIMIT_REGISTER',
+        severity: 'medium',
+        details: 'Excesso de tentativas de cadastro'
+      });
+      res.status(429).json({ error: 'Muitas tentativas de cadastro. Aguarde alguns minutos e tente novamente.' });
+    }
+  });
+
+  const resetLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 12,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: false,
+    handler: (req, res) => {
+      recordSecurityEvent(req, {
+        eventType: 'RATE_LIMIT_PASSWORD_RESET',
+        severity: 'high',
+        details: 'Excesso de requisições de redefinição/troca de senha'
+      });
+      res.status(429).json({ error: 'Muitas tentativas de redefinição de senha. Aguarde antes de tentar novamente.' });
+    }
+  });
+
+  const bookingLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 25,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: false,
+    handler: (req, res) => {
+      recordSecurityEvent(req, {
+        eventType: 'RATE_LIMIT_BOOKING',
+        severity: 'medium',
+        details: 'Excesso de criação de agendamentos públicos'
+      });
+      res.status(429).json({ error: 'Muitos agendamentos em sequência. Aguarde alguns minutos.' });
+    }
+  });
+
+  const uploadLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: false,
+    handler: (req, res) => {
+      recordSecurityEvent(req, {
+        eventType: 'RATE_LIMIT_UPLOAD',
+        severity: 'medium',
+        details: 'Excesso de uploads'
+      });
+      res.status(429).json({ error: 'Muitos uploads em um curto intervalo. Aguarde alguns minutos.' });
+    }
+  });
+
+  const billingLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 25,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: false,
+    handler: (req, res) => {
+      recordSecurityEvent(req, {
+        eventType: 'RATE_LIMIT_BILLING',
+        severity: 'medium',
+        details: 'Excesso de requisições de pagamento'
+      });
+      res.status(429).json({ error: 'Muitas solicitações de pagamento. Aguarde um instante.' });
+    }
+  });
+
+  const affiliateClickLimiter = rateLimit({
+    windowMs: 5 * 60 * 1000,
+    max: 40,
+    standardHeaders: true,
+    legacyHeaders: false,
+    validate: false,
+    message: { ok: false, error: 'Muitas requisições.' }
   });
 
   const RESERVED_SLUGS = new Set([
@@ -298,37 +800,104 @@ async function startServer() {
     return digits;
   };
 
-  // Auth Middleware
+  // Auth Middleware (Bearer token or HttpOnly session cookie + live DB user/role verification)
   const authenticateToken = async (req: any, res: any, next: any) => {
     try {
       const authHeader = req.headers['authorization'];
-      const token = authHeader && authHeader.split(' ')[1];
+      const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+      const cookies = parseCookies(req.headers.cookie);
+      const token = bearerToken || cookies[SESSION_COOKIE_NAME] || null;
 
       if (!token || token === 'null' || token === 'undefined') {
         return res.status(401).json({ error: 'Sessão inválida ou expirada. Por favor, faça login novamente.' });
       }
 
-      // Use a promise to verify the token
-      const user: any = await new Promise((resolve, reject) => {
-        jwt.verify(token, JWT_SECRET, (err: any, decoded: any) => {
-          if (err) {
-            console.error(`[JWT_VERIFY_ERROR] Token: ${token.substring(0, 10)}... Error:`, err.message);
-            reject(err);
-          }
-          else resolve(decoded);
+      const decoded: any = await new Promise((resolve, reject) => {
+        jwt.verify(token, JWT_SECRET, (err: any, payload: any) => {
+          if (err) reject(err);
+          else resolve(payload);
         });
       });
 
-      req.user = user;
+      if (decoded?.typ === 'affiliate' || decoded?.role === 'affiliate') {
+        recordSecurityEvent(req, {
+          eventType: 'CROSS_ROLE_TOKEN_REJECTED',
+          severity: 'high',
+          details: 'Token de afiliado rejeitado em rota administrativa',
+          userEmail: decoded?.email
+        });
+        return res.status(403).json({ error: 'Token de parceiro não tem acesso ao painel de estabelecimentos.' });
+      }
 
-      // Skip extra checks for master admin unless they are NOT impersonating
-      if (user.role !== 'master' && user.barbershopId) {
+      // Live DB verification so deleted/demoted/password-reset users cannot continue using stale tokens
+      if (decoded?.id) {
+        const { data: liveUser, error: liveUserErr } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', decoded.id)
+          .maybeSingle();
+
+        if (!liveUserErr) {
+          if (!liveUser) {
+            recordSecurityEvent(req, {
+              eventType: 'REVOKED_USER_TOKEN',
+              severity: 'high',
+              details: `Token usado para usuário removido (id=${decoded.id})`,
+              userEmail: decoded.email
+            });
+            return res.status(401).json({ error: 'Conta não encontrada. Faça login novamente.' });
+          }
+
+          if (!decoded.isImpersonating && decoded.role !== liveUser.role) {
+            recordSecurityEvent(req, {
+              eventType: 'ROLE_MISMATCH_TOKEN',
+              severity: 'critical',
+              details: `Role no token (${decoded.role}) difere do banco (${liveUser.role})`,
+              userEmail: liveUser.email
+            });
+            return res.status(403).json({ error: 'Permissões alteradas. Faça login novamente.' });
+          }
+
+          if (liveUser.role === 'master') {
+            const liveEmail = String(liveUser.email || '').toLowerCase();
+            if (!AUTHORIZED_MASTER_EMAILS.includes(liveEmail)) {
+              recordSecurityEvent(req, {
+                eventType: 'UNAUTHORIZED_MASTER_ROLE',
+                severity: 'critical',
+                details: `Conta com role master não autorizada na lista mestra`,
+                userEmail: liveEmail
+              });
+              return res.status(403).json({ error: 'Acesso não autorizado.' });
+            }
+          }
+
+          // Invalidate tokens issued strictly before last password change (5s clock-skew tolerance)
+          if (liveUser.updated_at && decoded.iat) {
+            const updatedMs = new Date(liveUser.updated_at).getTime();
+            const issuedMs = Number(decoded.iat) * 1000;
+            if (!Number.isNaN(updatedMs) && updatedMs - issuedMs > 5000) {
+              recordSecurityEvent(req, {
+                eventType: 'STALE_PASSWORD_TOKEN',
+                severity: 'medium',
+                details: 'Token emitido antes da última alteração de senha rejeitado',
+                userEmail: liveUser.email
+              });
+              return res.status(401).json({ error: 'Sessão expirada após alteração de senha. Faça login novamente.' });
+            }
+          }
+        }
+      }
+
+      req.user = decoded;
+
+      // Enforce shop block / subscription expiry for non-master users
+      if (decoded.role !== 'master' && decoded.barbershopId) {
         const { data: shop } = await supabase
           .from('barbershops')
           .select('is_blocked, expires_at')
-          .eq('id', user.barbershopId)
+          .eq('id', decoded.barbershopId)
           .maybeSingle();
-        
+
         if (shop) {
           if (shop.is_blocked) {
             return res.status(403).json({ error: 'Sua conta está bloqueada pelo administrador.' });
@@ -350,24 +919,30 @@ async function startServer() {
       }
 
       next();
-    } catch (err) {
-      console.error('[AUTH_ERROR]', err);
-      return res.status(403).json({ error: 'Token inválido ou expirado' });
+    } catch (err: any) {
+      recordSecurityEvent(req, {
+        eventType: 'JWT_INVALID',
+        severity: 'low',
+        details: err?.message || 'Token JWT inválido ou expirado'
+      });
+      return res.status(401).json({ error: 'Token inválido ou expirado' });
     }
   };
 
   // Super Admin Check Middleware
   const requireMaster = (req: any, res: any, next: any) => {
-    const authorizedEmails = ['marcusdoiseme@doiseme.com', 'marcusdias2014mv@gmail.com', 'admin@doiseme.com'];
     const userEmail = req.user?.email?.toLowerCase();
-    
-    const isAuthorized = userEmail && authorizedEmails.includes(userEmail);
+    const isAuthorized = Boolean(userEmail && AUTHORIZED_MASTER_EMAILS.includes(userEmail));
     const isMasterRole = req.user?.role === 'master';
 
     if (isMasterRole && isAuthorized) {
       next();
     } else {
-      console.warn(`[SECURITY_ALERT] Non-authorized Master attempt: ${req.user?.email} (Role: ${req.user?.role})`);
+      recordSecurityEvent(req, {
+        eventType: 'UNAUTHORIZED_MASTER_ACCESS',
+        severity: 'critical',
+        details: `Tentativa de acesso ao Painel Master (role=${req.user?.role || 'none'})`
+      });
       res.status(403).json({ error: 'Acesso restrito ao Administrador Geral.' });
     }
   };
@@ -375,6 +950,11 @@ async function startServer() {
   // Owner or Master Check Middleware (Blocks role === 'barber')
   const requireOwnerOrMaster = (req: any, res: any, next: any) => {
     if (req.user?.role === 'barber') {
+      recordSecurityEvent(req, {
+        eventType: 'UNAUTHORIZED_OWNER_ROUTE',
+        severity: 'medium',
+        details: `Profissional tentou acessar rota exclusiva de proprietário`
+      });
       return res.status(403).json({ error: 'Acesso restrito ao administrador do estabelecimento.' });
     }
     next();
@@ -391,20 +971,98 @@ async function startServer() {
     return null;
   };
 
-  api.get('/health', async (req, res) => {
+  // Dedicated Affiliate Portal Auth Middleware (strictly separated from admin/master/barber sessions)
+  const authenticateAffiliate = async (req: any, res: any, next: any) => {
     try {
-      const { data, error } = await supabase.from('barbershops').select('id').limit(1);
+      const authHeader = req.headers['authorization'];
+      const bearerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
+
+      if (!bearerToken || bearerToken === 'null' || bearerToken === 'undefined') {
+        return res.status(401).json({ error: 'Faça login no Portal de Afiliados para continuar.' });
+      }
+
+      const decoded: any = await new Promise((resolve, reject) => {
+        jwt.verify(bearerToken, JWT_SECRET, (err: any, payload: any) => {
+          if (err) reject(err);
+          else resolve(payload);
+        });
+      });
+
+      if (decoded?.typ !== 'affiliate' || decoded?.role !== 'affiliate' || !decoded?.id) {
+        return res.status(403).json({ error: 'Sessão inválida para o Portal de Afiliados.' });
+      }
+
+      const affiliate = await cloudNicheDb.getAffiliateById(String(decoded.id));
+      if (!affiliate) {
+        return res.status(401).json({ error: 'Conta de afiliado não encontrada.' });
+      }
+      if (!affiliate.active) {
+        return res.status(403).json({ error: 'Sua conta de parceiro está pausada ou desativada.' });
+      }
+
+      req.affiliate = affiliate;
+      next();
+    } catch {
+      return res.status(401).json({ error: 'Sessão do afiliado inválida ou expirada.' });
+    }
+  };
+
+  // Helper: Generates idempotent D+15 recurring commission when a referred shop's SaaS payment is approved
+  const createCommissionForSaasPayment = async (payment: any) => {
+    try {
+      if (!payment || payment.status !== 'approved') return null;
+      const grossAmount = Number(payment.amount) || 0;
+      if (grossAmount <= 0) return null;
+
+      const referral = await cloudNicheDb.getReferralByShopId(payment.barbershop_id);
+      if (!referral) return null;
+
+      const affiliate = await cloudNicheDb.getAffiliateById(referral.affiliate_id);
+      if (!affiliate || !affiliate.active) return null;
+
+      const rate = Math.max(0.01, Math.min(0.5, Number(affiliate.commission_rate) || 0.25));
+      const commissionAmount = Number((grossAmount * rate).toFixed(2));
+      if (commissionAmount <= 0) return null;
+
+      const paidMs = payment.paid_at ? new Date(payment.paid_at).getTime() : Date.now();
+      const baseMs = Number.isNaN(paidMs) ? Date.now() : paidMs;
+      const availableAt = new Date(baseMs + 15 * 24 * 60 * 60 * 1000).toISOString();
+
+      const { commission } = await cloudNicheDb.createAffiliateCommissionIdempotent({
+        id: `comm_${nodeCrypto.randomUUID()}`,
+        affiliate_id: affiliate.id,
+        shop_id: payment.barbershop_id,
+        payment_id: payment.id,
+        plan_id: payment.plan_id || 'essencial',
+        plan_name: payment.plan_name || 'Assinatura',
+        gross_amount: grossAmount,
+        commission_rate: rate,
+        commission_amount: commissionAmount,
+        status: 'pending',
+        available_at: availableAt
+      });
+
+      return commission;
+    } catch (err: any) {
+      console.warn('[AFFILIATE_COMMISSION_HOOK_WARN]', err?.message || err);
+      return null;
+    }
+  };
+
+  api.get('/health', async (_req, res) => {
+    try {
+      const { error } = await supabase.from('barbershops').select('id').limit(1);
       if (error) {
-        return res.status(500).json({ status: 'error', database: 'failed', error });
+        return res.status(500).json({ status: 'error', database: 'failed' });
       }
       res.json({ status: 'ok', database: 'connected', timestamp: new Date().toISOString() });
-    } catch (e: any) {
-      res.status(500).json({ status: 'error', message: e.message });
+    } catch {
+      res.status(500).json({ status: 'error' });
     }
   });
 
   // --- PUBLIC ROUTES ---
-  
+
   // Helper to standardize slugs (mirroring frontend src/lib/slugify.ts)
   const standardizeSlug = (text: string) => {
     if (!text) return null;
@@ -421,14 +1079,75 @@ async function startServer() {
       .replace(/-+$/, '');
   };
 
-  // DEBUG: List all shops for internal diagnostics (Master only)
-  api.get('/admin/debug/shops', authenticateToken, requireMaster, async (req: any, res) => {
+  // DEBUG endpoint disabled in production
+  if (!IS_PRODUCTION) {
+    api.get('/admin/debug/shops', authenticateToken, requireMaster, async (_req: any, res) => {
+      try {
+        const { data, error } = await supabase.from('barbershops').select('id, name, slug, is_blocked');
+        if (error) console.warn('[DEBUG_DB_SCAN_WARN]', error.message);
+        res.json({ count: data?.length, shops: data });
+      } catch (e: any) {
+        res.status(500).json(safeErrorResponse(e, 'Erro interno'));
+      }
+    });
+  }
+
+  // Public Affiliate Referral Lookup (returns non-sensitive badge metadata + promotional catalog)
+  api.get('/public/affiliate/:code', async (req, res) => {
     try {
-      const { data, error } = await supabase.from('barbershops').select('id, name, slug, is_blocked');
-      if (error) console.warn('[DEBUG_DB_SCAN_WARN]', error.message);
-      res.json({ count: data?.length, shops: data, error: error ? error.message : null });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
+      const parsed = AffiliateCodeSchema.safeParse(req.params.code);
+      if (!parsed.success) {
+        return res.json({ valid: false });
+      }
+      const affiliate = await cloudNicheDb.getAffiliateByCode(parsed.data);
+      if (!affiliate || !affiliate.active) {
+        return res.json({ valid: false });
+      }
+      const firstName = String(affiliate.name || '').trim().split(/\s+/)[0] || 'Parceiro';
+      return res.json({
+        valid: true,
+        code: affiliate.code,
+        firstName,
+        niche: affiliate.niche || null,
+        trialDays: 7,
+        plans: buildPublicPlansList(true)
+      });
+    } catch {
+      return res.json({ valid: false });
+    }
+  });
+
+  // Public Affiliate Click Tracking (counts visit & unique visitor hash without PII)
+  api.post('/public/affiliate/:code/click', affiliateClickLimiter, async (req, res) => {
+    try {
+      const parsed = AffiliateCodeSchema.safeParse(req.params.code);
+      if (!parsed.success) {
+        return res.json({ ok: false });
+      }
+      const affiliate = await cloudNicheDb.getAffiliateByCode(parsed.data);
+      if (!affiliate || !affiliate.active) {
+        return res.json({ ok: false });
+      }
+
+      const rawVisitorId =
+        typeof req.body?.visitorId === 'string'
+          ? req.body.visitorId.trim().slice(0, 80)
+          : '';
+      const rawIp = String(req.ip || req.headers['x-forwarded-for'] || 'anon').split(',')[0].trim();
+      const rawUa = String(req.headers['user-agent'] || '').slice(0, 120);
+      const fingerprintSource = rawVisitorId
+        ? `${affiliate.id}|vid:${rawVisitorId}`
+        : `${affiliate.id}|ip:${rawIp}|ua:${rawUa}`;
+      const visitorHash = nodeCrypto
+        .createHash('sha256')
+        .update(fingerprintSource)
+        .digest('hex')
+        .slice(0, 24);
+
+      await cloudNicheDb.recordAffiliateClick(affiliate.id, visitorHash);
+      return res.json({ ok: true });
+    } catch {
+      return res.json({ ok: false });
     }
   });
 
@@ -444,10 +1163,16 @@ async function startServer() {
         .single();
 
       if (error || !shop) {
-        if (error) console.warn('[SHOP_NOT_FOUND_WARN]', identifier, error.message);
+        if (error) console.warn('[SHOP_NOT_FOUND_WARN]', identifier);
         return res.status(404).json({
-          error: 'Barbearia não encontrada',
-          debug: { identifier }
+          error: 'Estabelecimento não encontrado'
+        });
+      }
+
+      if (shop.is_blocked) {
+        return res.status(403).json({
+          error: 'Estabelecimento temporariamente indisponível',
+          details: 'Este espaço está com agendamentos pausados no momento.'
         });
       }
 
@@ -480,7 +1205,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[PUBLIC_SHOP_CRASH]', e);
-      res.status(500).json({ error: 'Erro interno ao buscar barbearia', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro interno ao buscar barbearia'));
     }
   });
 
@@ -500,32 +1225,93 @@ async function startServer() {
     }
   });
 
-  // Upload proxy to Supabase Storage (scoped per tenant)
-  api.post('/admin/upload', authenticateToken, async (req: any, res) => {
-    const { filePath, content, contentType } = req.body;
+  // Upload proxy to Supabase Storage (scoped per tenant + strict MIME/magic-bytes/size enforcement)
+  api.post('/admin/upload', uploadLimiter, authenticateToken, async (req: any, res) => {
+    const { filePath, content, contentType } = req.body || {};
     const BUCKET_NAME = 'barbearias-assets';
-    
-    if (!filePath || !content) {
-      return res.status(400).json({ error: 'Faltando dados de upload' });
+
+    if (!filePath || !content || typeof content !== 'string') {
+      return res.status(400).json({ error: 'Faltando dados de upload.' });
     }
 
-    // Scope upload path by barbershopId to prevent cross-tenant overwrites
+    // Strip optional base64 data URI prefix safely while inspecting declared MIME
+    let cleanBase64 = content.trim();
+    let declaredMime = typeof contentType === 'string' ? contentType.trim().toLowerCase() : '';
+    const dataUriMatch = /^data:([^;]+);base64,(.*)$/is.exec(cleanBase64);
+    if (dataUriMatch) {
+      if (!declaredMime) declaredMime = dataUriMatch[1].toLowerCase();
+      cleanBase64 = dataUriMatch[2];
+    }
+    if (declaredMime === 'image/jpg') declaredMime = 'image/jpeg';
+
+    if (declaredMime && !ALLOWED_IMAGE_MIME_TYPES.has(declaredMime)) {
+      recordSecurityEvent(req, {
+        eventType: 'INVALID_UPLOAD_MIME',
+        severity: 'high',
+        details: `Tipo MIME rejeitado no upload: ${declaredMime}`
+      });
+      return res.status(415).json({ error: 'Formato não permitido. Envie apenas imagens PNG, JPG, WEBP ou GIF.' });
+    }
+
+    // Scope upload path by barbershopId and prevent path traversal
     const sanitizedPath = String(filePath)
+      .replace(/\\/g, '/')
       .replace(/\.\./g, '')
       .replace(/^\/+/, '');
+    const ext = path.extname(sanitizedPath).toLowerCase();
+    const allowedExtensions = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
+    if (!allowedExtensions.has(ext)) {
+      recordSecurityEvent(req, {
+        eventType: 'INVALID_UPLOAD_EXT',
+        severity: 'high',
+        details: `Extensão proibida no upload: ${ext || '(none)'}`
+      });
+      return res.status(400).json({ error: 'Extensão de arquivo não permitida. Use .png, .jpg, .webp ou .gif.' });
+    }
+
     const tenantPrefix = `shops/${req.user.barbershopId}/`;
-    const scopedFilePath = sanitizedPath.startsWith('shops/')
-      ? sanitizedPath
-      : `${tenantPrefix}${sanitizedPath}`;
+    if (sanitizedPath.startsWith('shops/') && !sanitizedPath.startsWith(tenantPrefix)) {
+      recordSecurityEvent(req, {
+        eventType: 'CROSS_TENANT_UPLOAD',
+        severity: 'critical',
+        details: `Tentativa de upload fora do tenant: ${sanitizedPath}`
+      });
+      return res.status(403).json({ error: 'Acesso negado para caminho de armazenamento de outro estabelecimento.' });
+    }
+
+    const buffer = Buffer.from(cleanBase64, 'base64');
+    if (buffer.length === 0 || buffer.length > MAX_IMAGE_UPLOAD_BYTES) {
+      recordSecurityEvent(req, {
+        eventType: 'UPLOAD_SIZE_EXCEEDED',
+        severity: 'medium',
+        details: `Upload fora do limite (${buffer.length} bytes)`
+      });
+      return res.status(413).json({ error: 'A imagem excede o limite máximo de 5 MB.' });
+    }
+
+    const detected = detectImageMagicType(buffer);
+    if (!detected) {
+      recordSecurityEvent(req, {
+        eventType: 'INVALID_UPLOAD_MAGIC_BYTES',
+        severity: 'critical',
+        details: `Conteúdo binário não corresponde a uma imagem válida (file=${path.basename(sanitizedPath)})`
+      });
+      return res.status(415).json({ error: 'Arquivo inválido ou corrompido. Envie uma imagem real (PNG, JPG, WEBP ou GIF).' });
+    }
+
+    // Generate collision-free safe path preserving validated extension matching actual magic bytes
+    const rawDir = path.posix.dirname(sanitizedPath.startsWith(tenantPrefix) ? sanitizedPath : `${tenantPrefix}${sanitizedPath}`);
+    const safeDir = rawDir.replace(/[^a-zA-Z0-9/_-]/g, '_');
+    const safeBase = path.basename(sanitizedPath, ext).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 60) || 'image';
+    const finalFileName = `${safeBase}-${Date.now()}-${nodeCrypto.randomBytes(4).toString('hex')}${detected.ext}`;
+    const scopedFilePath = `${safeDir}/${finalFileName}`;
 
     try {
-      const buffer = Buffer.from(content, 'base64');
-      
       const { error } = await supabase.storage
         .from(BUCKET_NAME)
         .upload(scopedFilePath, buffer, {
-          contentType: contentType || 'image/png',
-          upsert: true
+          contentType: detected.mime,
+          upsert: false
         });
 
       if (!error) {
@@ -536,41 +1322,77 @@ async function startServer() {
       }
 
       console.warn('[SERVER_UPLOAD_SUPABASE_WARN] Falling back to local storage:', error.message);
-      
-      // Fallback: save to local uploads dir (/tmp on Vercel, data/uploads locally)
-      const cleanName = path.basename(filePath).replace(/[^a-zA-Z0-9._-]/g, '_');
-      const safeFileName = `${Date.now()}-${cleanName}`;
+
       if (!fs.existsSync(uploadsBaseDir)) {
-        fs.mkdirSync(uploadsBaseDir, { recursive: true });
+        fs.mkdirSync(uploadsBaseDir, { recursive: true, mode: 0o750 });
       }
-      const targetDiskPath = path.join(uploadsBaseDir, safeFileName);
+      const targetDiskPath = path.join(uploadsBaseDir, finalFileName);
       fs.writeFileSync(targetDiskPath, buffer);
-      
-      return res.json({ publicUrl: `/uploads/${safeFileName}` });
+
+      return res.json({ publicUrl: `/uploads/${finalFileName}` });
     } catch (e: any) {
       console.error('[SERVER_UPLOAD_CATCH]', e);
-      // Even in catch, try writing to writable uploads dir
       try {
-        const buffer = Buffer.from(content, 'base64');
-        const cleanName = path.basename(filePath).replace(/[^a-zA-Z0-9._-]/g, '_');
-        const safeFileName = `${Date.now()}-${cleanName}`;
         if (!fs.existsSync(uploadsBaseDir)) {
-          fs.mkdirSync(uploadsBaseDir, { recursive: true });
+          fs.mkdirSync(uploadsBaseDir, { recursive: true, mode: 0o750 });
         }
-        fs.writeFileSync(path.join(uploadsBaseDir, safeFileName), buffer);
-        return res.json({ publicUrl: `/uploads/${safeFileName}` });
+        fs.writeFileSync(path.join(uploadsBaseDir, finalFileName), buffer);
+        return res.json({ publicUrl: `/uploads/${finalFileName}` });
       } catch (diskErr: any) {
-        return res.status(500).json({ error: diskErr.message || 'Erro interno no upload' });
+        return res.status(500).json(safeErrorResponse(diskErr, 'Erro interno ao salvar imagem'));
       }
     }
   });
 
   type PlanId = 'trial' | 'essencial' | 'profissional' | 'premium';
-  const PLAN_META: Record<PlanId, { id: PlanId; name: string; monthlyPrice: number; annualPrice: number; maxActiveProfessionals: number | null }> = {
-    trial: { id: 'trial', name: 'Teste Grátis (7 dias)', monthlyPrice: 0, annualPrice: 0, maxActiveProfessionals: null },
-    essencial: { id: 'essencial', name: 'Agenda Individual (Básico)', monthlyPrice: 59.9, annualPrice: 479.0, maxActiveProfessionals: 1 },
-    profissional: { id: 'profissional', name: 'Plano Pro', monthlyPrice: 99.9, annualPrice: 859.0, maxActiveProfessionals: 4 },
-    premium: { id: 'premium', name: 'Plano Completo', monthlyPrice: 119.9, annualPrice: 997.0, maxActiveProfessionals: null }
+  const PLAN_META: Record<
+    PlanId,
+    {
+      id: PlanId;
+      name: string;
+      monthlyPrice: number;
+      annualPrice: number;
+      promoMonthlyPrice: number;
+      promoAnnualPrice: number;
+      maxActiveProfessionals: number | null;
+    }
+  > = {
+    trial: {
+      id: 'trial',
+      name: 'Teste Grátis (7 dias)',
+      monthlyPrice: 0,
+      annualPrice: 0,
+      promoMonthlyPrice: 0,
+      promoAnnualPrice: 0,
+      maxActiveProfessionals: null
+    },
+    essencial: {
+      id: 'essencial',
+      name: 'Agenda Individual (Básico)',
+      monthlyPrice: 79.9,
+      annualPrice: 659.0,
+      promoMonthlyPrice: 59.9,
+      promoAnnualPrice: 479.0,
+      maxActiveProfessionals: 1
+    },
+    profissional: {
+      id: 'profissional',
+      name: 'Plano Pro',
+      monthlyPrice: 119.9,
+      annualPrice: 1039.0,
+      promoMonthlyPrice: 99.9,
+      promoAnnualPrice: 859.0,
+      maxActiveProfessionals: 4
+    },
+    premium: {
+      id: 'premium',
+      name: 'Plano Completo',
+      monthlyPrice: 139.9,
+      annualPrice: 1197.0,
+      promoMonthlyPrice: 119.9,
+      promoAnnualPrice: 997.0,
+      maxActiveProfessionals: null
+    }
   };
 
   const normalizePlanId = (raw?: string | null): PlanId => {
@@ -975,8 +1797,14 @@ async function startServer() {
     }
   });
 
-  // Create appointment
-  api.post('/appointments', async (req, res) => {
+  // Create appointment (rate-limited, Zod-validated, parameterized PostgREST phone lookup)
+  api.post('/appointments', bookingLimiter, async (req, res) => {
+    const parsedBody = CreatePublicAppointmentSchema.safeParse(req.body);
+    if (!parsedBody.success) {
+      const firstIssue = parsedBody.error.issues[0]?.message || 'Dados do agendamento inválidos.';
+      return res.status(400).json({ error: firstIssue });
+    }
+
     const {
       barbershopId,
       barberId,
@@ -987,13 +1815,23 @@ async function startServer() {
       startTime,
       notes,
       durationMinutes
-    } = req.body;
-
-    if (!barbershopId || !barberId || !serviceId || !clientName || !clientPhone || !date || !startTime) {
-      return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
-    }
+    } = parsedBody.data;
 
     try {
+      const { data: targetShopRow, error: targetShopErr } = await supabase
+        .from('barbershops')
+        .select('id, is_blocked')
+        .eq('id', barbershopId)
+        .maybeSingle();
+
+      if (targetShopErr) throw targetShopErr;
+      if (!targetShopRow) {
+        return res.status(404).json({ error: 'Estabelecimento não encontrado.' });
+      }
+      if (targetShopRow.is_blocked) {
+        return res.status(403).json({ error: 'Este estabelecimento não está aceitando agendamentos no momento.' });
+      }
+
       const spNow = getSaoPauloNow();
       const reqStartMinutes = timeToMinutes(String(startTime), -1);
       if (reqStartMinutes < 0) {
@@ -1003,22 +1841,55 @@ async function startServer() {
         return res.status(400).json({ error: 'Este horário já passou. Por favor, escolha um horário futuro.' });
       }
 
-      const cleanPhone = String(clientPhone).replace(/\D/g, '') || String(clientPhone).trim();
+      let resolvedBarberName = 'Equipe';
+      if (barberId !== 'prof-default-1') {
+        const { data: validBarber } = await supabase
+          .from('barbers')
+          .select('id, name')
+          .eq('id', barberId)
+          .eq('barbershop_id', barbershopId)
+          .maybeSingle();
+        if (!validBarber) {
+          return res.status(404).json({ error: 'Profissional não encontrado neste estabelecimento.' });
+        }
+        if (validBarber.name) resolvedBarberName = validBarber.name;
+      }
+
+      const cleanPhone = String(clientPhone).replace(/\D/g, '');
+      const trimmedPhone = String(clientPhone).trim();
+      const lookupPhone = cleanPhone || trimmedPhone;
+      if (!lookupPhone || lookupPhone.length < 8) {
+        return res.status(400).json({ error: 'Telefone inválido.' });
+      }
+
+      // Parameterized queries (no PostgREST string interpolation in .or())
       let { data: client } = await supabase
         .from('clients')
         .select('id')
         .eq('barbershop_id', barbershopId)
-        .or(`phone.eq.${cleanPhone},phone.eq.${String(clientPhone).trim()}`)
+        .eq('phone', lookupPhone)
         .limit(1)
         .maybeSingle();
 
+      if (!client && trimmedPhone !== lookupPhone) {
+        const fallbackLookup = await supabase
+          .from('clients')
+          .select('id')
+          .eq('barbershop_id', barbershopId)
+          .eq('phone', trimmedPhone)
+          .limit(1)
+          .maybeSingle();
+        client = fallbackLookup.data;
+      }
+
+      const sanitizedClientName = sanitizePlainText(clientName, 120);
       if (!client) {
         const { data: newC, error: createError } = await supabase
           .from('clients')
           .insert({
             id: crypto.randomUUID(),
-            name: String(clientName).trim(),
-            phone: cleanPhone,
+            name: sanitizedClientName,
+            phone: lookupPhone,
             barbershop_id: barbershopId
           })
           .select()
@@ -1037,7 +1908,11 @@ async function startServer() {
           .from('services')
           .select('name, duration_minutes')
           .eq('id', resolvedServiceId)
+          .eq('barbershop_id', barbershopId)
           .maybeSingle();
+        if (!service) {
+          return res.status(404).json({ error: 'Serviço não encontrado neste estabelecimento.' });
+        }
         if (service?.name) resolvedServiceName = service.name;
         if (service?.duration_minutes) {
           duration = Math.min(720, Math.max(15, Number(service.duration_minutes)));
@@ -1054,6 +1929,7 @@ async function startServer() {
         const { data: dayAppts, error: conflictFetchErr } = await supabase
           .from('appointments')
           .select('start_time, end_time, status')
+          .eq('barbershop_id', barbershopId)
           .eq('barber_id', barberId)
           .eq('date', date)
           .in('status', ['scheduled', 'blocked']);
@@ -1067,7 +1943,7 @@ async function startServer() {
         }
       }
 
-      const trimmedNotes = typeof notes === 'string' ? notes.trim() : '';
+      const trimmedNotes = notes ? sanitizePlainText(notes, 2000, true) : '';
       const appointmentId = crypto.randomUUID();
       const baseInsert: Record<string, any> = {
         id: appointmentId,
@@ -1093,10 +1969,7 @@ async function startServer() {
 
       if (insertResult.error) {
         console.error('🚨 ERRO NO INSERT:', insertResult.error.message);
-        return res.status(400).json({
-          error: insertResult.error.message,
-          details: insertResult.error
-        });
+        return res.status(400).json(safeErrorResponse(insertResult.error, 'Não foi possível criar o agendamento.'));
       }
 
       if (trimmedNotes) {
@@ -1104,23 +1977,13 @@ async function startServer() {
       }
 
       // Disparo automático de confirmação via WhatsApp (não bloqueia agendamento se VPS não configurada)
-      let resolvedBarberName = 'Equipe';
-      if (barberId && barberId !== 'prof-default-1') {
-        const { data: barberRow } = await supabase
-          .from('barbers')
-          .select('name')
-          .eq('id', barberId)
-          .maybeSingle();
-        if (barberRow?.name) resolvedBarberName = barberRow.name;
-      }
-
       await Promise.race([
         dispatchAppointmentWhatsApp({
           shopId: barbershopId,
           appointmentId,
           eventType: 'confirmation',
-          clientName: String(clientName).trim(),
-          clientPhone: cleanPhone,
+          clientName: sanitizedClientName,
+          clientPhone: lookupPhone,
           date,
           startTime: minutesToTime(reqStartMinutes),
           serviceName: resolvedServiceName,
@@ -1135,10 +1998,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('🔥 CRASH NA ROTA /api/appointments:', e);
-      return res.status(400).json({
-        error: e.message || 'Erro ao salvar agendamento',
-        details: e
-      });
+      return res.status(400).json(safeErrorResponse(e, 'Erro ao salvar agendamento'));
     }
   });
 
@@ -1173,10 +2033,10 @@ async function startServer() {
     }
   });
 
-  // Trocar senha do usuário autenticado
-  api.post('/admin/change-password', authenticateToken, async (req: any, res) => {
+  // Trocar senha do usuário autenticado (rate-limited + senha forte >= 8 chars + invalida tokens anteriores)
+  api.post('/admin/change-password', resetLimiter, authenticateToken, async (req: any, res) => {
     try {
-      const { currentPassword, newPassword, confirmPassword } = req.body;
+      const { currentPassword, newPassword, confirmPassword } = req.body || {};
       const userId = req.user.id;
       const userEmail = req.user.email;
 
@@ -1188,11 +2048,11 @@ async function startServer() {
         return res.status(400).json({ error: 'A nova senha e a confirmação não coincidem' });
       }
 
-      if (newPassword.length < 6) {
-        return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres' });
+      const pwdCheck = validatePasswordStrength(String(newPassword));
+      if (!pwdCheck.valid) {
+        return res.status(400).json({ error: pwdCheck.error || 'Senha fraca.' });
       }
 
-      // 1. Buscar dados do usuário autenticado no banco
       let { data: user, error: fetchErr } = await supabase
         .from('users')
         .select('id, password_hash, email')
@@ -1213,20 +2073,22 @@ async function startServer() {
         return res.status(404).json({ error: 'Usuário não encontrado' });
       }
 
-      // 2. Validar senha atual
       const isCurrentValid = await bcrypt.compare(currentPassword, user.password_hash);
       if (!isCurrentValid) {
+        recordSecurityEvent(req, {
+          eventType: 'CHANGE_PASSWORD_WRONG_CURRENT',
+          severity: 'medium',
+          details: 'Senha atual incorreta ao tentar alterar senha'
+        });
         return res.status(400).json({ error: 'A senha atual informada está incorreta' });
       }
 
-      // 3. Verificar se a nova senha é idêntica à atual
       const isSamePassword = await bcrypt.compare(newPassword, user.password_hash);
       if (isSamePassword) {
         return res.status(400).json({ error: 'A nova senha deve ser diferente da senha atual' });
       }
 
-      // 4. Gerar novo hash e atualizar no banco
-      const newHash = await bcrypt.hash(newPassword, 10);
+      const newHash = await bcrypt.hash(newPassword, 12);
       const { error: updateErr } = await supabase
         .from('users')
         .update({
@@ -1240,11 +2102,25 @@ async function startServer() {
         return res.status(500).json({ error: 'Erro ao atualizar a senha no banco de dados' });
       }
 
+      // Issue fresh token/cookie so current session stays valid while older tokens are revoked
+      const freshToken = jwt.sign(
+        {
+          id: req.user.id,
+          barbershopId: req.user.barbershopId,
+          role: req.user.role,
+          email: req.user.email,
+          ...(req.user.barberId ? { barberId: req.user.barberId } : {})
+        },
+        JWT_SECRET,
+        { expiresIn: '7d' }
+      );
+      setSessionCookie(res, req, freshToken);
+
       console.log(`[PASSWORD CHANGED] User ${user.email} successfully updated their password`);
-      return res.json({ success: true, message: 'Senha alterada com sucesso!' });
+      return res.json({ success: true, token: freshToken, message: 'Senha alterada com sucesso!' });
     } catch (error: any) {
       console.error('[CHANGE_PASSWORD_CRASH]', error);
-      return res.status(500).json({ error: 'Erro interno ao processar troca de senha' });
+      return res.status(500).json(safeErrorResponse(error, 'Erro interno ao processar troca de senha'));
     }
   });
 
@@ -1288,6 +2164,12 @@ async function startServer() {
 
   // Self-service shop + owner registration (7-day free trial)
   api.post('/auth/register', registerLimiter, async (req, res) => {
+    const parsed = RegisterSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const firstErr = parsed.error.issues[0]?.message || 'Dados de cadastro inválidos.';
+      return res.status(400).json({ error: firstErr });
+    }
+
     const {
       businessName,
       ownerName,
@@ -1299,40 +2181,29 @@ async function startServer() {
       confirmPassword,
       seedStarterServices = true,
       createOwnerAsProfessional = true,
-      acceptedTerms
-    } = req.body;
+      acceptedTerms,
+      referralCode
+    } = parsed.data;
 
     if (acceptedTerms === false) {
       return res.status(400).json({ error: 'Você precisa aceitar os Termos de Uso e a Política de Privacidade (LGPD).' });
     }
 
-    if (!businessName || !ownerName || !slug || !email || !password) {
-      return res.status(400).json({ error: 'Preencha todos os campos obrigatórios.' });
-    }
-
-    const cleanBusinessName = String(businessName).trim();
-    const cleanOwnerName = String(ownerName).trim();
+    const cleanBusinessName = sanitizePlainText(businessName, 120);
+    const cleanOwnerName = sanitizePlainText(ownerName, 120);
     const cleanEmail = String(email).trim().toLowerCase();
-    const cleanPhone = phone ? String(phone).trim() : '';
+    const cleanPhone = phone ? sanitizePlainText(phone, 30) : '';
     const cleanSlug = standardizeSlug(String(slug));
 
-    if (cleanBusinessName.length < 2) {
-      return res.status(400).json({ error: 'O nome do estabelecimento deve ter pelo menos 2 caracteres.' });
-    }
-    if (cleanOwnerName.length < 2) {
-      return res.status(400).json({ error: 'Informe seu nome completo.' });
-    }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      return res.status(400).json({ error: 'Informe um e-mail válido.' });
-    }
     if (!cleanSlug || cleanSlug.length < 3) {
       return res.status(400).json({ error: 'O link personalizado deve ter pelo menos 3 caracteres válidos.' });
     }
     if (RESERVED_SLUGS.has(cleanSlug)) {
       return res.status(400).json({ error: 'Este link personalizado é reservado. Escolha outro.' });
     }
-    if (String(password).length < 6) {
-      return res.status(400).json({ error: 'A senha deve ter no mínimo 6 caracteres.' });
+    const pwdStrength = validatePasswordStrength(password);
+    if (!pwdStrength.valid) {
+      return res.status(400).json({ error: pwdStrength.error });
     }
     if (confirmPassword !== undefined && password !== confirmPassword) {
       return res.status(400).json({ error: 'As senhas não coincidem.' });
@@ -1406,8 +2277,8 @@ async function startServer() {
         console.warn('[REGISTER_SETTINGS_WARN]', settingsErr.message);
       }
 
-      // Create admin user (rollback shop if user creation fails)
-      const passwordHash = await bcrypt.hash(password, 10);
+      // Create admin user with bcrypt cost 12 (rollback shop if user creation fails)
+      const passwordHash = await bcrypt.hash(password, 12);
       const { error: userInsertErr } = await supabase.from('users').insert({
         id: userId,
         barbershop_id: shopId,
@@ -1455,6 +2326,45 @@ async function startServer() {
         }
       }
 
+      // Optional: Affiliate Referral Attribution (with anti-self-referral guard)
+      let attributedReferralCode: string | null = null;
+      if (referralCode) {
+        const parsedCode = AffiliateCodeSchema.safeParse(referralCode);
+        if (parsedCode.success) {
+          try {
+            const affiliate = await cloudNicheDb.getAffiliateByCode(parsedCode.data);
+            if (affiliate && affiliate.active) {
+              const sameEmail = String(affiliate.email || '').trim().toLowerCase() === cleanEmail;
+              const affPhoneDigits = String(affiliate.phone_whatsapp || '').replace(/\D/g, '');
+              const userPhoneDigits = cleanPhone.replace(/\D/g, '');
+              const samePhone =
+                affPhoneDigits.length >= 10 &&
+                userPhoneDigits.length >= 10 &&
+                affPhoneDigits.slice(-10) === userPhoneDigits.slice(-10);
+
+              if (sameEmail || samePhone) {
+                recordSecurityEvent(req, {
+                  eventType: 'AFFILIATE_SELF_REFERRAL_BLOCKED',
+                  severity: 'medium',
+                  details: `Autoindicação bloqueada no cadastro (${cleanEmail} -> código ${affiliate.code}, shop=${shopId})`,
+                  userEmail: cleanEmail
+                });
+              } else {
+                await cloudNicheDb.createReferralAttribution({
+                  shop_id: shopId,
+                  affiliate_id: affiliate.id,
+                  affiliate_code: affiliate.code,
+                  referred_email: cleanEmail
+                });
+                attributedReferralCode = affiliate.code;
+              }
+            }
+          } catch (refErr: any) {
+            console.warn('[REGISTER_REFERRAL_WARN]', refErr?.message || refErr);
+          }
+        }
+      }
+
       const token = jwt.sign(
         {
           id: userId,
@@ -1465,8 +2375,9 @@ async function startServer() {
         JWT_SECRET,
         { expiresIn: '7d' }
       );
+      setSessionCookie(res, req, token);
 
-      console.log(`[REGISTER SUCCESS] New tenant created: ${cleanBusinessName} (/b/${cleanSlug}) by ${cleanEmail}`);
+      console.log(`[REGISTER SUCCESS] New tenant created: ${cleanBusinessName} (/b/${cleanSlug}) by ${cleanEmail}${attributedReferralCode ? ` [ref:${attributedReferralCode}]` : ''}`);
 
       return res.status(201).json({
         success: true,
@@ -1489,7 +2400,7 @@ async function startServer() {
       });
     } catch (error: any) {
       console.error('[REGISTER_ERROR]', error);
-      return res.status(500).json({ error: 'Erro ao criar estabelecimento. Tente novamente.', details: error.message });
+      return res.status(500).json(safeErrorResponse(error, 'Erro ao criar estabelecimento. Tente novamente.'));
     }
   });
 
@@ -1510,8 +2421,8 @@ async function startServer() {
     }
   });
 
-  // Verify reset token validity
-  api.get('/auth/verify-reset-token', async (req, res) => {
+  // Verify reset token validity (rate-limited, 30-min expiry enforced)
+  api.get('/auth/verify-reset-token', resetLimiter, async (req, res) => {
     const rawToken = String(req.query.token || '').trim();
     if (!rawToken || rawToken.length < 20) {
       return res.status(400).json({ valid: false, error: 'Link de redefinição inválido.' });
@@ -1541,16 +2452,17 @@ async function startServer() {
     }
   });
 
-  // Reset Password using token
-  api.post('/auth/reset-password', async (req, res) => {
-    const { token, newPassword, confirmPassword } = req.body;
+  // Reset Password using expiring one-time token (rate-limited + password strength + token invalidation)
+  api.post('/auth/reset-password', resetLimiter, async (req, res) => {
+    const { token, newPassword, confirmPassword } = req.body || {};
     const rawToken = String(token || '').trim();
 
     if (!rawToken || !newPassword) {
       return res.status(400).json({ error: 'Token e nova senha são obrigatórios.' });
     }
-    if (String(newPassword).length < 6) {
-      return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres.' });
+    const pwdCheck = validatePasswordStrength(String(newPassword));
+    if (!pwdCheck.valid) {
+      return res.status(400).json({ error: pwdCheck.error });
     }
     if (confirmPassword !== undefined && newPassword !== confirmPassword) {
       return res.status(400).json({ error: 'As senhas não coincidem.' });
@@ -1561,6 +2473,11 @@ async function startServer() {
       const record = await cloudNicheDb.getPasswordResetTokenByHash(tokenHash);
 
       if (!record) {
+        recordSecurityEvent(req, {
+          eventType: 'RESET_TOKEN_INVALID',
+          severity: 'medium',
+          details: 'Tentativa de redefinição com token inexistente'
+        });
         return res.status(400).json({ error: 'Link de redefinição inválido.' });
       }
       if (record.used_at) {
@@ -1570,7 +2487,7 @@ async function startServer() {
         return res.status(400).json({ error: 'Este link expirou. Solicite uma nova recuperação.' });
       }
 
-      const newHash = await bcrypt.hash(newPassword, 10);
+      const newHash = await bcrypt.hash(newPassword, 12);
       let { error: updateErr } = await supabase
         .from('users')
         .update({ password_hash: newHash, updated_at: new Date().toISOString() })
@@ -1592,52 +2509,64 @@ async function startServer() {
       return res.json({ success: true, message: 'Senha redefinida com sucesso! Você já pode fazer login.' });
     } catch (error: any) {
       console.error('[RESET_PASSWORD_ERR]', error);
-      return res.status(500).json({ error: 'Erro ao redefinir senha.' });
+      return res.status(500).json(safeErrorResponse(error, 'Erro ao redefinir senha.'));
     }
   });
 
+  // Logout endpoint (clears HttpOnly session cookie)
+  api.post('/auth/logout', (req, res) => {
+    clearSessionCookie(res, req);
+    return res.json({ success: true });
+  });
+
   api.post('/auth/login', loginLimiter, async (req, res) => {
-    const { email, password } = req.body;
-    const cleanEmail = String(email || '').trim().toLowerCase();
-    console.log(`[LOGIN ATTEMPT] Email: ${cleanEmail}`);
-    
-    if (!cleanEmail || !password) {
-      return res.status(400).json({ error: 'Email e senha são obrigatórios' });
+    if (IS_PRODUCTION && !hasJwtSecretEnv) {
+      return res.status(503).json({
+        error: 'Configuração de segurança incompleta no servidor (JWT_SECRET ausente).'
+      });
     }
+
+    const parsedLogin = LoginSchema.safeParse(req.body);
+    if (!parsedLogin.success) {
+      return res.status(400).json({ error: parsedLogin.error.issues[0]?.message || 'Email e senha são obrigatórios' });
+    }
+
+    const cleanEmail = parsedLogin.data.email.trim().toLowerCase();
+    const password = parsedLogin.data.password;
 
     try {
       const { data: user, error } = await supabase
         .from('users')
         .select('*')
         .ilike('email', cleanEmail)
-        .maybeSingle(); // Better than .single() to avoid 406 on no rows
-        
+        .maybeSingle();
+
       if (error) {
-        console.error(`[LOGIN ERROR] Supabase query failed:`, JSON.stringify(error, null, 2));
-        return res.status(500).json({ 
-          error: 'Erro na conexão com o banco de dados',
-          details: error.message,
-          code: error.code
-        });
+        console.error(`[LOGIN ERROR] Supabase query failed:`, error.message);
+        return res.status(500).json(safeErrorResponse(error, 'Erro na conexão com o banco de dados'));
       }
-      
+
       if (!user) {
-        const { count: visibleUsersCount } = await supabase
-          .from('users')
-          .select('id', { count: 'exact', head: true });
-        console.warn(
-          `[LOGIN WARN] User not found: ${cleanEmail} | visibleUsers=${visibleUsersCount ?? 'unknown'} | hasServiceRoleKey=${hasServiceRoleKey}`
-        );
-        if (!hasServiceRoleKey && (visibleUsersCount ?? 0) === 0) {
-          return res.status(401).json({
-            error: 'Nenhum usuário visível no banco. Verifique SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY nas variáveis de ambiente do servidor.'
-          });
-        }
-        return res.status(401).json({ error: 'Usuário não encontrado ou credenciais inválidas' });
+        recordSecurityEvent(req, {
+          eventType: 'LOGIN_FAILED_UNKNOWN_USER',
+          severity: 'low',
+          userEmail: cleanEmail
+        });
+        return res.status(401).json({ error: 'E-mail ou senha inválidos' });
+      }
+
+      // Check password first before disclosing shop status (mitigates user/shop enumeration)
+      const valid = await bcrypt.compare(password, user.password_hash);
+      if (!valid) {
+        recordSecurityEvent(req, {
+          eventType: 'LOGIN_FAILED_BAD_PASSWORD',
+          severity: 'low',
+          userEmail: cleanEmail
+        });
+        return res.status(401).json({ error: 'E-mail ou senha inválidos' });
       }
 
       let subscriptionExpired = false;
-      // Check shop status if NOT a master user
       if (user.role !== 'master') {
         const { data: shop } = await supabase
           .from('barbershops')
@@ -1656,12 +2585,6 @@ async function startServer() {
             }
           }
         }
-      }
-
-      const valid = await bcrypt.compare(password, user.password_hash);
-      if (!valid) {
-        console.warn(`[LOGIN WARN] Invalid password for ${cleanEmail}`);
-        return res.status(401).json({ error: 'Senha incorreta' });
       }
 
       let resolvedBarberId: string | null = null;
@@ -1697,23 +2620,25 @@ async function startServer() {
         tokenPayload.barberId = resolvedBarberId;
       }
 
-      const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '7d' });
-      
-      res.json({ 
-        token, 
+      const rememberMe = parsedLogin.data.rememberMe !== false;
+      const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: rememberMe ? '30d' : '7d' });
+      setSessionCookie(res, req, token, (rememberMe ? 30 : 7) * 24 * 60 * 60 * 1000);
+
+      res.json({
+        token,
         subscriptionExpired,
-        user: { 
-          id: user.id, 
-          name: user.name, 
-          email: user.email, 
-          role: user.role, 
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
           barbershopId: user.barbershop_id,
           ...(resolvedBarberId ? { barberId: resolvedBarberId } : {})
-        } 
+        }
       });
     } catch (error: any) {
       console.error(`[LOGIN FATAL ERROR]`, error);
-      res.status(500).json({ error: 'Erro interno ao processar login', details: error.message });
+      res.status(500).json(safeErrorResponse(error, 'Erro interno ao processar login'));
     }
   });
 
@@ -1721,13 +2646,34 @@ async function startServer() {
   
   // Dashboard stats (Owner / Master only)
   api.patch('/admin/shop/:id?', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
-    // 1. ADICIONAR LOGS
-    console.log('BODY:', req.body);
-    console.log('ID:', req.params.id);
-
     try {
-      // 2. GARANTIR UPDATE CORRETO
-      const targetId = req.params.id || req.user.barbershopId;
+      const requestedId = req.params.id ? String(req.params.id).trim() : null;
+      if (requestedId && requestedId !== req.user.barbershopId && req.user.role !== 'master') {
+        console.warn(`[SECURITY_ALERT] Cross-tenant shop update blocked: user=${req.user.email} ownShop=${req.user.barbershopId} target=${requestedId}`);
+        return res.status(403).json({ error: 'Acesso negado: você não tem permissão para alterar outro estabelecimento.' });
+      }
+      const targetId = (req.user.role === 'master' && requestedId) ? requestedId : req.user.barbershopId;
+
+      let validatedSlug: string | undefined = undefined;
+      if (req.body.slug !== undefined) {
+        const normalizedSlug = standardizeSlug(String(req.body.slug));
+        if (!normalizedSlug || normalizedSlug.length < 3) {
+          return res.status(400).json({ error: 'O link personalizado deve ter pelo menos 3 caracteres válidos.' });
+        }
+        if (RESERVED_SLUGS.has(normalizedSlug)) {
+          return res.status(400).json({ error: 'Este link personalizado é reservado pelo sistema.' });
+        }
+        const { data: conflictingShop } = await supabase
+          .from('barbershops')
+          .select('id')
+          .eq('slug', normalizedSlug)
+          .neq('id', targetId)
+          .maybeSingle();
+        if (conflictingShop) {
+          return res.status(400).json({ error: 'Este link personalizado já está sendo utilizado por outro estabelecimento.' });
+        }
+        validatedSlug = normalizedSlug;
+      }
 
       const primaryColor = req.body.primary_color || req.body.primaryColor;
       const backgroundColor = req.body.background_color || req.body.backgroundColor || req.body.secondary_color || req.body.secondaryColor;
@@ -1753,25 +2699,35 @@ async function startServer() {
         });
       }
 
+      const safeLogo = req.body.logo_url !== undefined || req.body.logoUrl !== undefined
+        ? sanitizeSafeUrl(req.body.logo_url ?? req.body.logoUrl)
+        : undefined;
+      const safeBanner = req.body.banner_url !== undefined || req.body.bannerUrl !== undefined
+        ? sanitizeSafeUrl(req.body.banner_url ?? req.body.bannerUrl)
+        : undefined;
+      const safeMaps = req.body.maps_url !== undefined || req.body.mapsUrl !== undefined
+        ? sanitizeSafeUrl(req.body.maps_url ?? req.body.mapsUrl, false)
+        : undefined;
+
       const updateData: any = {
-        name: req.body.name,
-        logo_url: req.body.logo_url || req.body.logoUrl,
-        banner_url: req.body.banner_url || req.body.bannerUrl,
-        whatsapp: req.body.whatsapp,
-        phone: req.body.whatsapp,
-        instagram: req.body.instagram,
-        address: req.body.address,
-        slug: req.body.slug,
+        name: req.body.name !== undefined ? sanitizePlainText(req.body.name, 120) : undefined,
+        logo_url: safeLogo === null ? null : safeLogo,
+        banner_url: safeBanner === null ? null : safeBanner,
+        whatsapp: req.body.whatsapp !== undefined ? sanitizePlainText(req.body.whatsapp, 30) : undefined,
+        phone: req.body.whatsapp !== undefined ? sanitizePlainText(req.body.whatsapp, 30) : undefined,
+        instagram: req.body.instagram !== undefined ? sanitizePlainText(req.body.instagram, 80) : undefined,
+        address: req.body.address !== undefined ? sanitizePlainText(req.body.address, 250) : undefined,
+        slug: validatedSlug,
         primary_color: primaryColor,
         secondary_color: backgroundColor, // store background color in secondary_color as well
         background_color: backgroundColor,
         text_color: textColor,
         booking_layout: bookingLayoutPayload,
         segment: req.body.segment,
-        maps_url: req.body.maps_url || req.body.mapsUrl,
-        show_whatsapp: req.body.show_whatsapp !== undefined ? req.body.show_whatsapp : req.body.showWhatsapp,
-        show_instagram: req.body.show_instagram !== undefined ? req.body.show_instagram : req.body.showInstagram,
-        show_address: req.body.show_address !== undefined ? req.body.show_address : req.body.showAddress,
+        maps_url: safeMaps === null ? null : safeMaps,
+        show_whatsapp: req.body.show_whatsapp !== undefined ? Boolean(req.body.show_whatsapp) : req.body.showWhatsapp,
+        show_instagram: req.body.show_instagram !== undefined ? Boolean(req.body.show_instagram) : req.body.showInstagram,
+        show_address: req.body.show_address !== undefined ? Boolean(req.body.show_address) : req.body.showAddress,
         updated_at: new Date().toISOString()
       };
 
@@ -1779,8 +2735,6 @@ async function startServer() {
       Object.keys(updateData).forEach(key => {
         if ((updateData as any)[key] === undefined) delete (updateData as any)[key];
       });
-
-      console.log('📝 TENTANDO UPDATE NO SUPABASE:', updateData);
 
       let { data, error } = await supabase
         .from('barbershops')
@@ -1818,10 +2772,9 @@ async function startServer() {
         }
       }
 
-      // 3. TRATAR ERRO
       if (error) {
         console.error('🚨 ERRO NO UPDATE:', error.message);
-        return res.status(400).json({ error });
+        return res.status(400).json(safeErrorResponse(error, 'Erro ao atualizar perfil do estabelecimento'));
       }
 
       const updatedShop = data?.[0] || {};
@@ -1843,10 +2796,7 @@ async function startServer() {
 
     } catch (e: any) {
       console.error('🔥 CRASH NA ROTA /api/admin/shop:', e);
-      return res.status(400).json({ 
-        error: e.message || 'Erro ao salvar perfil', 
-        details: e 
-      });
+      return res.status(400).json(safeErrorResponse(e, 'Erro ao salvar perfil'));
     }
   });
 
@@ -1879,10 +2829,7 @@ async function startServer() {
       if (brbErr) console.error('[DASHBOARD_BRB_ERR]', brbErr);
       
       if (appErr || svcErr || brbErr) {
-        return res.status(500).json({ 
-          error: 'Erro ao carregar dados do banco de dados',
-          details: (appErr || svcErr || brbErr)?.message 
-        });
+        return res.status(500).json(safeErrorResponse(appErr || svcErr || brbErr, 'Erro ao carregar dados do banco de dados'));
       }
 
       const totalAppointments = allAppointments?.length || 0;
@@ -1954,7 +2901,7 @@ async function startServer() {
       });
     } catch (error: any) {
       console.error('[DASHBOARD_CATCH]', error);
-      res.status(500).json({ error: 'Erro interno ao processar dashboard', details: error.message });
+      res.status(500).json(safeErrorResponse(error, 'Erro interno ao processar dashboard'));
     }
   });
 
@@ -1981,16 +2928,20 @@ async function startServer() {
   });
 
   api.post('/admin/expenses', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
-    const { description, amount, category, date, barberId } = req.body;
+    const parsed = CreateExpenseSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Dados de despesa inválidos.' });
+    }
+    const { description, amount, category, date, barberId } = parsed.data;
     try {
       const id = crypto.randomUUID();
       const { error } = await supabase.from('finances').insert({
         id,
         barbershop_id: req.user.barbershopId,
         type: 'expense',
-        description,
+        description: sanitizePlainText(description, 250),
         amount: Number(amount),
-        category,
+        category: sanitizePlainText(category, 60),
         date,
         barber_id: barberId || null
       });
@@ -2251,15 +3202,19 @@ async function startServer() {
   });
 
   api.post('/admin/packages', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
-    const { clientName, clientWhatsapp, packageName, totalQuantity, pricePaid } = req.body;
+    const parsed = CreatePackageSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Dados de pacote inválidos.' });
+    }
+    const { clientName, clientWhatsapp, packageName, totalQuantity, pricePaid } = parsed.data;
     try {
       const id = crypto.randomUUID();
       const { error } = await supabase.from('client_packages').insert({
         id,
         barbershop_id: req.user.barbershopId,
-        client_name: clientName,
-        client_whatsapp: clientWhatsapp,
-        package_name: packageName,
+        client_name: sanitizePlainText(clientName, 120),
+        client_whatsapp: sanitizePlainText(clientWhatsapp, 30),
+        package_name: sanitizePlainText(packageName, 120),
         total_quantity: Number(totalQuantity),
         remaining_quantity: Number(totalQuantity),
         price_paid: Number(pricePaid)
@@ -2471,13 +3426,24 @@ async function startServer() {
         client = newClient;
       }
 
+      const { data: barberRow } = await supabase
+        .from('barbers')
+        .select('id')
+        .eq('id', barberId)
+        .eq('barbershop_id', barbershopId)
+        .maybeSingle();
+      if (!barberRow) {
+        return res.status(404).json({ error: 'Profissional não encontrado neste estabelecimento' });
+      }
+
       const { data: service, error: svcErr } = await supabase
         .from('services')
         .select('*')
         .eq('id', serviceId)
-        .single();
+        .eq('barbershop_id', barbershopId)
+        .maybeSingle();
 
-      if (svcErr || !service) return res.status(404).json({ error: 'Serviço não encontrado' });
+      if (svcErr || !service) return res.status(404).json({ error: 'Serviço não encontrado neste estabelecimento' });
 
       const startMin = timeToMinutes(startTime, -1);
       if (startMin < 0) return res.status(400).json({ error: 'Horário de início inválido.' });
@@ -2487,6 +3453,7 @@ async function startServer() {
       const { data: dayAppts } = await supabase
         .from('appointments')
         .select('start_time, end_time, status')
+        .eq('barbershop_id', barbershopId)
         .eq('barber_id', barberId)
         .eq('date', date)
         .in('status', ['scheduled', 'blocked']);
@@ -2542,7 +3509,24 @@ async function startServer() {
         barberId = ownBarberId;
       }
 
-      let { data: client } = await supabase.from('clients').select('*').eq('phone', '00000000000').single();
+      if (barberId) {
+        const { data: ownedBarber } = await supabase
+          .from('barbers')
+          .select('id')
+          .eq('id', barberId)
+          .eq('barbershop_id', req.user.barbershopId)
+          .maybeSingle();
+        if (!ownedBarber) {
+          return res.status(404).json({ error: 'Profissional não encontrado neste estabelecimento.' });
+        }
+      }
+
+      let { data: client } = await supabase
+        .from('clients')
+        .select('*')
+        .eq('barbershop_id', req.user.barbershopId)
+        .eq('phone', '00000000000')
+        .maybeSingle();
       if (!client) {
         const { data: newC } = await supabase.from('clients').insert({ id: crypto.randomUUID(), name: 'BLOQUEIO SISTEMA', phone: '00000000000', barbershop_id: req.user.barbershopId }).select().single();
         client = newC;
@@ -2628,6 +3612,13 @@ async function startServer() {
   api.post('/admin/barbers', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const { name, commission_percentage, commissionPercentage, service_ids, photo_url, photoUrl, loginEmail, loginPassword } = req.body;
     const effectiveCommission = commission_percentage ?? commissionPercentage;
+    const cleanBarberName = sanitizePlainText(name, 120);
+    if (!cleanBarberName) {
+      return res.status(400).json({ error: 'Nome do profissional é obrigatório.' });
+    }
+    if (effectiveCommission !== undefined && (!Number.isFinite(Number(effectiveCommission)) || Number(effectiveCommission) < 0 || Number(effectiveCommission) > 100)) {
+      return res.status(400).json({ error: 'Comissão deve estar entre 0% e 100%.' });
+    }
     try {
       // Enforce plan team limit for non-master owners
       if (req.user.role !== 'master' && !req.user.isImpersonating) {
@@ -2652,8 +3643,9 @@ async function startServer() {
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanLoginEmail)) {
           return res.status(400).json({ error: 'Informe um e-mail válido para o acesso do profissional.' });
         }
-        if (cleanLoginPassword.length < 6) {
-          return res.status(400).json({ error: 'A senha de acesso do profissional deve ter no mínimo 6 caracteres.' });
+        const pwCheck = validatePasswordStrength(cleanLoginPassword);
+        if (!pwCheck.valid) {
+          return res.status(400).json({ error: pwCheck.error || 'A senha do profissional deve ter no mínimo 8 caracteres com letras e números.' });
         }
         const { data: existingEmailUser } = await supabase
           .from('users')
@@ -2666,16 +3658,20 @@ async function startServer() {
       }
 
       const id = crypto.randomUUID();
-      const finalPhoto = photo_url || photoUrl || null;
+      const rawFinalPhoto = photo_url || photoUrl || null;
+      const finalPhoto = rawFinalPhoto ? sanitizeSafeUrl(rawFinalPhoto) : null;
+      if (rawFinalPhoto && !finalPhoto) {
+        return res.status(400).json({ error: 'URL da foto inválida.' });
+      }
 
       const insertData: any = {
         id,
         barbershop_id: req.user.barbershopId,
-        name,
+        name: cleanBarberName,
         active: true
       };
       if (Array.isArray(service_ids)) {
-        insertData.service_ids = service_ids;
+        insertData.service_ids = service_ids.map((sid: any) => sanitizePlainText(sid, 100)).filter(Boolean);
       }
 
       let { error } = await supabase.from('barbers').insert(insertData);
@@ -2699,11 +3695,11 @@ async function startServer() {
 
       if (cleanLoginEmail) {
         const userId = crypto.randomUUID();
-        const passwordHash = await bcrypt.hash(cleanLoginPassword, 10);
+        const passwordHash = await bcrypt.hash(cleanLoginPassword, 12);
         const userInsertPayload: Record<string, any> = {
           id: userId,
           barbershop_id: req.user.barbershopId,
-          name: String(name || 'Profissional').trim(),
+          name: cleanBarberName,
           email: cleanLoginEmail,
           password_hash: passwordHash,
           role: 'barber',
@@ -2728,7 +3724,7 @@ async function startServer() {
       res.json({ success: true, id, photo_url: finalPhoto, loginEmail: cleanLoginEmail || null });
     } catch (error: any) {
       console.error('[CREATE_BARBER_ERROR]', error);
-      res.status(500).json({ error: error.message || 'Erro ao criar profissional' });
+      res.status(500).json(safeErrorResponse(error, 'Erro ao criar profissional'));
     }
   });
 
@@ -2738,14 +3734,24 @@ async function startServer() {
       const barberId = req.params.id;
       const shopId = req.user.barbershopId;
 
+      const { data: targetBarber, error: targetBarberErr } = await supabase
+        .from('barbers')
+        .select('id, active, name')
+        .eq('id', barberId)
+        .eq('barbershop_id', shopId)
+        .maybeSingle();
+      if (targetBarberErr) throw targetBarberErr;
+      if (!targetBarber) {
+        return res.status(404).json({ error: 'Profissional não encontrado neste estabelecimento.' });
+      }
+
       if (active === true && req.user.role !== 'master' && !req.user.isImpersonating) {
-        const [{ data: targetBarber }, { data: shopRow }, plansMap, { data: activeBarbers }] = await Promise.all([
-          supabase.from('barbers').select('id, active').eq('id', barberId).eq('barbershop_id', shopId).maybeSingle(),
+        const [{ data: shopRow }, plansMap, { data: activeBarbers }] = await Promise.all([
           supabase.from('barbershops').select('id, plan_id').eq('id', shopId).maybeSingle(),
           getShopPlansMap(),
           supabase.from('barbers').select('id').eq('barbershop_id', shopId).eq('active', true)
         ]);
-        if (targetBarber && !targetBarber.active) {
+        if (!targetBarber.active) {
           const currentPlanId = resolveShopPlanId(shopRow || { id: shopId }, plansMap);
           const planMeta = getPlanMeta(currentPlanId);
           if (planMeta.maxActiveProfessionals !== null && (activeBarbers || []).length >= planMeta.maxActiveProfessionals) {
@@ -2773,18 +3779,40 @@ async function startServer() {
         if (emailConflict && emailConflict.id !== existingAccount?.user_id) {
           return res.status(400).json({ error: 'Este e-mail já está em uso por outro usuário.' });
         }
-        if (!existingAccount && (!cleanLoginPassword || cleanLoginPassword.length < 6)) {
-          return res.status(400).json({ error: 'Defina uma senha com no mínimo 6 caracteres para criar o acesso.' });
+        if (!existingAccount) {
+          const pwCheck = validatePasswordStrength(cleanLoginPassword || '');
+          if (!pwCheck.valid) {
+            return res.status(400).json({ error: pwCheck.error || 'Defina uma senha com no mínimo 8 caracteres, com letras e números.' });
+          }
         }
-        if (cleanLoginPassword && cleanLoginPassword.length < 6) {
-          return res.status(400).json({ error: 'A nova senha deve ter no mínimo 6 caracteres.' });
+        if (cleanLoginPassword) {
+          const pwCheck = validatePasswordStrength(cleanLoginPassword);
+          if (!pwCheck.valid) {
+            return res.status(400).json({ error: pwCheck.error || 'A nova senha deve ter no mínimo 8 caracteres, com letras e números.' });
+          }
         }
       }
 
+      if (commission_percentage !== undefined && (!Number.isFinite(Number(commission_percentage)) || Number(commission_percentage) < 0 || Number(commission_percentage) > 100)) {
+        return res.status(400).json({ error: 'Comissão deve estar entre 0% e 100%.' });
+      }
+
+      const rawPhotoInput = photo_url !== undefined ? photo_url : photoUrl;
+      const sanitizedPhoto = rawPhotoInput ? sanitizeSafeUrl(rawPhotoInput) : null;
+      if (rawPhotoInput && !sanitizedPhoto) {
+        return res.status(400).json({ error: 'URL da foto inválida.' });
+      }
+
       const updateData: any = {};
-      if (active !== undefined) updateData.active = active;
-      if (name !== undefined) updateData.name = name;
-      if (service_ids !== undefined && Array.isArray(service_ids)) updateData.service_ids = service_ids;
+      if (active !== undefined) updateData.active = Boolean(active);
+      if (name !== undefined) {
+        const cleanName = sanitizePlainText(name, 120);
+        if (!cleanName) return res.status(400).json({ error: 'Nome inválido.' });
+        updateData.name = cleanName;
+      }
+      if (service_ids !== undefined && Array.isArray(service_ids)) {
+        updateData.service_ids = service_ids.map((sid: any) => sanitizePlainText(sid, 100)).filter(Boolean);
+      }
 
       if (Object.keys(updateData).length > 0) {
         let { error } = await supabase
@@ -2816,38 +3844,39 @@ async function startServer() {
       }
 
       if (photo_url !== undefined || photoUrl !== undefined) {
-        await cloudNicheDb.upsertEntityPhoto(barberId, shopId, 'barber', photo_url ?? photoUrl);
+        await cloudNicheDb.upsertEntityPhoto(barberId, shopId, 'barber', sanitizedPhoto);
       }
 
       if (removeAccess === true) {
         if (existingAccount?.user_id) {
-          await supabase.from('users').delete().eq('id', existingAccount.user_id).eq('role', 'barber');
+          await supabase.from('users').delete().eq('id', existingAccount.user_id).eq('barbershop_id', shopId).eq('role', 'barber');
         }
         await cloudNicheDb.deleteBarberAccount(barberId);
       } else if (cleanLoginEmail !== undefined && cleanLoginEmail !== '') {
         if (existingAccount) {
           const userUpdate: Record<string, any> = {
             email: cleanLoginEmail,
-            ...(name ? { name: String(name).trim() } : {})
+            ...(name ? { name: sanitizePlainText(name, 120) } : {})
           };
-          if (cleanLoginPassword && cleanLoginPassword.length >= 6) {
-            userUpdate.password_hash = await bcrypt.hash(cleanLoginPassword, 10);
+          if (cleanLoginPassword && validatePasswordStrength(cleanLoginPassword).valid) {
+            userUpdate.password_hash = await bcrypt.hash(cleanLoginPassword, 12);
+            userUpdate.updated_at = new Date().toISOString();
           }
-          await supabase.from('users').update(userUpdate).eq('id', existingAccount.user_id);
+          await supabase.from('users').update(userUpdate).eq('id', existingAccount.user_id).eq('barbershop_id', shopId);
           await cloudNicheDb.upsertBarberAccount({
             barber_id: barberId,
             user_id: existingAccount.user_id,
             barbershop_id: shopId,
             email: cleanLoginEmail
           });
-        } else if (cleanLoginPassword && cleanLoginPassword.length >= 6) {
+        } else if (cleanLoginPassword && validatePasswordStrength(cleanLoginPassword).valid) {
           const userId = crypto.randomUUID();
-          const passwordHash = await bcrypt.hash(cleanLoginPassword, 10);
+          const passwordHash = await bcrypt.hash(cleanLoginPassword, 12);
           const { data: barberRow } = await supabase.from('barbers').select('name').eq('id', barberId).maybeSingle();
           const userInsertPayload: Record<string, any> = {
             id: userId,
             barbershop_id: shopId,
-            name: String(name || barberRow?.name || 'Profissional').trim(),
+            name: sanitizePlainText(name || barberRow?.name || 'Profissional', 120),
             email: cleanLoginEmail,
             password_hash: passwordHash,
             role: 'barber',
@@ -2873,7 +3902,7 @@ async function startServer() {
       res.json({ success: true });
     } catch (error: any) {
       console.error('[UPDATE_BARBER_ERROR]', error);
-      res.status(500).json({ error: error.message || 'Erro ao atualizar profissional' });
+      res.status(500).json(safeErrorResponse(error, 'Erro ao atualizar profissional'));
     }
   });
 
@@ -2905,15 +3934,23 @@ async function startServer() {
   });
 
   api.post('/admin/services', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
-    const { name, durationMinutes, price, image_url, imageUrl, photo_url } = req.body;
+    const parsed = CreateServiceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Dados do serviço inválidos.' });
+    }
+    const { name, durationMinutes, price, image_url, imageUrl, photo_url } = parsed.data;
+    const rawFinalImage = image_url || imageUrl || photo_url || null;
+    const finalImage = rawFinalImage ? sanitizeSafeUrl(rawFinalImage) : null;
+    if (rawFinalImage && !finalImage) {
+      return res.status(400).json({ error: 'URL da imagem do serviço inválida.' });
+    }
     try {
       const id = crypto.randomUUID();
-      const finalImage = image_url || imageUrl || photo_url || null;
 
       const { error } = await supabase.from('services').insert({
         id,
         barbershop_id: req.user.barbershopId,
-        name,
+        name: sanitizePlainText(name, 120),
         duration_minutes: Number(durationMinutes),
         price: Number(price),
         active: true
@@ -2932,11 +3969,31 @@ async function startServer() {
   });
 
   api.patch('/admin/services/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
-    const { active, name, durationMinutes, price, image_url, imageUrl, photo_url } = req.body;
+    const parsed = UpdateServiceSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Dados de atualização inválidos.' });
+    }
+    const { active, name, durationMinutes, price, image_url, imageUrl, photo_url } = parsed.data;
+    const rawImage = image_url !== undefined ? image_url : (imageUrl !== undefined ? imageUrl : photo_url);
+    const cleanImage = rawImage ? sanitizeSafeUrl(rawImage) : null;
+    if (rawImage && !cleanImage) {
+      return res.status(400).json({ error: 'URL da imagem do serviço inválida.' });
+    }
     try {
+      const { data: existingService, error: svcCheckErr } = await supabase
+        .from('services')
+        .select('id')
+        .eq('id', req.params.id)
+        .eq('barbershop_id', req.user.barbershopId)
+        .maybeSingle();
+      if (svcCheckErr) throw svcCheckErr;
+      if (!existingService) {
+        return res.status(404).json({ error: 'Serviço não encontrado neste estabelecimento.' });
+      }
+
       const updateData: any = {};
       if (active !== undefined) updateData.active = active;
-      if (name !== undefined) updateData.name = name;
+      if (name !== undefined) updateData.name = sanitizePlainText(name, 120);
       if (durationMinutes !== undefined) updateData.duration_minutes = durationMinutes;
       if (price !== undefined) updateData.price = price;
 
@@ -2950,7 +4007,7 @@ async function startServer() {
       }
 
       if (image_url !== undefined || imageUrl !== undefined || photo_url !== undefined) {
-        await cloudNicheDb.upsertEntityPhoto(req.params.id, req.user.barbershopId, 'service', image_url ?? imageUrl ?? photo_url);
+        await cloudNicheDb.upsertEntityPhoto(req.params.id, req.user.barbershopId, 'service', cleanImage);
       }
 
       res.json({ success: true });
@@ -2972,7 +4029,6 @@ async function startServer() {
 
       if (apptErr) {
         console.error('[DELETE_SERVICE_APPOINTMENTS_ERR]', apptErr);
-        // We continue anyway, maybe there were no appointments
       }
 
       const { error } = await supabase
@@ -2989,7 +4045,7 @@ async function startServer() {
       res.json({ success: true });
     } catch (error: any) {
       console.error('[DELETE_SERVICE_CRASH]', error);
-      res.status(500).json({ error: 'Erro ao excluir serviço', details: error.message });
+      res.status(500).json(safeErrorResponse(error, 'Erro ao excluir serviço'));
     }
   });
 
@@ -3250,7 +4306,7 @@ async function startServer() {
       res.json({ success: true, count: result.count });
     } catch (error: any) {
       console.error('[DELETE_CLIENTS_CRASH]', error);
-      res.status(500).json({ error: error.message || 'Erro ao excluir clientes', details: error.message });
+      res.status(500).json(safeErrorResponse(error, 'Erro ao excluir clientes'));
     }
   });
 
@@ -3265,7 +4321,7 @@ async function startServer() {
       res.json({ success: true, count: result.count });
     } catch (error: any) {
       console.error('[POST_DELETE_CLIENTS_CRASH]', error);
-      res.status(500).json({ error: error.message || 'Erro ao excluir clientes', details: error.message });
+      res.status(500).json(safeErrorResponse(error, 'Erro ao excluir clientes'));
     }
   });
 
@@ -3283,11 +4339,35 @@ async function startServer() {
       res.json({ success: true, count: result.count });
     } catch (error: any) {
       console.error('[DELETE_SINGLE_CLIENT_CRASH]', error);
-      res.status(500).json({ error: error.message || 'Erro ao excluir cliente', details: error.message });
+      res.status(500).json(safeErrorResponse(error, 'Erro ao excluir cliente'));
     }
   });
 
   // --- CLIENT CLINICAL RECORDS & ANAMNESIS (NICHE: PSYCHOLOGY & OTHERS) ---
+  api.use('/admin/clients/:id/*', authenticateToken, async (req: any, res, next) => {
+    try {
+      const clientId = String(req.params.id || '').trim();
+      const barbershopId = req.user?.barbershopId;
+      if (!clientId || !barbershopId) {
+        return res.status(400).json({ error: 'Cliente inválido.' });
+      }
+      const { data: clientRow, error: clientCheckErr } = await supabase
+        .from('clients')
+        .select('id')
+        .eq('id', clientId)
+        .eq('barbershop_id', barbershopId)
+        .maybeSingle();
+      if (clientCheckErr) throw clientCheckErr;
+      if (!clientRow) {
+        return res.status(404).json({ error: 'Cliente não encontrado neste estabelecimento.' });
+      }
+      next();
+    } catch (err: any) {
+      console.error('[CLIENT_SCOPE_CHECK_ERR]', err);
+      res.status(500).json({ error: 'Erro ao validar cliente do estabelecimento.' });
+    }
+  });
+
   api.get('/admin/clients/:id/records', authenticateToken, async (req: any, res) => {
     const clientId = req.params.id;
     const barbershopId = req.user.barbershopId;
@@ -3553,8 +4633,15 @@ async function startServer() {
     const barbershopId = req.user.barbershopId;
     const { procedure_name, date, before_photo_url, after_photo_url, notes } = req.body;
 
-    if (!procedure_name) {
+    const cleanProcedure = sanitizePlainText(procedure_name, 150);
+    if (!cleanProcedure) {
       return res.status(400).json({ error: 'Nome do procedimento é obrigatório' });
+    }
+
+    const cleanBeforeUrl = before_photo_url ? sanitizeSafeUrl(before_photo_url) : undefined;
+    const cleanAfterUrl = after_photo_url ? sanitizeSafeUrl(after_photo_url) : undefined;
+    if ((before_photo_url && !cleanBeforeUrl) || (after_photo_url && !cleanAfterUrl)) {
+      return res.status(400).json({ error: 'URL de imagem inválida.' });
     }
 
     try {
@@ -3563,11 +4650,11 @@ async function startServer() {
         id,
         barbershop_id: barbershopId,
         client_id: clientId,
-        procedure_name,
-        date: date || new Date().toISOString().split('T')[0],
-        before_photo_url,
-        after_photo_url,
-        notes
+        procedure_name: cleanProcedure,
+        date: sanitizePlainText(date, 20) || new Date().toISOString().split('T')[0],
+        before_photo_url: cleanBeforeUrl,
+        after_photo_url: cleanAfterUrl,
+        notes: notes ? sanitizePlainText(notes, 1000, true) : undefined
       });
 
       res.json({ success: true, photo: photoRecord });
@@ -3986,8 +5073,14 @@ async function startServer() {
       notes
     } = req.body;
 
-    if (!project_title || !String(project_title).trim()) {
+    const cleanTitle = sanitizePlainText(project_title, 150);
+    if (!cleanTitle) {
       return res.status(400).json({ error: 'O título do projeto / ensaio é obrigatório.' });
+    }
+
+    const cleanDeliverableUrl = deliverable_link ? sanitizeSafeUrl(deliverable_link) : undefined;
+    if (deliverable_link && !cleanDeliverableUrl) {
+      return res.status(400).json({ error: 'Link de entrega inválido. Utilize http:// ou https://.' });
     }
 
     try {
@@ -3995,17 +5088,17 @@ async function startServer() {
         id: crypto.randomUUID(),
         barbershop_id: barbershopId,
         client_id: clientId,
-        segment_type: segment_type || 'woodwork',
-        project_title: String(project_title).trim(),
-        category_or_style: category_or_style ? String(category_or_style).trim() : undefined,
-        location_or_room: location_or_room ? String(location_or_room).trim() : undefined,
-        dimensions_or_scope: dimensions_or_scope ? String(dimensions_or_scope).trim() : undefined,
-        materials_or_specs: materials_or_specs ? String(materials_or_specs).trim() : undefined,
-        status: status ? String(status).trim() : 'Briefing / Orçamento',
-        delivery_date: delivery_date ? String(delivery_date).trim() : undefined,
-        deliverable_link: deliverable_link ? String(deliverable_link).trim() : undefined,
-        estimated_value: estimated_value !== undefined && estimated_value !== '' ? Number(estimated_value) : undefined,
-        notes: notes ? String(notes).trim() : undefined
+        segment_type: sanitizePlainText(segment_type, 60) || 'woodwork',
+        project_title: cleanTitle,
+        category_or_style: category_or_style ? sanitizePlainText(category_or_style, 120) : undefined,
+        location_or_room: location_or_room ? sanitizePlainText(location_or_room, 120) : undefined,
+        dimensions_or_scope: dimensions_or_scope ? sanitizePlainText(dimensions_or_scope, 300) : undefined,
+        materials_or_specs: materials_or_specs ? sanitizePlainText(materials_or_specs, 500, true) : undefined,
+        status: status ? sanitizePlainText(status, 80) : 'Briefing / Orçamento',
+        delivery_date: delivery_date ? sanitizePlainText(delivery_date, 20) : undefined,
+        deliverable_link: cleanDeliverableUrl,
+        estimated_value: estimated_value !== undefined && estimated_value !== '' && Number.isFinite(Number(estimated_value)) ? Number(estimated_value) : undefined,
+        notes: notes ? sanitizePlainText(notes, 1000, true) : undefined
       });
 
       res.json({ success: true, project });
@@ -4102,7 +5195,7 @@ async function startServer() {
 
       // Cleanup expired campaigns (auto-delete after 7 days logic)
       if (expiredIds.length > 0) {
-        await supabase.from('notifications').delete().in('id', expiredIds);
+        await supabase.from('notifications').delete().in('id', expiredIds).eq('barbershop_id', req.user.barbershopId);
       }
 
       res.json(activeCampaigns);
@@ -4133,13 +5226,27 @@ async function startServer() {
   // Create new shop + master user
   api.post('/admin/master/shops', authenticateToken, requireMaster, async (req, res) => {
     const { name, slug, email, password, segment, plan_id, planId, phone, whatsapp, expires_at } = req.body;
-    
-    if (!name || !slug || !email || !password) {
+    const cleanName = sanitizePlainText(name, 120);
+    const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
+
+    if (!cleanName || !slug || !cleanEmail || !password) {
       return res.status(400).json({ error: 'Todos os campos são obrigatórios' });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      return res.status(400).json({ error: 'E-mail do administrador inválido.' });
+    }
+
+    const pwCheck = validatePasswordStrength(String(password));
+    if (!pwCheck.valid) {
+      return res.status(400).json({ error: pwCheck.error || 'A senha deve ter no mínimo 8 caracteres, com letras e números.' });
     }
 
     try {
       const cleanSlug = standardizeSlug(slug);
+      if (cleanSlug.length < 3 || RESERVED_SLUGS.has(cleanSlug)) {
+        return res.status(400).json({ error: 'Slug inválido ou reservado.' });
+      }
       
       // Check if slug taken
       const { data: existingShop } = await supabase
@@ -4156,7 +5263,7 @@ async function startServer() {
       const { data: existingUser } = await supabase
         .from('users')
         .select('id')
-        .ilike('email', String(email).trim())
+        .ilike('email', cleanEmail)
         .maybeSingle();
 
       if (existingUser) {
@@ -4167,12 +5274,12 @@ async function startServer() {
       const shopId = crypto.randomUUID();
       const shopType = req.body.business_type || req.body.businessType || segment || 'barbershop';
       const targetPlanId = normalizePlanId(plan_id || planId || 'trial');
-      const cleanContact = whatsapp || phone ? String(whatsapp || phone).trim() : null;
+      const cleanContact = whatsapp || phone ? sanitizePlainText(whatsapp || phone, 40) : null;
       const defaultExpires = expires_at || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
       const insertShopPayload: Record<string, any> = {
         id: shopId,
-        name: String(name).trim(),
+        name: cleanName,
         slug: cleanSlug,
         segment: shopType,
         plan_id: targetPlanId,
@@ -4195,14 +5302,14 @@ async function startServer() {
 
       // Create Admin User
       const userId = crypto.randomUUID();
-      const passwordHash = await bcrypt.hash(password, 10);
+      const passwordHash = await bcrypt.hash(String(password), 12);
       const { error: userErr } = await supabase
         .from('users')
         .insert({
           id: userId,
           barbershop_id: shopId,
-          name: `${String(name).trim()} Admin`,
-          email: String(email).trim().toLowerCase(),
+          name: `${cleanName} Admin`,
+          email: cleanEmail,
           password_hash: passwordHash,
           role: 'admin'
         });
@@ -4212,12 +5319,12 @@ async function startServer() {
       res.json({ 
         success: true, 
         message: 'Estabelecimento e administrador criados com sucesso!', 
-        shop: { id: shopId, name, slug: cleanSlug, plan_id: targetPlanId, plan_name: getPlanMeta(targetPlanId).name },
-        admin: { email: String(email).trim().toLowerCase() }
+        shop: { id: shopId, name: cleanName, slug: cleanSlug, plan_id: targetPlanId, plan_name: getPlanMeta(targetPlanId).name },
+        admin: { email: cleanEmail }
       });
     } catch (e: any) {
       console.error('[MASTER_CREATE_SHOP_ERROR]', e);
-      res.status(500).json({ error: 'Erro ao criar estabelecimento', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao criar estabelecimento'));
     }
   });
 
@@ -4279,7 +5386,7 @@ async function startServer() {
 
       res.json(enriched);
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao buscar lojas', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao buscar lojas'));
     }
   });
 
@@ -4370,6 +5477,7 @@ async function startServer() {
           updated_at: nowIso
         };
         await cloudNicheDb.createSaasPayment(recordedPayment);
+        await createCommissionForSaasPayment(recordedPayment);
       }
 
       res.json({
@@ -4383,7 +5491,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[MASTER_UPDATE_PLAN_ERR]', e);
-      res.status(500).json({ error: 'Erro ao atualizar plano do estabelecimento', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao atualizar plano do estabelecimento'));
     }
   });
 
@@ -4410,7 +5518,7 @@ async function startServer() {
       if (error) throw error;
       res.json({ success: true, whatsapp: cleanContact || '' });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao atualizar contato da loja', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao atualizar contato da loja'));
     }
   });
 
@@ -4708,7 +5816,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[MASTER_ANALYTICS_ERR]', e);
-      res.status(500).json({ error: 'Erro ao calcular métricas administrativas', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao calcular métricas administrativas'));
     }
   });
 
@@ -4746,7 +5854,7 @@ async function startServer() {
 
       res.json({ success: true, business_type: targetType, segment: targetType });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao alterar segmento do estabelecimento', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao alterar segmento do estabelecimento'));
     }
   });
 
@@ -4762,20 +5870,29 @@ async function startServer() {
         .eq('id', shopId)
         .maybeSingle();
       
-      if (shopError || !shop) throw new Error('Barbearia não encontrada');
+      if (shopError || !shop) {
+        return res.status(404).json({ error: 'Estabelecimento não encontrado.' });
+      }
 
       // Create a master-elevated token for this specific shop
       const token = jwt.sign({ 
         id: (req as any).user.id, 
         barbershopId: shopId, 
-        role: 'master', // Keep master role so they can still access master tools if needed
+        role: 'master',
         email: (req as any).user.email,
         isImpersonating: true
-      }, JWT_SECRET, { expiresIn: '2h' }); // Short-lived token for impersonation
+      }, JWT_SECRET, { expiresIn: '2h' });
+
+      setSessionCookie(res, req, token, 2 * 60 * 60 * 1000);
+      recordSecurityEvent(req, {
+        eventType: 'MASTER_IMPERSONATE',
+        severity: 'low',
+        details: `Master assumiu sessão da loja ${shop.slug} (${shopId})`
+      });
       
       res.json({ success: true, token, shop });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao entrar no dashboard', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao entrar no dashboard'));
     }
   });
 
@@ -4813,7 +5930,7 @@ async function startServer() {
       res.json({ success: true, resetUrl, adminEmail: targetUser.email });
     } catch (e: any) {
       console.error('[MASTER_RESET_LINK_ERR]', e);
-      res.status(500).json({ error: 'Erro ao gerar link de redefinição de senha', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao gerar link de redefinição de senha'));
     }
   });
 
@@ -4896,12 +6013,25 @@ async function startServer() {
       res.json({ success: true, deletedId: id, deletedName: targetShop.name });
     } catch (e: any) {
       console.error('[MASTER_DELETE_SHOP_ERR]', e);
-      res.status(500).json({ error: e.message || 'Erro ao excluir estabelecimento', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao excluir estabelecimento'));
     }
   };
 
   api.delete('/admin/master/shops/:id', authenticateToken, requireMaster, handleDeleteShopMaster);
   api.post('/admin/master/shops/:id/delete', authenticateToken, requireMaster, handleDeleteShopMaster);
+
+  // Security Audit Logs (Master only)
+  api.get('/admin/master/security-logs', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const rawLimit = Number(req.query.limit || 100);
+      const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 250) : 100;
+      const logs = await cloudNicheDb.getRecentSecurityLogs(limit);
+      res.json({ logs });
+    } catch (e: any) {
+      console.error('[MASTER_SECURITY_LOGS_ERR]', e);
+      res.status(500).json(safeErrorResponse(e, 'Erro ao consultar logs de segurança'));
+    }
+  });
 
   // Update Support WhatsApp (Master only)
   api.post('/admin/master/support-contact', authenticateToken, requireMaster, async (req, res) => {
@@ -4914,7 +6044,7 @@ async function startServer() {
       res.json({ success: true, whatsapp: normalized });
     } catch (e: any) {
       console.error('[MASTER_SUPPORT_CONTACT_ERR]', e);
-      res.status(500).json({ error: 'Erro ao salvar WhatsApp do suporte', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao salvar WhatsApp do suporte'));
     }
   });
 
@@ -4925,13 +6055,13 @@ async function startServer() {
       res.json({
         ...cloudStatus,
         security: {
-          hasJwtSecret: Boolean(process.env.JWT_SECRET),
+          hasJwtSecret: hasJwtSecretEnv,
           hasServiceRoleKey,
           nodeEnv: process.env.NODE_ENV || 'development'
         }
       });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao verificar status da nuvem', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao verificar status da nuvem'));
     }
   });
 
@@ -4944,7 +6074,7 @@ async function startServer() {
       const sql = fs.readFileSync(sqlPath, 'utf-8');
       res.json({ sql });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao ler script SQL', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao ler script SQL'));
     }
   });
 
@@ -4953,33 +6083,38 @@ async function startServer() {
       const summary = await cloudNicheDb.migrateAllLocalToSupabase();
       res.json({ success: true, ...summary });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao migrar registros locais para o Supabase', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao migrar registros locais para o Supabase'));
     }
   });
 
   // --- SAAS PLANS, BILLING & MERCADO PAGO ---
   const SAAS_PLANS = [
     {
-      id: 'essencial',
-      name: 'Agenda Individual',
-      subtitle: 'Ideal para quem trabalha sozinho (1 profissional)',
-      monthlyPrice: 59.90,
-      annualPrice: 479.00,
-      highlighted: false,
-      badge: '1 Profissional',
+      id: 'premium',
+      name: 'Plano Completo',
+      subtitle: 'Retenção, pacotes e lucro sem limites',
+      monthlyPrice: 139.90,
+      annualPrice: 1197.00,
+      promoMonthlyPrice: 119.90,
+      promoAnnualPrice: 997.00,
+      highlighted: true,
+      badge: 'Mais Lucrativo · Recomendado',
       features: [
-        '1 profissional ativo na agenda',
-        'Link exclusivo de agendamento (/b/sua-marca)',
-        'Cadastro de clientes e histórico completo',
-        'Agenda inteligente sem conflitos de horário'
+        'Profissionais e serviços ilimitados',
+        'Campanhas de reativação p/ trazer clientes sumidos',
+        'Pacotes de sessões e combos recorrentes',
+        'Vitrine VIP (logo, banner e paleta personalizada)',
+        'Implantação assistida + Suporte VIP no WhatsApp'
       ]
     },
     {
       id: 'profissional',
       name: 'Plano Pro',
       subtitle: 'Perfeito para equipes de 1 a 3 funcionários',
-      monthlyPrice: 99.90,
-      annualPrice: 859.00,
+      monthlyPrice: 119.90,
+      annualPrice: 1039.00,
+      promoMonthlyPrice: 99.90,
+      promoAnnualPrice: 859.00,
       highlighted: false,
       badge: 'Equipe 1 a 3',
       features: [
@@ -4990,22 +6125,56 @@ async function startServer() {
       ]
     },
     {
-      id: 'premium',
-      name: 'Plano Completo',
-      subtitle: 'Retenção, pacotes e lucro sem limites',
-      monthlyPrice: 119.90,
-      annualPrice: 997.00,
-      highlighted: true,
-      badge: 'Melhor Custo-Benefício',
+      id: 'essencial',
+      name: 'Agenda Individual',
+      subtitle: 'Opção de entrada para quem trabalha sozinho',
+      monthlyPrice: 79.90,
+      annualPrice: 659.00,
+      promoMonthlyPrice: 59.90,
+      promoAnnualPrice: 479.00,
+      highlighted: false,
+      badge: '1 Profissional',
       features: [
-        'Profissionais e serviços ilimitados',
-        'Campanhas de reativação p/ trazer clientes sumidos',
-        'Pacotes de sessões e combos recorrentes',
-        'Vitrine VIP (logo, banner e paleta personalizada)',
-        'Implantação assistida + Suporte VIP no WhatsApp'
+        '1 profissional ativo na agenda',
+        'Link exclusivo de agendamento (/b/sua-marca)',
+        'Cadastro de clientes e histórico completo',
+        'Agenda inteligente sem conflitos de horário'
       ]
     }
   ];
+
+  const buildPublicPlansList = (promoApplied: boolean) =>
+    SAAS_PLANS.map((plan) => ({
+      id: plan.id,
+      name: plan.name,
+      subtitle: plan.subtitle,
+      regularMonthlyPrice: plan.monthlyPrice,
+      regularAnnualPrice: plan.annualPrice,
+      monthlyPrice: promoApplied ? plan.promoMonthlyPrice : plan.monthlyPrice,
+      annualPrice: promoApplied ? plan.promoAnnualPrice : plan.annualPrice,
+      promoApplied,
+      highlighted: plan.highlighted,
+      badge: plan.badge,
+      features: plan.features
+    }));
+
+  const resolveShopPromoStatus = async (shopId: string) => {
+    try {
+      const referral = await cloudNicheDb.getReferralByShopId(shopId);
+      if (!referral) {
+        return { promoApplied: false, partnerCode: null as string | null, partnerFirstName: null as string | null };
+      }
+      const affiliate = await cloudNicheDb.getAffiliateById(referral.affiliate_id);
+      const firstName = affiliate?.name ? String(affiliate.name).trim().split(/\s+/)[0] : null;
+      return {
+        promoApplied: true,
+        partnerCode: referral.affiliate_code || affiliate?.code || null,
+        partnerFirstName: firstName
+      };
+    } catch {
+      return { promoApplied: false, partnerCode: null as string | null, partnerFirstName: null as string | null };
+    }
+  };
 
   const getMpAccessToken = async (): Promise<string> => {
     const saved = await cloudNicheDb.getPlatformSetting('mp_access_token');
@@ -5179,30 +6348,60 @@ async function startServer() {
       await setShopPlan(payment.barbershop_id, normalizePlanId(payment.plan_id));
     }
 
+    const approvedPayment = {
+      ...payment,
+      status: 'approved',
+      paid_at: paidAt,
+      mp_payment_id: mpPaymentId || payment.mp_payment_id
+    };
+    await createCommissionForSaasPayment(approvedPayment);
+
     return {
       ok: true,
       alreadyApproved: false,
       newExpiresAt,
-      payment: { ...payment, status: 'approved', paid_at: paidAt, mp_payment_id: mpPaymentId || payment.mp_payment_id }
+      payment: approvedPayment
     };
   };
 
-  // Public SaaS Plans list (Landing Page & Subscription page)
-  api.get('/public/plans', (_req, res) => {
-    res.json({ plans: SAAS_PLANS, trialDays: 7 });
+  // Public SaaS Plans list (Landing Page & Affiliate Sales Page)
+  api.get('/public/plans', async (req, res) => {
+    try {
+      const refRaw = typeof req.query.ref === 'string' ? req.query.ref : '';
+      let promoApplied = false;
+      let partner: { code: string; firstName: string; niche: string | null } | null = null;
+      if (refRaw) {
+        const parsed = AffiliateCodeSchema.safeParse(refRaw);
+        if (parsed.success) {
+          const affiliate = await cloudNicheDb.getAffiliateByCode(parsed.data);
+          if (affiliate && affiliate.active) {
+            promoApplied = true;
+            partner = {
+              code: affiliate.code,
+              firstName: String(affiliate.name || '').trim().split(/\s+/)[0] || 'Parceiro',
+              niche: affiliate.niche || null
+            };
+          }
+        }
+      }
+      res.json({ plans: buildPublicPlansList(promoApplied), trialDays: 7, promoApplied, partner });
+    } catch {
+      res.json({ plans: buildPublicPlansList(false), trialDays: 7, promoApplied: false, partner: null });
+    }
   });
 
   // Admin Billing Status & Payment History (Owner / Master only)
   api.get('/admin/billing/status', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const shopId = req.user.barbershopId;
-      const [{ data: shop, error }, plansMap] = await Promise.all([
+      const [{ data: shop, error }, plansMap, promoStatus] = await Promise.all([
         supabase
           .from('barbershops')
           .select('*')
           .eq('id', shopId)
           .maybeSingle(),
-        getShopPlansMap()
+        getShopPlansMap(),
+        resolveShopPromoStatus(shopId)
       ]);
       if (error) throw error;
 
@@ -5236,7 +6435,10 @@ async function startServer() {
         currentPlanId,
         currentPlanName: currentPlanMeta.name,
         isExpired,
-        plans: SAAS_PLANS,
+        promoApplied: promoStatus.promoApplied,
+        partnerCode: promoStatus.partnerCode,
+        partnerFirstName: promoStatus.partnerFirstName,
+        plans: buildPublicPlansList(promoStatus.promoApplied),
         payments,
         mpConfigured: Boolean(mpToken),
         pixKeyConfigured: Boolean(pixProfile.pixKey),
@@ -5246,28 +6448,125 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[BILLING_STATUS_ERR]', e);
-      res.status(500).json({ error: 'Erro ao carregar status da assinatura', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao carregar status da assinatura'));
+    }
+  });
+
+  // Apply Affiliate Promotional Coupon before checkout/PIX payment (Owner / Master only)
+  api.post('/admin/billing/apply-coupon', authenticateToken, requireOwnerOrMaster, billingLimiter, async (req: any, res) => {
+    try {
+      const parsed = ApplyAffiliateCouponSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Código promocional inválido.' });
+      }
+
+      const shopId = req.user.barbershopId;
+      const affiliate = await cloudNicheDb.getAffiliateByCode(parsed.data.code);
+      if (!affiliate || !affiliate.active) {
+        return res.status(404).json({ error: 'Código promocional não encontrado ou inativo.' });
+      }
+
+      const partnerFirstName = String(affiliate.name || '').trim().split(/\s+/)[0] || 'Parceiro';
+      const existingReferral = await cloudNicheDb.getReferralByShopId(shopId);
+      if (existingReferral) {
+        const sameAffiliate =
+          existingReferral.affiliate_id === affiliate.id ||
+          String(existingReferral.affiliate_code || '').toLowerCase() === String(affiliate.code || '').toLowerCase();
+        if (sameAffiliate) {
+          return res.json({
+            success: true,
+            alreadyApplied: true,
+            promoApplied: true,
+            partnerCode: affiliate.code,
+            partnerFirstName,
+            plans: buildPublicPlansList(true)
+          });
+        }
+        return res.status(409).json({
+          error: `Sua conta já possui o código promocional ${String(existingReferral.affiliate_code || '').toUpperCase()} vinculado.`
+        });
+      }
+
+      const { data: shopRow } = await supabase
+        .from('barbershops')
+        .select('email, phone')
+        .eq('id', shopId)
+        .maybeSingle();
+
+      const ownerEmail = String(req.user.email || '').trim().toLowerCase();
+      const shopEmail = String(shopRow?.email || '').trim().toLowerCase();
+      const affEmail = String(affiliate.email || '').trim().toLowerCase();
+      const shopPhoneDigits = String(shopRow?.phone || '').replace(/\D/g, '');
+      const affPhoneDigits = String(affiliate.phone_whatsapp || '').replace(/\D/g, '');
+
+      const sameEmail = Boolean(affEmail && (ownerEmail === affEmail || shopEmail === affEmail));
+      const samePhone =
+        affPhoneDigits.length >= 10 &&
+        shopPhoneDigits.length >= 10 &&
+        affPhoneDigits.slice(-10) === shopPhoneDigits.slice(-10);
+
+      if (sameEmail || samePhone) {
+        recordSecurityEvent(req, {
+          eventType: 'AFFILIATE_SELF_REFERRAL_BLOCKED',
+          severity: 'medium',
+          details: `Autoindicação bloqueada ao aplicar cupom no checkout (${ownerEmail || shopEmail} -> ${affiliate.code}, shop=${shopId})`,
+          userEmail: ownerEmail || shopEmail || undefined
+        });
+        return res.status(400).json({ error: 'Você não pode aplicar seu próprio código de parceiro na sua loja.' });
+      }
+
+      await cloudNicheDb.createReferralAttribution({
+        shop_id: shopId,
+        affiliate_id: affiliate.id,
+        affiliate_code: affiliate.code,
+        referred_email: ownerEmail || shopEmail || ''
+      });
+
+      return res.json({
+        success: true,
+        promoApplied: true,
+        partnerCode: affiliate.code,
+        partnerFirstName,
+        plans: buildPublicPlansList(true)
+      });
+    } catch (e: any) {
+      console.error('[BILLING_APPLY_COUPON_ERR]', e);
+      return res.status(500).json(safeErrorResponse(e, 'Erro ao aplicar código promocional'));
     }
   });
 
   // Create Mercado Pago Checkout Pro Preference (Owner / Master only)
-  api.post('/admin/billing/checkout', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+  api.post('/admin/billing/checkout', authenticateToken, requireOwnerOrMaster, billingLimiter, async (req: any, res) => {
     try {
-      const { planId, billingCycle } = req.body;
+      const parsed = BillingCheckoutSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Plano selecionado inválido.' });
+      }
+      const { planId, billingCycle } = parsed.data;
       const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
       const plan = SAAS_PLANS.find((p) => p.id === planId);
       if (!plan) {
         return res.status(400).json({ error: 'Plano selecionado inválido.' });
       }
 
-      const mpToken = await getMpAccessToken();
+      const [mpToken, promoStatus] = await Promise.all([
+        getMpAccessToken(),
+        resolveShopPromoStatus(req.user.barbershopId)
+      ]);
       if (!mpToken) {
         return res.status(400).json({
           error: 'Mercado Pago ainda não configurado no Painel Master. Utilize a opção de pagamento via PIX.'
         });
       }
 
-      const amount = cycle === 'annual' ? plan.annualPrice : plan.monthlyPrice;
+      const amount =
+        cycle === 'annual'
+          ? promoStatus.promoApplied
+            ? plan.promoAnnualPrice
+            : plan.annualPrice
+          : promoStatus.promoApplied
+            ? plan.promoMonthlyPrice
+            : plan.monthlyPrice;
       const daysAdded = cycle === 'annual' ? 365 : 30;
       const paymentId = `pay_${crypto.randomUUID()}`;
       const nowIso = new Date().toISOString();
@@ -5345,27 +6644,39 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[BILLING_CHECKOUT_ERR]', e);
-      res.status(500).json({ error: 'Erro ao iniciar checkout no Mercado Pago', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao iniciar checkout no Mercado Pago'));
     }
   });
 
   // Create Instant PIX via Mercado Pago API OR Official Banco Central BR Code (using Chave PIX)
-  api.post('/admin/billing/pix', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+  api.post('/admin/billing/pix', authenticateToken, requireOwnerOrMaster, billingLimiter, async (req: any, res) => {
     try {
-      const { planId, billingCycle } = req.body;
+      const parsed = BillingCheckoutSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Plano selecionado inválido.' });
+      }
+      const { planId, billingCycle } = parsed.data;
       const cycle = billingCycle === 'annual' ? 'annual' : 'monthly';
       const plan = SAAS_PLANS.find((p) => p.id === planId);
       if (!plan) {
         return res.status(400).json({ error: 'Plano selecionado inválido.' });
       }
 
-      const [mpToken, pixProfile, savedWhatsapp] = await Promise.all([
+      const [mpToken, pixProfile, savedWhatsapp, promoStatus] = await Promise.all([
         getMpAccessToken(),
         getPlatformPixProfile(),
-        cloudNicheDb.getPlatformSetting('support_whatsapp')
+        cloudNicheDb.getPlatformSetting('support_whatsapp'),
+        resolveShopPromoStatus(req.user.barbershopId)
       ]);
 
-      const amount = cycle === 'annual' ? plan.annualPrice : plan.monthlyPrice;
+      const amount =
+        cycle === 'annual'
+          ? promoStatus.promoApplied
+            ? plan.promoAnnualPrice
+            : plan.annualPrice
+          : promoStatus.promoApplied
+            ? plan.promoMonthlyPrice
+            : plan.monthlyPrice;
       const daysAdded = cycle === 'annual' ? 365 : 30;
       const paymentId = `pix_${crypto.randomUUID()}`;
       const nowIso = new Date().toISOString();
@@ -5495,14 +6806,18 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[BILLING_PIX_ERR]', e);
-      res.status(500).json({ error: 'Erro ao gerar pagamento PIX', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao gerar pagamento PIX'));
     }
   });
 
   // Register intent when tenant uses a Mercado Pago App Payment Link (created from mobile app)
-  api.post('/admin/billing/link-intent', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+  api.post('/admin/billing/link-intent', authenticateToken, requireOwnerOrMaster, billingLimiter, async (req: any, res) => {
     try {
-      const { planId } = req.body;
+      const parsed = BillingLinkIntentSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Plano selecionado inválido.' });
+      }
+      const { planId } = parsed.data;
       const plan = SAAS_PLANS.find((p) => p.id === planId);
       if (!plan) {
         return res.status(400).json({ error: 'Plano selecionado inválido.' });
@@ -5515,8 +6830,9 @@ async function startServer() {
       }
 
       // App Payment Links have a fixed monthly price
+      const promoStatus = await resolveShopPromoStatus(req.user.barbershopId);
       const cycle = 'monthly';
-      const amount = plan.monthlyPrice;
+      const amount = promoStatus.promoApplied ? plan.promoMonthlyPrice : plan.monthlyPrice;
       const daysAdded = 30;
       const paymentId = `lnk_${crypto.randomUUID()}`;
       const nowIso = new Date().toISOString();
@@ -5539,12 +6855,12 @@ async function startServer() {
       return res.json({ paymentId, paymentUrl, amount, planName: plan.name });
     } catch (e: any) {
       console.error('[BILLING_LINK_INTENT_ERR]', e);
-      res.status(500).json({ error: 'Erro ao registrar link de pagamento', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao registrar link de pagamento'));
     }
   });
 
   // Verify / Poll a Payment Status
-  api.post('/admin/billing/verify/:paymentId', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+  api.post('/admin/billing/verify/:paymentId', authenticateToken, requireOwnerOrMaster, billingLimiter, async (req: any, res) => {
     try {
       const payment = await cloudNicheDb.getSaasPaymentById(req.params.paymentId);
       if (!payment) {
@@ -5597,12 +6913,10 @@ async function startServer() {
           const result = await approveSaasPaymentIdempotently(payment.id, String(mpPayment.id));
           return res.json({ status: 'approved', newExpiresAt: result.newExpiresAt });
         }
-        console.warn('[BILLING_VERIFY_MISMATCH]', {
-          paymentId: payment.id,
-          expectedAmount: payment.amount,
-          mpAmount: mpPayment.transaction_amount,
-          expectedRef: payment.external_reference,
-          mpRef: mpPayment.external_reference
+        recordSecurityEvent(req, {
+          eventType: 'PAYMENT_VERIFICATION_MISMATCH',
+          severity: 'high',
+          details: `Pagamento ${payment.id}: esperado=${payment.amount}, MP=${mpPayment.transaction_amount}, moeda=${mpPayment.currency_id}`
         });
       }
 
@@ -5612,11 +6926,11 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[BILLING_VERIFY_ERR]', e);
-      res.status(500).json({ error: 'Erro ao verificar pagamento', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao verificar pagamento'));
     }
   });
 
-  // Mercado Pago Webhook (Public, validates directly against MP API)
+  // Mercado Pago Webhook (Public, verifies HMAC signature if configured + validates directly against MP API)
   api.post('/webhooks/mercadopago', async (req, res) => {
     try {
       const rawPaymentId =
@@ -5629,6 +6943,42 @@ async function startServer() {
       const mpPaymentId = rawPaymentId ? String(rawPaymentId).trim() : '';
       if (!mpPaymentId || !/^\d+$/.test(mpPaymentId) || (eventType && !String(eventType).includes('payment'))) {
         return res.status(200).json({ received: true });
+      }
+
+      const webhookSecret =
+        process.env.MP_WEBHOOK_SECRET?.trim() ||
+        (await cloudNicheDb.getPlatformSetting('mp_webhook_secret'))?.trim() ||
+        '';
+      if (webhookSecret) {
+        const xSig = String(req.headers['x-signature'] || '');
+        const xReqId = String(req.headers['x-request-id'] || '');
+        const sigParts: Record<string, string> = {};
+        xSig.split(',').forEach((kv) => {
+          const [k, v] = kv.split('=').map((s) => s.trim());
+          if (k && v) sigParts[k] = v;
+        });
+        const ts = sigParts.ts || '';
+        const v1 = sigParts.v1 || '';
+        if (!ts || !v1) {
+          recordSecurityEvent(req, {
+            eventType: 'WEBHOOK_SIGNATURE_MISSING',
+            severity: 'high',
+            details: `Webhook Mercado Pago sem assinatura para payment=${mpPaymentId}`
+          });
+          return res.status(401).json({ error: 'Assinatura do webhook ausente.' });
+        }
+        const manifest = `id:${mpPaymentId};request-id:${xReqId};ts:${ts};`;
+        const expectedHex = nodeCrypto.createHmac('sha256', webhookSecret).update(manifest).digest('hex');
+        const providedBuf = Buffer.from(v1, 'utf8');
+        const expectedBuf = Buffer.from(expectedHex, 'utf8');
+        if (providedBuf.length !== expectedBuf.length || !nodeCrypto.timingSafeEqual(providedBuf, expectedBuf)) {
+          recordSecurityEvent(req, {
+            eventType: 'WEBHOOK_SIGNATURE_INVALID',
+            severity: 'critical',
+            details: `Assinatura HMAC inválida no webhook para payment=${mpPaymentId}`
+          });
+          return res.status(401).json({ error: 'Assinatura do webhook inválida.' });
+        }
       }
 
       const mpToken = await getMpAccessToken();
@@ -5653,7 +7003,11 @@ async function startServer() {
             await approveSaasPaymentIdempotently(localPayment.id, String(mpData.id));
             console.log(`[MP_WEBHOOK_APPROVED] Payment ${localPayment.id} approved automatically.`);
           } else {
-            console.warn('[MP_WEBHOOK_AMOUNT_MISMATCH]', localPayment.id, mpData.transaction_amount, localPayment.amount);
+            recordSecurityEvent(req, {
+              eventType: 'PAYMENT_AMOUNT_MISMATCH',
+              severity: 'critical',
+              details: `Webhook payment ${localPayment.id}: esperado=${localPayment.amount}, recebido=${mpData.transaction_amount}, moeda=${mpData.currency_id}`
+            });
           }
         }
       }
@@ -5682,7 +7036,7 @@ async function startServer() {
         mpLinks
       });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao carregar configuração de pagamentos', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao carregar configuração de pagamentos'));
     }
   });
 
@@ -5744,7 +7098,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[MASTER_BILLING_CONFIG_ERR]', e);
-      res.status(500).json({ error: 'Erro ao salvar configuração de pagamentos', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao salvar configuração de pagamentos'));
     }
   });
 
@@ -5763,7 +7117,7 @@ async function startServer() {
       res.json({ payments: enriched });
     } catch (e: any) {
       console.error('[MASTER_PAYMENTS_ERR]', e);
-      res.status(500).json({ error: 'Erro ao listar pagamentos SaaS', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao listar pagamentos SaaS'));
     }
   });
 
@@ -5781,7 +7135,550 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[MASTER_PAYMENT_APPROVE_ERR]', e);
-      res.status(500).json({ error: 'Erro ao aprovar pagamento', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao aprovar pagamento'));
+    }
+  });
+
+  // --- AFFILIATE & PARTNER PROGRAM (MASTER ADMIN + PARTNER PORTAL) ---
+  const formatSafeAffiliate = (aff: any) => ({
+    id: aff.id,
+    name: aff.name,
+    email: aff.email,
+    phoneWhatsapp: aff.phone_whatsapp || '',
+    pixKey: aff.pix_key || '',
+    code: aff.code,
+    commissionRate: Number(aff.commission_rate) || 0.25,
+    commissionPercent: Math.round((Number(aff.commission_rate) || 0.25) * 100),
+    niche: aff.niche || '',
+    notes: aff.notes || '',
+    active: Boolean(aff.active),
+    createdAt: aff.created_at,
+    updatedAt: aff.updated_at
+  });
+
+  const computeShopSubscriptionStatus = (shop: any, plansMap: Record<string, any>) => {
+    if (!shop) return { planId: 'trial', planName: 'Teste Grátis', status: 'expired' as const };
+    const planId = resolveShopPlanId(shop, plansMap);
+    const planMeta = getPlanMeta(planId);
+    const isBlocked = Boolean(shop.is_blocked);
+    const isExpired = Boolean(shop.expires_at && new Date(shop.expires_at) < new Date());
+    const status = isBlocked
+      ? ('blocked' as const)
+      : isExpired
+        ? ('expired' as const)
+        : planId === 'trial'
+          ? ('trial' as const)
+          : ('active' as const);
+    return { planId, planName: planMeta.name, status };
+  };
+
+  // Master Admin: List affiliates with aggregated KPIs + recent commission ledger
+  api.get('/admin/master/affiliates', authenticateToken, requireMaster, async (_req, res) => {
+    try {
+      await cloudNicheDb.promoteMaturedCommissions();
+      const [affiliates, referrals, commissions, shopsRes, plansMap, clicksMap] = await Promise.all([
+        cloudNicheDb.listAffiliates(),
+        cloudNicheDb.listAllReferrals(),
+        cloudNicheDb.listAffiliateCommissions(undefined, 500),
+        supabase.from('barbershops').select('id, name, slug, segment, plan_id, is_blocked, expires_at, created_at'),
+        getShopPlansMap(),
+        cloudNicheDb.getAffiliateClicksMap()
+      ]);
+
+      const shopMap = new Map<string, any>((shopsRes.data || []).map((s: any) => [s.id, s]));
+      const affMap = new Map<string, any>(affiliates.map((a) => [a.id, a]));
+
+      const enrichedAffiliates = affiliates.map((aff) => {
+        const affRefs = referrals.filter((r) => r.affiliate_id === aff.id);
+        const affComms = commissions.filter((c) => c.affiliate_id === aff.id);
+
+        let activePaidCount = 0;
+        let trialCount = 0;
+        for (const r of affRefs) {
+          const shop = shopMap.get(r.shop_id);
+          const { status } = computeShopSubscriptionStatus(shop, plansMap);
+          if (status === 'active') activePaidCount += 1;
+          else if (status === 'trial') trialCount += 1;
+        }
+
+        const clickEntry = clicksMap[aff.id] || { totalClicks: 0, uniqueClicks: 0, lastClickedAt: null };
+        const totalClicks = clickEntry.totalClicks;
+        const uniqueClicks = clickEntry.uniqueClicks;
+        const signupConversionRate =
+          totalClicks > 0 ? Number(((affRefs.length / totalClicks) * 100).toFixed(1)) : 0;
+        const paidConversionRate =
+          totalClicks > 0 ? Number(((activePaidCount / totalClicks) * 100).toFixed(1)) : 0;
+        const trialToPaidRate =
+          affRefs.length > 0 ? Number(((activePaidCount / affRefs.length) * 100).toFixed(1)) : 0;
+
+        const pendingAmount = affComms
+          .filter((c) => c.status === 'pending')
+          .reduce((sum, c) => sum + (Number(c.commission_amount) || 0), 0);
+        const availableAmount = affComms
+          .filter((c) => c.status === 'available')
+          .reduce((sum, c) => sum + (Number(c.commission_amount) || 0), 0);
+        const paidAmount = affComms
+          .filter((c) => c.status === 'paid')
+          .reduce((sum, c) => sum + (Number(c.commission_amount) || 0), 0);
+        const totalSalesVolume = affComms
+          .filter((c) => c.status !== 'reversed')
+          .reduce((sum, c) => sum + (Number(c.gross_amount) || 0), 0);
+
+        return {
+          ...formatSafeAffiliate(aff),
+          stats: {
+            totalClicks,
+            uniqueClicks,
+            lastClickedAt: clickEntry.lastClickedAt,
+            referralsCount: affRefs.length,
+            activePaidCount,
+            trialCount,
+            signupConversionRate,
+            paidConversionRate,
+            trialToPaidRate,
+            pendingAmount: Number(pendingAmount.toFixed(2)),
+            availableAmount: Number(availableAmount.toFixed(2)),
+            paidAmount: Number(paidAmount.toFixed(2)),
+            totalEarned: Number((pendingAmount + availableAmount + paidAmount).toFixed(2)),
+            totalSalesVolume: Number(totalSalesVolume.toFixed(2))
+          }
+        };
+      });
+
+      const enrichedCommissions = commissions.map((c) => {
+        const shop = shopMap.get(c.shop_id);
+        const aff = affMap.get(c.affiliate_id);
+        return {
+          ...c,
+          affiliateName: aff?.name || 'Afiliado removido',
+          affiliateCode: aff?.code || '',
+          shopName: shop?.name || c.shop_id,
+          shopSlug: shop?.slug || ''
+        };
+      });
+
+      const summary = enrichedAffiliates.reduce(
+        (acc, a) => {
+          if (a.active) acc.activeAffiliates += 1;
+          acc.totalClicks += a.stats.totalClicks;
+          acc.totalUniqueClicks += a.stats.uniqueClicks;
+          acc.totalReferrals += a.stats.referralsCount;
+          acc.totalTrials += a.stats.trialCount;
+          acc.totalActivePaid += a.stats.activePaidCount;
+          acc.pendingPayouts += a.stats.pendingAmount;
+          acc.availablePayouts += a.stats.availableAmount;
+          acc.totalPaid += a.stats.paidAmount;
+          return acc;
+        },
+        {
+          activeAffiliates: 0,
+          totalClicks: 0,
+          totalUniqueClicks: 0,
+          totalReferrals: 0,
+          totalTrials: 0,
+          totalActivePaid: 0,
+          pendingPayouts: 0,
+          availablePayouts: 0,
+          totalPaid: 0
+        }
+      );
+
+      const overallSignupConversionRate =
+        summary.totalClicks > 0
+          ? Number(((summary.totalReferrals / summary.totalClicks) * 100).toFixed(1))
+          : 0;
+      const overallPaidConversionRate =
+        summary.totalClicks > 0
+          ? Number(((summary.totalActivePaid / summary.totalClicks) * 100).toFixed(1))
+          : 0;
+
+      res.json({
+        summary: {
+          ...summary,
+          overallSignupConversionRate,
+          overallPaidConversionRate,
+          pendingPayouts: Number(summary.pendingPayouts.toFixed(2)),
+          availablePayouts: Number(summary.availablePayouts.toFixed(2)),
+          totalPaid: Number(summary.totalPaid.toFixed(2))
+        },
+        affiliates: enrichedAffiliates,
+        commissions: enrichedCommissions
+      });
+    } catch (e: any) {
+      console.error('[MASTER_AFFILIATES_LIST_ERR]', e);
+      res.status(500).json(safeErrorResponse(e, 'Erro ao carregar programa de afiliados'));
+    }
+  });
+
+  // Master Admin: Create new affiliate / niche influencer
+  api.post('/admin/master/affiliates', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const parsed = CreateAffiliateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Dados inválidos para afiliado.' });
+      }
+
+      const { name, email, password, phoneWhatsapp, pixKey, code, commissionPercent, niche, notes } = parsed.data;
+      const pwdCheck = validatePasswordStrength(password);
+      if (!pwdCheck.valid) {
+        return res.status(400).json({ error: pwdCheck.error });
+      }
+
+      const cleanEmail = email.trim().toLowerCase();
+      const cleanCode = code.trim().toLowerCase();
+
+      if (RESERVED_SLUGS.has(cleanCode)) {
+        return res.status(400).json({ error: 'Este código de indicação é reservado. Escolha outro.' });
+      }
+
+      const [existingEmail, existingCode] = await Promise.all([
+        cloudNicheDb.getAffiliateByEmail(cleanEmail),
+        cloudNicheDb.getAffiliateByCode(cleanCode)
+      ]);
+      if (existingEmail) {
+        return res.status(400).json({ error: 'Já existe um afiliado cadastrado com este e-mail.' });
+      }
+      if (existingCode) {
+        return res.status(400).json({ error: 'Este código de indicação já está em uso por outro parceiro.' });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 12);
+      const created = await cloudNicheDb.createAffiliate({
+        id: `aff_${nodeCrypto.randomUUID()}`,
+        name: sanitizePlainText(name, 120),
+        email: cleanEmail,
+        password_hash: passwordHash,
+        phone_whatsapp: phoneWhatsapp ? sanitizePlainText(phoneWhatsapp, 30) : null,
+        pix_key: pixKey ? sanitizePlainText(pixKey, 150) : null,
+        code: cleanCode,
+        commission_rate: Number((commissionPercent / 100).toFixed(4)),
+        niche: niche ? sanitizePlainText(niche, 80) : null,
+        notes: notes ? sanitizePlainText(notes, 500, true) : null,
+        active: 1
+      });
+
+      res.status(201).json({ success: true, affiliate: formatSafeAffiliate(created) });
+    } catch (e: any) {
+      console.error('[MASTER_AFFILIATE_CREATE_ERR]', e);
+      res.status(500).json(safeErrorResponse(e, 'Erro ao cadastrar afiliado'));
+    }
+  });
+
+  // Master Admin: Update affiliate profile, commission %, or active toggle
+  api.patch('/admin/master/affiliates/:id', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const { id } = req.params;
+      const existing = await cloudNicheDb.getAffiliateById(id);
+      if (!existing) {
+        return res.status(404).json({ error: 'Afiliado não encontrado.' });
+      }
+
+      const parsed = UpdateAffiliateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Dados inválidos.' });
+      }
+
+      const updates: Record<string, any> = {};
+      const data = parsed.data;
+
+      if (data.name !== undefined) updates.name = sanitizePlainText(data.name, 120);
+      if (data.email !== undefined) {
+        const cleanEmail = data.email.trim().toLowerCase();
+        if (cleanEmail !== existing.email.toLowerCase()) {
+          const dup = await cloudNicheDb.getAffiliateByEmail(cleanEmail);
+          if (dup && dup.id !== id) {
+            return res.status(400).json({ error: 'E-mail já utilizado por outro afiliado.' });
+          }
+        }
+        updates.email = cleanEmail;
+      }
+      if (data.code !== undefined) {
+        const cleanCode = data.code.trim().toLowerCase();
+        if (RESERVED_SLUGS.has(cleanCode)) {
+          return res.status(400).json({ error: 'Código reservado pelo sistema.' });
+        }
+        if (cleanCode !== existing.code.toLowerCase()) {
+          const dupCode = await cloudNicheDb.getAffiliateByCode(cleanCode);
+          if (dupCode && dupCode.id !== id) {
+            return res.status(400).json({ error: 'Código já utilizado por outro afiliado.' });
+          }
+        }
+        updates.code = cleanCode;
+      }
+      if (data.phoneWhatsapp !== undefined) {
+        updates.phone_whatsapp = data.phoneWhatsapp ? sanitizePlainText(data.phoneWhatsapp, 30) : null;
+      }
+      if (data.pixKey !== undefined) {
+        updates.pix_key = data.pixKey ? sanitizePlainText(data.pixKey, 150) : null;
+      }
+      if (data.commissionPercent !== undefined) {
+        updates.commission_rate = Number((data.commissionPercent / 100).toFixed(4));
+      }
+      if (data.niche !== undefined) {
+        updates.niche = data.niche ? sanitizePlainText(data.niche, 80) : null;
+      }
+      if (data.notes !== undefined) {
+        updates.notes = data.notes ? sanitizePlainText(data.notes, 500, true) : null;
+      }
+      if (data.active !== undefined) {
+        updates.active = data.active ? 1 : 0;
+      }
+      if (data.password && data.password.trim().length > 0) {
+        const pwdCheck = validatePasswordStrength(data.password);
+        if (!pwdCheck.valid) {
+          return res.status(400).json({ error: pwdCheck.error });
+        }
+        updates.password_hash = await bcrypt.hash(data.password, 12);
+      }
+
+      const updated = await cloudNicheDb.updateAffiliate(id, updates);
+      res.json({ success: true, affiliate: formatSafeAffiliate(updated || existing) });
+    } catch (e: any) {
+      console.error('[MASTER_AFFILIATE_UPDATE_ERR]', e);
+      res.status(500).json(safeErrorResponse(e, 'Erro ao atualizar afiliado'));
+    }
+  });
+
+  // Master Admin: Delete affiliate
+  api.delete('/admin/master/affiliates/:id', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const deleted = await cloudNicheDb.deleteAffiliate(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: 'Afiliado não encontrado.' });
+      }
+      res.json({ success: true });
+    } catch (e: any) {
+      console.error('[MASTER_AFFILIATE_DELETE_ERR]', e);
+      res.status(500).json(safeErrorResponse(e, 'Erro ao excluir afiliado'));
+    }
+  });
+
+  // Master Admin: Mark matured (or pending) commissions of an affiliate as paid via PIX
+  api.post('/admin/master/affiliates/:id/payout', authenticateToken, requireMaster, async (req: any, res) => {
+    try {
+      const affiliate = await cloudNicheDb.getAffiliateById(req.params.id);
+      if (!affiliate) {
+        return res.status(404).json({ error: 'Afiliado não encontrado.' });
+      }
+      await cloudNicheDb.promoteMaturedCommissions();
+      const includePending = Boolean(req.body?.includePending);
+      const payoutReference = req.body?.payoutReference
+        ? sanitizePlainText(req.body.payoutReference, 120)
+        : `PIX_${new Date().toISOString().slice(0, 10)}`;
+
+      const result = await cloudNicheDb.markAffiliateCommissionsPaid(affiliate.id, {
+        includePending,
+        payoutReference
+      });
+
+      if (result.count === 0) {
+        return res.status(400).json({
+          error: 'Nenhuma comissão liberada para pagamento neste momento.'
+        });
+      }
+
+      recordSecurityEvent(req, {
+        eventType: 'AFFILIATE_PAYOUT_MARKED',
+        severity: 'low',
+        details: `Repasse PIX marcado como pago para ${affiliate.name} (${affiliate.code}): R$ ${result.totalAmount.toFixed(2)} (${result.count} comissão(ões))`
+      });
+
+      res.json({ success: true, ...result, payoutReference });
+    } catch (e: any) {
+      console.error('[MASTER_AFFILIATE_PAYOUT_ERR]', e);
+      res.status(500).json(safeErrorResponse(e, 'Erro ao registrar repasse de comissão'));
+    }
+  });
+
+  // Affiliate Partner Portal: Login
+  api.post('/affiliate/auth/login', loginLimiter, async (req, res) => {
+    try {
+      const parsed = AffiliateLoginSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Credenciais inválidas.' });
+      }
+      const cleanEmail = parsed.data.email.trim().toLowerCase();
+      const affiliate = await cloudNicheDb.getAffiliateByEmail(cleanEmail);
+      if (!affiliate) {
+        return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
+      }
+
+      const validPassword = await bcrypt.compare(parsed.data.password, affiliate.password_hash);
+      if (!validPassword) {
+        recordSecurityEvent(req, {
+          eventType: 'AFFILIATE_LOGIN_FAILED',
+          severity: 'low',
+          userEmail: cleanEmail,
+          details: 'Tentativa de login no Portal de Afiliados com senha inválida'
+        });
+        return res.status(401).json({ error: 'E-mail ou senha inválidos.' });
+      }
+
+      if (!affiliate.active) {
+        return res.status(403).json({ error: 'Sua conta de parceiro está desativada. Fale com o suporte.' });
+      }
+
+      const rememberMe = parsed.data.rememberMe !== false;
+      const token = jwt.sign(
+        {
+          id: affiliate.id,
+          code: affiliate.code,
+          email: affiliate.email,
+          role: 'affiliate',
+          typ: 'affiliate'
+        },
+        JWT_SECRET,
+        { expiresIn: rememberMe ? '30d' : '7d' }
+      );
+
+      res.json({
+        token,
+        affiliate: formatSafeAffiliate(affiliate)
+      });
+    } catch (e: any) {
+      console.error('[AFFILIATE_LOGIN_ERR]', e);
+      res.status(500).json(safeErrorResponse(e, 'Erro ao autenticar parceiro'));
+    }
+  });
+
+  // Affiliate Partner Portal: Dashboard overview, referrals & recurring commissions
+  api.get('/affiliate/me', authenticateAffiliate, async (req: any, res) => {
+    try {
+      const affiliate = req.affiliate;
+      await cloudNicheDb.promoteMaturedCommissions();
+
+      const [referrals, commissions, plansMap, clicksMap] = await Promise.all([
+        cloudNicheDb.listReferralsByAffiliateId(affiliate.id),
+        cloudNicheDb.listAffiliateCommissions(affiliate.id, 300),
+        getShopPlansMap(),
+        cloudNicheDb.getAffiliateClicksMap()
+      ]);
+
+      const shopIds = referrals.map((r) => r.shop_id);
+      let shopsList: any[] = [];
+      if (shopIds.length > 0) {
+        const { data: shopsData, error: shopsErr } = await supabase
+          .from('barbershops')
+          .select('id, name, segment, plan_id, is_blocked, expires_at, created_at')
+          .in('id', shopIds);
+        if (shopsErr) throw shopsErr;
+        shopsList = shopsData || [];
+      }
+      const shopMap = new Map<string, any>(shopsList.map((s) => [s.id, s]));
+
+      const referralItems = referrals.map((r) => {
+        const shop = shopMap.get(r.shop_id);
+        const { planId, planName, status } = computeShopSubscriptionStatus(shop, plansMap);
+        return {
+          shopId: r.shop_id,
+          shopName: shop?.name || 'Estabelecimento',
+          segment: shop?.segment || 'barbershop',
+          planId,
+          planName,
+          status,
+          registeredAt: r.created_at,
+          expiresAt: shop?.expires_at || null
+        };
+      });
+
+      const commissionItems = commissions.map((c) => {
+        const shop = shopMap.get(c.shop_id);
+        return {
+          id: c.id,
+          shopId: c.shop_id,
+          shopName: shop?.name || 'Assinante',
+          planId: c.plan_id,
+          planName: c.plan_name,
+          grossAmount: Number(c.gross_amount) || 0,
+          commissionRate: Number(c.commission_rate) || 0.25,
+          commissionAmount: Number(c.commission_amount) || 0,
+          status: c.status,
+          availableAt: c.available_at,
+          paidAt: c.paid_at,
+          payoutReference: c.payout_reference,
+          createdAt: c.created_at
+        };
+      });
+
+      const pendingAmount = commissionItems
+        .filter((c) => c.status === 'pending')
+        .reduce((sum, c) => sum + c.commissionAmount, 0);
+      const availableAmount = commissionItems
+        .filter((c) => c.status === 'available')
+        .reduce((sum, c) => sum + c.commissionAmount, 0);
+      const paidAmount = commissionItems
+        .filter((c) => c.status === 'paid')
+        .reduce((sum, c) => sum + c.commissionAmount, 0);
+
+      const clickEntry = clicksMap[affiliate.id] || { totalClicks: 0, uniqueClicks: 0, lastClickedAt: null };
+      const clicksCount = clickEntry.totalClicks;
+      const uniqueClicks = clickEntry.uniqueClicks;
+      const trialCount = referralItems.filter((r) => r.status === 'trial').length;
+      const activePaidCount = referralItems.filter((r) => r.status === 'active').length;
+      const signupConversionRate =
+        clicksCount > 0 ? Number(((referralItems.length / clicksCount) * 100).toFixed(1)) : 0;
+      const paidConversionRate =
+        clicksCount > 0 ? Number(((activePaidCount / clicksCount) * 100).toFixed(1)) : 0;
+      const trialToPaidRate =
+        referralItems.length > 0 ? Number(((activePaidCount / referralItems.length) * 100).toFixed(1)) : 0;
+
+      res.json({
+        affiliate: formatSafeAffiliate(affiliate),
+        metrics: {
+          clicksCount,
+          uniqueClicks,
+          lastClickedAt: clickEntry.lastClickedAt,
+          referralsCount: referralItems.length,
+          trialCount,
+          activePaidCount,
+          signupConversionRate,
+          paidConversionRate,
+          trialToPaidRate,
+          pendingAmount: Number(pendingAmount.toFixed(2)),
+          availableAmount: Number(availableAmount.toFixed(2)),
+          paidAmount: Number(paidAmount.toFixed(2)),
+          totalEarned: Number((pendingAmount + availableAmount + paidAmount).toFixed(2))
+        },
+        referrals: referralItems,
+        commissions: commissionItems
+      });
+    } catch (e: any) {
+      console.error('[AFFILIATE_ME_ERR]', e);
+      res.status(500).json(safeErrorResponse(e, 'Erro ao carregar dados do afiliado'));
+    }
+  });
+
+  // Affiliate Partner Portal: Update own PIX key, WhatsApp, or password
+  api.patch('/affiliate/me/profile', authenticateAffiliate, async (req: any, res) => {
+    try {
+      const parsed = AffiliateProfileUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ error: parsed.error.issues[0]?.message || 'Dados inválidos.' });
+      }
+
+      const updates: Record<string, any> = {};
+      if (parsed.data.pixKey !== undefined) {
+        updates.pix_key = parsed.data.pixKey ? sanitizePlainText(parsed.data.pixKey, 150) : null;
+      }
+      if (parsed.data.phoneWhatsapp !== undefined) {
+        updates.phone_whatsapp = parsed.data.phoneWhatsapp ? sanitizePlainText(parsed.data.phoneWhatsapp, 30) : null;
+      }
+      if (parsed.data.newPassword && parsed.data.newPassword.trim().length > 0) {
+        const pwdCheck = validatePasswordStrength(parsed.data.newPassword);
+        if (!pwdCheck.valid) {
+          return res.status(400).json({ error: pwdCheck.error });
+        }
+        updates.password_hash = await bcrypt.hash(parsed.data.newPassword, 12);
+      }
+
+      const updated = await cloudNicheDb.updateAffiliate(req.affiliate.id, updates);
+      res.json({
+        success: true,
+        affiliate: formatSafeAffiliate(updated || req.affiliate)
+      });
+    } catch (e: any) {
+      console.error('[AFFILIATE_PROFILE_UPDATE_ERR]', e);
+      res.status(500).json(safeErrorResponse(e, 'Erro ao atualizar perfil do parceiro'));
     }
   });
 
@@ -5804,7 +7701,7 @@ async function startServer() {
         cronSecretMasked: cronSecret ? `${cronSecret.slice(0, 3)}••••${cronSecret.slice(-2)}` : ''
       });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao carregar configuração da Evolution API', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao carregar configuração da Evolution API'));
     }
   });
 
@@ -5842,7 +7739,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[MASTER_EVOLUTION_SAVE_ERR]', e);
-      res.status(500).json({ error: 'Erro ao salvar configuração da Evolution API', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao salvar configuração da Evolution API'));
     }
   });
 
@@ -5917,7 +7814,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[WHATSAPP_CONFIG_GET_ERR]', e);
-      res.status(500).json({ error: 'Erro ao carregar configurações de WhatsApp', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao carregar configurações de WhatsApp'));
     }
   });
 
@@ -5969,7 +7866,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[WHATSAPP_CONFIG_PUT_ERR]', e);
-      res.status(500).json({ error: 'Erro ao salvar regras e modelos de WhatsApp', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao salvar regras e modelos de WhatsApp'));
     }
   });
 
@@ -6023,7 +7920,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[WHATSAPP_CONNECT_ERR]', e);
-      res.status(500).json({ error: 'Erro ao iniciar conexão do WhatsApp', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao iniciar conexão do WhatsApp'));
     }
   });
 
@@ -6058,7 +7955,7 @@ async function startServer() {
         connectedPhone: live.connectedPhone ?? existing.connected_phone
       });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao consultar status do WhatsApp', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao consultar status do WhatsApp'));
     }
   });
 
@@ -6078,7 +7975,7 @@ async function startServer() {
       }
       res.json({ success: true });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao desconectar WhatsApp', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao desconectar WhatsApp'));
     }
   });
 
@@ -6130,7 +8027,7 @@ async function startServer() {
 
       res.json({ success: true, messageId: sendRes.messageId });
     } catch (e: any) {
-      res.status(500).json({ error: 'Erro ao enviar teste', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro ao enviar teste'));
     }
   });
 
@@ -6270,7 +8167,7 @@ async function startServer() {
       });
     } catch (e: any) {
       console.error('[CRON_WHATSAPP_REMINDERS_ERR]', e);
-      res.status(500).json({ error: 'Erro na rotina de lembretes WhatsApp', details: e.message });
+      res.status(500).json(safeErrorResponse(e, 'Erro na rotina de lembretes WhatsApp'));
     }
   };
 
@@ -6279,82 +8176,86 @@ async function startServer() {
 
   // --- END MASTER ADMIN ROUTES ---
 
-  // Protected Seed Endpoint (Master Admin only)
-  api.post('/seed', authenticateToken, requireMaster, async (req, res) => {
-    try {
-      console.log('[SEED] Starting database sync...');
-      const shopId = 'shop-1';
-      const { data: existingShop } = await supabase.from('barbershops').select('*').eq('id', shopId).maybeSingle();
-      
-      const hashDefault = await bcrypt.hash('admin123', 10);
-      const hashMarcus = await bcrypt.hash('Luna2025', 10);
+  // Protected Seed Endpoint (Master Admin only; completely disabled in production)
+  if (!IS_PRODUCTION) {
+    api.post('/seed', authenticateToken, requireMaster, async (req, res) => {
+      try {
+        console.log('[SEED] Starting database sync...');
+        const shopId = 'shop-1';
+        const { data: existingShop } = await supabase.from('barbershops').select('*').eq('id', shopId).maybeSingle();
+        
+        const bootstrapPass =
+          process.env.MASTER_BOOTSTRAP_PASSWORD?.trim() || nodeCrypto.randomBytes(24).toString('base64url');
+        const hashAdmin = await bcrypt.hash(bootstrapPass, 12);
+        const hashMarcus = await bcrypt.hash(bootstrapPass, 12);
 
-      if (!existingShop) {
-        await supabase.from('barbershops').insert({
-          id: shopId,
-          name: 'Doiseme Barber Shop',
-          slug: 'doiseme',
-          address: 'Rua das Flores, 123 - Centro',
-          phone: '11999999999',
-          instagram: '@doiseme.barber'
+        if (!existingShop) {
+          await supabase.from('barbershops').insert({
+            id: shopId,
+            name: 'Doiseme Barber Shop',
+            slug: 'doiseme',
+            address: 'Rua das Flores, 123 - Centro',
+            phone: '11999999999',
+            instagram: '@doiseme.barber'
+          });
+        }
+
+        const usersToSeed = [
+          {
+            id: 'user-admin',
+            barbershop_id: shopId,
+            name: 'Admin Doiseme',
+            email: 'admin@doiseme.com',
+            password_hash: hashAdmin,
+            role: 'master'
+          },
+          {
+            id: 'user-marcus',
+            barbershop_id: shopId,
+            name: 'Marcus Doiseme',
+            email: 'marcusdoiseme@doiseme.com',
+            password_hash: hashMarcus,
+            role: 'master'
+          }
+        ];
+
+        for (const u of usersToSeed) {
+          const { data: ext } = await supabase.from('users').select('id').eq('email', u.email).maybeSingle();
+          if (!ext) {
+            await supabase.from('users').insert(u);
+          } else {
+            await supabase.from('users').update({ role: 'master' }).eq('email', u.email);
+          }
+        }
+
+        // Barbers ensure
+        const { count: bCount } = await supabase.from('barbers').select('*', { count: 'exact', head: true });
+        if (!bCount) {
+          await supabase.from('barbers').insert([
+            { id: 'barber-1', barbershop_id: shopId, name: 'João Silva', active: true },
+            { id: 'barber-2', barbershop_id: shopId, name: 'Carlos Santos', active: true }
+          ]);
+        }
+
+        // Services ensure
+        const { count: sCount } = await supabase.from('services').select('*', { count: 'exact', head: true });
+        if (!sCount) {
+          await supabase.from('services').insert([
+            { id: 'srv-1', barbershop_id: shopId, name: 'Corte Clássico', duration_minutes: 30, price: 45.00, active: true },
+            { id: 'srv-2', barbershop_id: shopId, name: 'Barba Terapia', duration_minutes: 30, price: 35.00, active: true }
+          ]);
+        }
+
+        res.json({ 
+          success: true, 
+          message: 'Sistema sincronizado com sucesso!'
         });
+      } catch (error: any) {
+        console.error('[SEED_ERROR]', error);
+        res.status(500).json(safeErrorResponse(error, 'Falha na sincronização inicial'));
       }
-
-      const usersToSeed = [
-        {
-          id: 'user-admin',
-          barbershop_id: shopId,
-          name: 'Admin Doiseme',
-          email: 'admin@doiseme.com',
-          password_hash: hashDefault,
-          role: 'master'
-        },
-        {
-          id: 'user-marcus',
-          barbershop_id: shopId,
-          name: 'Marcus Doiseme',
-          email: 'marcusdoiseme@doiseme.com',
-          password_hash: hashMarcus,
-          role: 'master'
-        }
-      ];
-
-      for (const u of usersToSeed) {
-        const { data: ext } = await supabase.from('users').select('id').eq('email', u.email).maybeSingle();
-        if (!ext) {
-          await supabase.from('users').insert(u);
-        } else {
-          await supabase.from('users').update({ role: 'master' }).eq('email', u.email);
-        }
-      }
-
-      // Barbers ensure
-      const { count: bCount } = await supabase.from('barbers').select('*', { count: 'exact', head: true });
-      if (!bCount) {
-        await supabase.from('barbers').insert([
-          { id: 'barber-1', barbershop_id: shopId, name: 'João Silva', active: true },
-          { id: 'barber-2', barbershop_id: shopId, name: 'Carlos Santos', active: true }
-        ]);
-      }
-
-      // Services ensure
-      const { count: sCount } = await supabase.from('services').select('*', { count: 'exact', head: true });
-      if (!sCount) {
-        await supabase.from('services').insert([
-          { id: 'srv-1', barbershop_id: shopId, name: 'Corte Clássico', duration_minutes: 30, price: 45.00, active: true },
-          { id: 'srv-2', barbershop_id: shopId, name: 'Barba Terapia', duration_minutes: 30, price: 35.00, active: true }
-        ]);
-      }
-
-      res.json({ 
-        success: true, 
-        message: 'Sistema sincronizado com sucesso!'
-      });
-    } catch (error: any) {
-      console.error('[SEED_ERROR]', error);
-      res.status(500).json({ error: 'Seed failed', details: error.message });
-    }
-  });
+    });
+  }
 
   // API 404 Handler - Prevent falling through to SPA HTML
   api.use((req, res) => {
@@ -6365,13 +8266,18 @@ async function startServer() {
     });
   });
 
-  // API Global Error Handler
-  api.use((err: any, req: any, res: any, next: any) => {
+  // API Global Error Handler (never leaks internal stack or raw error messages in production)
+  api.use((err: any, req: any, res: any, _next: any) => {
+    if (err?.type === 'entity.parse.failed' || (err instanceof SyntaxError && (err as any)?.status === 400 && 'body' in err)) {
+      return res.status(400).json({ error: 'JSON inválido no corpo da requisição.' });
+    }
+    if (err?.type === 'entity.too.large' || err?.status === 413) {
+      return res.status(413).json({ error: 'Tamanho máximo do payload excedido.' });
+    }
     console.error(`[API_ERROR] ${req.method} ${req.originalUrl}:`, err);
-    res.status(500).json({ 
-      error: 'Erro interno na API',
-      message: err.message 
-    });
+    res.status(err?.status && err.status >= 400 && err.status < 600 ? err.status : 500).json(
+      safeErrorResponse(err, 'Erro interno na API')
+    );
   });
 
   app.use('/api', api);

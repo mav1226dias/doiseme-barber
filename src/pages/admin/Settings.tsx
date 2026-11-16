@@ -135,8 +135,8 @@ export default function Settings() {
       return;
     }
 
-    if (newPassword.length < 6) {
-      toast.error('A nova senha deve ter pelo menos 6 caracteres');
+    if (newPassword.length < 8 || !/[a-zA-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      toast.error('A nova senha deve ter pelo menos 8 caracteres, com letras e números');
       return;
     }
 
@@ -156,6 +156,7 @@ export default function Settings() {
     try {
       const res = await fetch('/api/admin/change-password', {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
@@ -170,6 +171,9 @@ export default function Settings() {
       const data = await res.json();
 
       if (res.ok) {
+        if (data.token) {
+          localStorage.setItem('token', data.token);
+        }
         toast.success('Senha alterada com sucesso!');
         setCurrentPassword('');
         setNewPassword('');
@@ -433,7 +437,7 @@ export default function Settings() {
                     type={showNewPassword ? 'text' : 'password'}
                     value={newPassword}
                     onChange={e => setNewPassword(e.target.value)}
-                    placeholder="Mínimo de 6 caracteres"
+                    placeholder="Mínimo de 8 caracteres (letras e números)"
                     required
                     className="w-full bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-800 rounded-xl px-4 py-3 pr-11 text-sm outline-none focus:border-[#D4AF37] text-gray-900 dark:text-white transition-all"
                   />
@@ -449,11 +453,11 @@ export default function Settings() {
                 
                 {/* Indicador de Requisito */}
                 <div className="flex items-center gap-1.5 text-[11px] pt-1">
-                  <span className={`w-3.5 h-3.5 rounded-full flex items-center justify-center ${newPassword.length >= 6 ? 'text-green-500' : 'text-gray-400'}`}>
+                  <span className={`w-3.5 h-3.5 rounded-full flex items-center justify-center ${newPassword.length >= 8 && /[a-zA-Z]/.test(newPassword) && /[0-9]/.test(newPassword) ? 'text-green-500' : 'text-gray-400'}`}>
                     <CheckCircle2 className="w-3.5 h-3.5" />
                   </span>
-                  <span className={newPassword.length >= 6 ? 'text-green-600 dark:text-green-400 font-medium' : 'text-gray-500'}>
-                    Pelo menos 6 caracteres {newPassword.length > 0 && `(${newPassword.length}/6)`}
+                  <span className={newPassword.length >= 8 && /[a-zA-Z]/.test(newPassword) && /[0-9]/.test(newPassword) ? 'text-green-600 dark:text-green-400 font-medium' : 'text-gray-500'}>
+                    Mín. 8 caracteres com letras e números {newPassword.length > 0 && `(${newPassword.length}/8)`}
                   </span>
                 </div>
               </div>

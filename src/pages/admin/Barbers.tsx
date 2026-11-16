@@ -514,7 +514,7 @@ export default function Barbers() {
                   type={showNewPassword ? 'text' : 'password'}
                   value={newLoginPassword}
                   onChange={(e) => setNewLoginPassword(e.target.value)}
-                  placeholder="Senha inicial (mín. 6 caracteres)"
+                  placeholder="Senha inicial (mín. 8 caracteres, letras/números)"
                   className="w-full border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl pl-3.5 pr-10 py-2.5 text-sm outline-none focus:border-black dark:focus:border-white"
                 />
                 <button
@@ -695,14 +695,14 @@ export default function Barbers() {
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-gray-500 mb-1">
-                    {editingBarber.loginEmail ? 'Nova senha (deixe em branco p/ manter)' : 'Senha inicial (mín. 6 caracteres)'}
+                    {editingBarber.loginEmail ? 'Nova senha (deixe em branco p/ manter)' : 'Senha inicial (mín. 8 caracteres, letras e números)'}
                   </label>
                   <div className="relative">
                     <input
                       type={showEditPassword ? 'text' : 'password'}
                       value={editLoginPassword}
                       onChange={(e) => setEditLoginPassword(e.target.value)}
-                      placeholder={editingBarber.loginEmail ? '•••••••• (opcional)' : 'Mínimo 6 caracteres'}
+                      placeholder={editingBarber.loginEmail ? '•••••••• (opcional)' : 'Mínimo 8 caracteres'}
                       className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl pl-3 pr-10 py-2 text-sm outline-none"
                     />
                     <button

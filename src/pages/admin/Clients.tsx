@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Search, Upload, Users, UserPlus, Trash2, Brain, Sparkles, AlertTriangle, X } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import { readSheet } from 'read-excel-file/browser';
 import Papa from 'papaparse';
 import { toast } from 'sonner';
 import { getSegment } from '../../lib/segments';
@@ -194,10 +194,22 @@ export default function Clients() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('O arquivo excede o tamanho máximo permitido (5 MB).');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
+
     const ext = file.name.split('.').pop()?.toLowerCase();
 
     const processData = (parsedClients: {name: string, phone: string}[]) => {
-      const validClients = parsedClients.filter(c => c.phone && c.phone.length > 5);
+      const validClients = parsedClients
+        .map((c) => ({
+          name: String(c.name || '').replace(/^[=+\-@]+/, '').trim().slice(0, 120),
+          phone: String(c.phone || '').replace(/\D/g, '').slice(0, 15)
+        }))
+        .filter(c => c.phone && c.phone.length > 5);
+
       if (validClients.length === 0) {
         toast.error('Nenhum cliente válido encontrado. Verifique se o arquivo contém nome e telefone.');
         if (fileInputRef.current) fileInputRef.current.value = '';
@@ -207,40 +219,36 @@ export default function Clients() {
       setPendingImportClients(validClients);
     };
 
-    if (ext === 'xlsx' || ext === 'xls') {
-      const reader = new FileReader();
-      reader.onload = (evt) => {
-        const bstr = evt.target?.result;
-        const wb = XLSX.read(bstr, {type:'binary'});
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
-        
-        // Try to guess columns.
-        const result = [];
-        for (let i=0; i<data.length; i++) {
-          const row = data[i];
-          if (!row || row.length === 0) continue;
-          
-          let name = '';
-          let phone = '';
-          
-          row.forEach(cell => {
-            const strCell = String(cell);
-            // very basic phone check (at least 8 digits)
-            const digits = strCell.replace(/\D/g, '');
-            if (digits.length >= 8 && digits.length <= 15) {
-              phone = digits;
-            } else if (strCell.length > 2 && isNaN(Number(strCell))) {
-              name = strCell;
-            }
-          });
-          
-          if (phone) result.push({ name, phone });
-        }
-        processData(result);
-      };
-      reader.readAsBinaryString(file);
+    if (ext === 'xlsx') {
+      readSheet(file)
+        .then((data) => {
+          const result = [];
+          for (let i = 0; i < data.length; i++) {
+            const row = data[i];
+            if (!row || row.length === 0) continue;
+
+            let name = '';
+            let phone = '';
+
+            row.forEach((cell) => {
+              if (cell === null || cell === undefined) return;
+              const strCell = String(cell);
+              const digits = strCell.replace(/\D/g, '');
+              if (digits.length >= 8 && digits.length <= 15) {
+                phone = digits;
+              } else if (strCell.length > 2 && isNaN(Number(strCell))) {
+                name = strCell;
+              }
+            });
+
+            if (phone) result.push({ name, phone });
+          }
+          processData(result);
+        })
+        .catch(() => {
+          toast.error('Não foi possível ler o arquivo .xlsx. Verifique se está íntegro.');
+          if (fileInputRef.current) fileInputRef.current.value = '';
+        });
     } else if (ext === 'csv') {
       Papa.parse(file, {
         complete: (results) => {
@@ -347,7 +355,7 @@ export default function Clients() {
             <div>
               <input 
                 type="file" 
-                accept=".vcf,.csv,.xlsx,.xls"
+                accept=".vcf,.csv,.xlsx"
                 onChange={handleFileUpload}
                 className="hidden"
                 ref={fileInputRef}

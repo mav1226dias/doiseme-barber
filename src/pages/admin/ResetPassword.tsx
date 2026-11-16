@@ -60,8 +60,8 @@ export default function ResetPassword() {
     e.preventDefault();
     setSubmitError('');
 
-    if (newPassword.length < 6) {
-      setSubmitError('A nova senha deve ter no mínimo 6 caracteres.');
+    if (newPassword.length < 8 || !/[a-zA-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      setSubmitError('A nova senha deve ter no mínimo 8 caracteres, com letras e números.');
       return;
     }
     if (newPassword !== confirmPassword) {
@@ -73,7 +73,7 @@ export default function ResetPassword() {
     try {
       const res = await fetch('/api/auth/reset-password', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({ token, newPassword, confirmPassword })
       });
       const data = await res.json();
@@ -91,14 +91,30 @@ export default function ResetPassword() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-[#141414] border border-white/10 rounded-3xl p-8 shadow-2xl">
-        <div className="flex flex-col items-center mb-8">
-          <Scissors className="w-10 h-10 text-[#D4AF37] mb-4" />
+      <div className="w-full max-w-md bg-[#141414] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-xs font-medium text-zinc-300 hover:text-white hover:border-white/25 transition-colors whitespace-nowrap"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Voltar para Home
+          </Link>
+          <Link
+            to="/admin/login"
+            className="text-xs text-zinc-400 hover:text-[#D4AF37] transition-colors whitespace-nowrap"
+          >
+            Ir para Login
+          </Link>
+        </div>
+
+        <Link to="/" className="flex flex-col items-center mb-8 group">
+          <Scissors className="w-10 h-10 text-[#D4AF37] mb-4 group-hover:scale-105 transition-transform" />
           <h1 className="text-2xl font-bold text-white font-serif tracking-wide flex items-center">
             DOISEME<span className="text-[#D4AF37] font-sans font-extrabold text-sm px-1.5 py-0.5 rounded bg-[#D4AF37]/15 ml-1">PRO</span>
           </h1>
           <p className="text-zinc-400 text-xs uppercase tracking-widest mt-1.5">Nova Senha</p>
-        </div>
+        </Link>
 
         {checking ? (
           <div className="py-10 flex flex-col items-center gap-3 text-zinc-400 text-sm">
@@ -157,15 +173,18 @@ export default function ResetPassword() {
             )}
 
             <div>
-              <label className="block text-xs text-zinc-400 mb-2 uppercase tracking-wider">Nova Senha</label>
+              <label htmlFor="reset-new-password" className="block text-xs text-zinc-400 mb-2 uppercase tracking-wider">Nova Senha</label>
               <div className="relative">
                 <input
+                  id="reset-new-password"
+                  name="newPassword"
                   type={showNew ? 'text' : 'password'}
+                  autoComplete="new-password"
                   required
-                  minLength={6}
+                  minLength={8}
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Mínimo 6 caracteres"
+                  placeholder="Mínimo 8 caracteres (letras e números)"
                   className="w-full bg-black/50 border border-white/10 rounded-xl pl-3.5 pr-10 py-3 text-sm text-white focus:border-[#D4AF37] outline-none transition-colors"
                 />
                 <button
@@ -180,12 +199,15 @@ export default function ResetPassword() {
             </div>
 
             <div>
-              <label className="block text-xs text-zinc-400 mb-2 uppercase tracking-wider">Confirmar Nova Senha</label>
+              <label htmlFor="reset-confirm-password" className="block text-xs text-zinc-400 mb-2 uppercase tracking-wider">Confirmar Nova Senha</label>
               <div className="relative">
                 <input
+                  id="reset-confirm-password"
+                  name="confirmPassword"
                   type={showConfirm ? 'text' : 'password'}
+                  autoComplete="new-password"
                   required
-                  minLength={6}
+                  minLength={8}
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   placeholder="Repita a nova senha"

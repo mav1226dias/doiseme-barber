@@ -114,48 +114,48 @@ INSERT INTO barbershops (id, name, slug)
 VALUES ('shop-1', 'Doiseme System', 'doiseme')
 ON CONFLICT (id) DO NOTHING;
 
--- 4. Seed Master Admins (Using ON CONFLICT to avoid errors)
--- Note: Replace with actual hashes if needed
-INSERT INTO users (id, barbershop_id, name, email, password_hash, role) VALUES 
-('user-admin', 'shop-1', 'Admin Doiseme', 'admin@doiseme.com', '$2b$10$f38aI2MhXl9gZkY1o7H7yeRk6fQWpJ5yC6nZz.rWJ.aKqjT9p6K.S', 'master'),
-('user-marcus', 'shop-1', 'Marcus Doiseme', 'marcusdoiseme@doiseme.com', '$2b$10$eW8O8zH0/eQ4L1T5B3G/e.n0S/7o0h/V.y1WJ.O0Z0r2o6R.uU.mK', 'master'),
-('user-marcus-gmail', 'shop-1', 'Marcus Dias', 'marcusdias2014mv@gmail.com', '$2b$10$f38aI2MhXl9gZkY1o7H7yeRk6fQWpJ5yC6nZz.rWJ.aKqjT9p6K.S', 'master')
-ON CONFLICT (id) DO UPDATE SET role = 'master';
+-- 4. Nota de Segurança sobre Contas Master:
+-- Crie usuários Master iniciais pela aplicação ou via bcrypt seguro no painel SQL,
+-- nunca com senhas padrão fixas no repositório.
 
--- 5. Disable Row Level Security (RLS) for all tables
-ALTER TABLE barbershops DISABLE ROW LEVEL SECURITY;
-ALTER TABLE users DISABLE ROW LEVEL SECURITY;
-ALTER TABLE barbers DISABLE ROW LEVEL SECURITY;
-ALTER TABLE services DISABLE ROW LEVEL SECURITY;
-ALTER TABLE clients DISABLE ROW LEVEL SECURITY;
-ALTER TABLE appointments DISABLE ROW LEVEL SECURITY;
-ALTER TABLE shop_settings DISABLE ROW LEVEL SECURITY;
-ALTER TABLE finances DISABLE ROW LEVEL SECURITY;
+-- 5. Enable Row Level Security (RLS) by default on ALL tables
+-- Com RLS ativado e sem políticas permissivas para `anon`, apenas o backend
+-- (usando SUPABASE_SERVICE_ROLE_KEY) pode ler/gravar dados diretamente no banco.
+ALTER TABLE barbershops ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE barbers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE services ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE appointments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE shop_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE finances ENABLE ROW LEVEL SECURITY;
+ALTER TABLE client_packages ENABLE ROW LEVEL SECURITY;
 
 -- 6. Storage Configuration (Run this in Supabase SQL Editor)
--- Criar o bucket para fotos da barbearia se não existir
 INSERT INTO storage.buckets (id, name, public) 
 VALUES ('barbearias-assets', 'barbearias-assets', true)
 ON CONFLICT (id) DO NOTHING;
 
--- Política: Permitir que qualquer pessoa veja as fotos (Public Access)
+-- Leitura pública apenas para imagens já enviadas pelo backend
+DROP POLICY IF EXISTS "Public Access" ON storage.objects;
 CREATE POLICY "Public Access" ON storage.objects
   FOR SELECT USING (bucket_id = 'barbearias-assets');
 
--- Política: Permitir Upload para anon (protegido pelo nosso servidor)
-CREATE POLICY "Admin Insert" ON storage.objects
+-- Bloqueia uploads/alterações/exclusões anônimas diretas (apenas backend service_role)
+DROP POLICY IF EXISTS "Admin Insert" ON storage.objects;
+CREATE POLICY "Service Role Insert" ON storage.objects
   FOR INSERT WITH CHECK (
-    bucket_id = 'barbearias-assets'
+    bucket_id = 'barbearias-assets' AND auth.role() = 'service_role'
   );
 
--- Política: Permitir Update para anon
-CREATE POLICY "Admin Update" ON storage.objects
+DROP POLICY IF EXISTS "Admin Update" ON storage.objects;
+CREATE POLICY "Service Role Update" ON storage.objects
   FOR UPDATE USING (
-    bucket_id = 'barbearias-assets'
+    bucket_id = 'barbearias-assets' AND auth.role() = 'service_role'
   );
 
--- Política: Permitir Delete para anon
-CREATE POLICY "Admin Delete" ON storage.objects
+DROP POLICY IF EXISTS "Admin Delete" ON storage.objects;
+CREATE POLICY "Service Role Delete" ON storage.objects
   FOR DELETE USING (
-    bucket_id = 'barbearias-assets'
+    bucket_id = 'barbearias-assets' AND auth.role() = 'service_role'
   );

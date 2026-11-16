@@ -7,8 +7,10 @@ import {
   CheckCircle2,
   AlertCircle,
   Loader2,
+  ArrowLeft,
   ArrowRight,
   Globe,
+  Handshake,
   Calendar,
   Sparkles,
   Check
@@ -16,6 +18,8 @@ import {
 import { toast } from 'sonner';
 import { SEGMENTS, getSegment } from '../../lib/segments';
 import { SegmentIcon } from '../../components/SegmentIcon';
+import { captureReferralFromSearch, clearStoredReferralCode, getReferralFromUrlSearch, trackAffiliateClick } from '../../lib/referral';
+import { saveRememberedEmail, storeBrowserPasswordCredential } from '../../lib/browserCredentials';
 
 function toSlug(text: string): string {
   return text
@@ -61,8 +65,28 @@ export default function Register() {
 
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [referralCode, setReferralCode] = useState<string | null>(null);
+  const [partnerInfo, setPartnerInfo] = useState<{ firstName: string; code: string } | null>(null);
 
   const selectedPreset = getSegment(segment);
+
+  useEffect(() => {
+    const explicitUrlRef = getReferralFromUrlSearch(window.location.search);
+    const activeRef = captureReferralFromSearch(window.location.search);
+    if (!activeRef) return;
+    setReferralCode(activeRef);
+    fetch(`/api/public/affiliate/${encodeURIComponent(activeRef)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.valid && data?.firstName) {
+          setPartnerInfo({ firstName: data.firstName, code: data.code });
+          if (explicitUrlRef) {
+            trackAffiliateClick(data.code);
+          }
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!slugManuallyEdited) {
@@ -114,8 +138,8 @@ export default function Register() {
     e.preventDefault();
     setError('');
 
-    if (password.length < 6) {
-      setError('A senha deve ter no mínimo 6 caracteres.');
+    if (password.length < 8 || !/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
+      setError('A senha deve ter no mínimo 8 caracteres, com letras e números.');
       return;
     }
     if (password !== confirmPassword) {
@@ -135,7 +159,8 @@ export default function Register() {
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
         body: JSON.stringify({
           businessName: businessName.trim(),
           ownerName: ownerName.trim(),
@@ -147,7 +172,8 @@ export default function Register() {
           confirmPassword,
           seedStarterServices,
           createOwnerAsProfessional,
-          acceptedTerms
+          acceptedTerms,
+          referralCode: referralCode || undefined
         })
       });
 
@@ -156,6 +182,14 @@ export default function Register() {
         setError(data.error || 'Não foi possível concluir o cadastro.');
         return;
       }
+
+      clearStoredReferralCode();
+      saveRememberedEmail('admin', email.trim());
+      await storeBrowserPasswordCredential({
+        email: email.trim(),
+        password,
+        name: ownerName.trim() || businessName.trim()
+      });
 
       try {
         localStorage.setItem('token', data.token);
@@ -180,11 +214,20 @@ export default function Register() {
         {/* Left Editorial / Onboarding Preview Column */}
         <div className="lg:col-span-5 flex flex-col justify-between bg-[#121212] border border-white/10 rounded-3xl p-8">
           <div className="space-y-6">
-            <div className="flex items-center gap-2.5">
-              <Scissors className="w-7 h-7 text-[#D4AF37]" />
-              <span className="text-xl font-bold font-serif tracking-wide text-white whitespace-nowrap">
-                DOISEME<span className="text-[#D4AF37] font-sans font-extrabold text-xs px-1.5 py-0.5 rounded bg-[#D4AF37]/15 ml-1">PRO</span>
-              </span>
+            <div className="flex items-center justify-between gap-3">
+              <Link to="/" className="flex items-center gap-2.5">
+                <Scissors className="w-7 h-7 text-[#D4AF37]" />
+                <span className="text-xl font-bold font-serif tracking-wide text-white whitespace-nowrap">
+                  DOISEME<span className="text-[#D4AF37] font-sans font-extrabold text-xs px-1.5 py-0.5 rounded bg-[#D4AF37]/15 ml-1">PRO</span>
+                </span>
+              </Link>
+              <Link
+                to="/"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-xs font-medium text-zinc-300 hover:text-white hover:border-white/25 transition-colors whitespace-nowrap"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Voltar para Home
+              </Link>
             </div>
 
             <div className="space-y-3">
@@ -257,6 +300,28 @@ export default function Register() {
             </Link>
           </div>
 
+          {partnerInfo && (
+            <div className="mb-5 px-4 py-3.5 rounded-xl border border-[#D4AF37]/35 bg-[#D4AF37]/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+              <div className="flex items-start gap-2.5 text-zinc-200">
+                <Handshake className="w-4 h-4 text-[#D4AF37] shrink-0 mt-0.5" />
+                <div>
+                  <p>
+                    Indicação verificada pelo parceiro <strong className="text-white">{partnerInfo.firstName}</strong>
+                  </p>
+                  <p className="text-emerald-400 mt-0.5">
+                    Condição promocional aplicada: R$ 20/mês OFF no mensal ou até R$ 681 off no anual após os 7 dias grátis.
+                  </p>
+                </div>
+              </div>
+              <Link
+                to={`/r/${encodeURIComponent(partnerInfo.code)}`}
+                className="font-mono text-[#D4AF37] hover:underline shrink-0"
+              >
+                Ver oferta ({partnerInfo.code})
+              </Link>
+            </div>
+          )}
+
           {error && (
             <div className="bg-red-500/10 border border-red-500/40 text-red-400 p-3.5 rounded-xl text-sm flex items-start gap-2.5 mb-6">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
@@ -264,7 +329,7 @@ export default function Register() {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form method="post" autoComplete="on" onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1.5">
@@ -365,11 +430,14 @@ export default function Register() {
             </div>
 
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+              <label htmlFor="register-email" className="block text-xs font-medium text-zinc-400 mb-1.5">
                 E-mail de Acesso *
               </label>
               <input
+                id="register-email"
+                name="email"
                 type="email"
+                autoComplete="username"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
@@ -380,14 +448,17 @@ export default function Register() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                  Senha (mín. 6 caracteres) *
+                <label htmlFor="register-password" className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  Senha (mín. 8 caracteres, letras e números) *
                 </label>
                 <div className="relative">
                   <input
+                    id="register-password"
+                    name="password"
                     type={showPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
                     required
-                    minLength={6}
+                    minLength={8}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="••••••••"
@@ -405,14 +476,17 @@ export default function Register() {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                <label htmlFor="register-confirm-password" className="block text-xs font-medium text-zinc-400 mb-1.5">
                   Confirmar Senha *
                 </label>
                 <div className="relative">
                   <input
+                    id="register-confirm-password"
+                    name="confirmPassword"
                     type={showConfirmPassword ? 'text' : 'password'}
+                    autoComplete="new-password"
                     required
-                    minLength={6}
+                    minLength={8}
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="••••••••"

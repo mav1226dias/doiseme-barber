@@ -1,7 +1,9 @@
 node_modules/
 dist/
 data/
-sqlite.db
+*.db
+*.db-wal
+*.db-shm
 .env*
 !.env.example
 .aistudio/

@@ -59,14 +59,30 @@ export default function ForgotPassword() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-[#141414] border border-white/10 rounded-3xl p-8 shadow-2xl">
-        <div className="flex flex-col items-center mb-8">
-          <Scissors className="w-10 h-10 text-[#D4AF37] mb-4" />
+      <div className="w-full max-w-md bg-[#141414] border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 bg-white/[0.03] text-xs font-medium text-zinc-300 hover:text-white hover:border-white/25 transition-colors whitespace-nowrap"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Voltar para Home
+          </Link>
+          <Link
+            to="/admin/login"
+            className="text-xs text-zinc-400 hover:text-[#D4AF37] transition-colors whitespace-nowrap"
+          >
+            Ir para Login
+          </Link>
+        </div>
+
+        <Link to="/" className="flex flex-col items-center mb-8 group">
+          <Scissors className="w-10 h-10 text-[#D4AF37] mb-4 group-hover:scale-105 transition-transform" />
           <h1 className="text-2xl font-bold text-white font-serif tracking-wide flex items-center">
             DOISEME<span className="text-[#D4AF37] font-sans font-extrabold text-sm px-1.5 py-0.5 rounded bg-[#D4AF37]/15 ml-1">PRO</span>
           </h1>
           <p className="text-zinc-400 text-xs uppercase tracking-widest mt-1.5">Recuperar Acesso via Suporte</p>
-        </div>
+        </Link>
 
         <div className="space-y-4">
           <p className="text-sm text-zinc-300 text-center leading-relaxed">

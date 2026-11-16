@@ -12,16 +12,21 @@ import {
   MessageCircle,
   QrCode,
   RefreshCw,
+  Tag,
   X
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { getActiveReferralCode, clearStoredReferralCode } from '../../lib/referral';
 
 interface PlanOption {
   id: string;
   name: string;
   subtitle: string;
+  regularMonthlyPrice?: number;
+  regularAnnualPrice?: number;
   monthlyPrice: number;
   annualPrice: number;
+  promoApplied?: boolean;
   highlighted?: boolean;
   badge?: string;
   features: string[];
@@ -40,6 +45,9 @@ interface BillingStatusResponse {
   currentPlanId?: string;
   currentPlanName?: string;
   isExpired: boolean;
+  promoApplied?: boolean;
+  partnerCode?: string | null;
+  partnerFirstName?: string | null;
   plans: PlanOption[];
   payments: any[];
   mpConfigured: boolean;
@@ -81,6 +89,9 @@ export default function Subscription() {
   const [pixModal, setPixModal] = useState<PixModalData | null>(null);
   const [linkModal, setLinkModal] = useState<LinkModalData | null>(null);
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [couponCode, setCouponCode] = useState<string>(() => (getActiveReferralCode() || '').toUpperCase());
+  const [applyingCoupon, setApplyingCoupon] = useState(false);
+  const [couponError, setCouponError] = useState('');
 
   const fetchBillingStatus = async () => {
     const token = localStorage.getItem('token');
@@ -98,6 +109,57 @@ export default function Subscription() {
       toast.error('Erro de conexão ao buscar assinatura.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleApplyCoupon = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = couponCode.trim();
+    if (!clean) {
+      setCouponError('Digite um código promocional de parceiro.');
+      return;
+    }
+    setCouponError('');
+    setApplyingCoupon(true);
+    const token = localStorage.getItem('token');
+    try {
+      const res = await fetch('/api/admin/billing/apply-coupon', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          'X-Requested-With': 'XMLHttpRequest'
+        },
+        body: JSON.stringify({ code: clean })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const msg = data.error || 'Não foi possível aplicar o código.';
+        setCouponError(msg);
+        toast.error(msg);
+        return;
+      }
+      clearStoredReferralCode();
+      setBilling((prev) =>
+        prev
+          ? {
+              ...prev,
+              promoApplied: true,
+              partnerCode: data.partnerCode,
+              partnerFirstName: data.partnerFirstName,
+              plans: Array.isArray(data.plans) ? data.plans : prev.plans
+            }
+          : prev
+      );
+      toast.success(
+        `Código ${String(data.partnerCode || clean).toUpperCase()} aplicado! Desconto promocional liberado.`
+      );
+      fetchBillingStatus();
+    } catch {
+      setCouponError('Erro de conexão ao validar o código.');
+      toast.error('Erro de conexão ao validar o código.');
+    } finally {
+      setApplyingCoupon(false);
     }
   };
 
@@ -152,7 +214,8 @@ export default function Subscription() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'X-Requested-With': 'XMLHttpRequest'
         },
         body: JSON.stringify({ planId, billingCycle })
       });
@@ -177,7 +240,8 @@ export default function Subscription() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'X-Requested-With': 'XMLHttpRequest'
         },
         body: JSON.stringify({ planId, billingCycle })
       });
@@ -208,7 +272,8 @@ export default function Subscription() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          'Authorization': `Bearer ${token}`,
+          'X-Requested-With': 'XMLHttpRequest'
         },
         body: JSON.stringify({ planId, billingCycle })
       });
@@ -375,12 +440,76 @@ export default function Subscription() {
         </div>
       </div>
 
+      {/* Promo Notice OR Coupon Entry Box */}
+      {billing?.promoApplied ? (
+        <div className="p-4 rounded-2xl border border-[#D4AF37]/40 bg-[#D4AF37]/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <p className="text-sm font-bold text-gray-900 dark:text-white">
+              Condição Promocional Ativa {billing.partnerFirstName ? `· Parceiro ${billing.partnerFirstName}` : ''}
+            </p>
+            <p className="text-xs text-gray-600 dark:text-zinc-300 mt-0.5">
+              Sua conta tem desconto garantido de R$ 20,00/mês no plano mensal ou economia ampliada no plano anual.
+            </p>
+          </div>
+          {billing.partnerCode && (
+            <span className="text-xs font-mono font-semibold text-[#B69121] dark:text-[#D4AF37] shrink-0">
+              Cupom aplicado: {billing.partnerCode.toUpperCase()}
+            </span>
+          )}
+        </div>
+      ) : (
+        <div className="p-4 sm:p-5 rounded-2xl border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="inline-flex items-center gap-2 text-sm font-bold text-gray-900 dark:text-white">
+              <Tag className="w-4 h-4 text-[#D4AF37] shrink-0" />
+              <span>Tem um código promocional de parceiro / afiliado?</span>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-zinc-400">
+              Aplique o cupom antes de gerar o pagamento para liberar R$ 20,00/mês OFF no mensal ou até R$ 681 off no anual.
+            </p>
+            {couponError && (
+              <p className="text-xs text-red-500 font-medium pt-0.5">{couponError}</p>
+            )}
+          </div>
+
+          <form onSubmit={handleApplyCoupon} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
+            <input
+              type="text"
+              value={couponCode}
+              onChange={(e) => {
+                setCouponCode(e.target.value.toUpperCase());
+                if (couponError) setCouponError('');
+              }}
+              placeholder="Ex: MARCUS25"
+              maxLength={30}
+              className="px-3.5 py-2.5 rounded-xl border border-gray-200 dark:border-zinc-700 bg-gray-50 dark:bg-zinc-950 text-sm font-mono uppercase text-gray-900 dark:text-white placeholder:text-gray-400 dark:placeholder:text-zinc-600 focus:border-[#D4AF37] outline-none min-w-[180px]"
+            />
+            <button
+              type="submit"
+              disabled={applyingCoupon || !couponCode.trim()}
+              className="px-4 py-2.5 rounded-xl bg-[#D4AF37] text-black font-bold text-xs sm:text-sm hover:opacity-90 transition-opacity disabled:opacity-50 whitespace-nowrap"
+            >
+              {applyingCoupon ? 'Validando...' : 'Aplicar Código'}
+            </button>
+          </form>
+        </div>
+      )}
+
       {/* Plan Cards */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {plans.map((plan) => {
+        {[...plans]
+          .sort((a, b) => {
+            const order: Record<string, number> = { premium: 0, profissional: 1, essencial: 2 };
+            return (order[a.id] ?? 99) - (order[b.id] ?? 99);
+          })
+          .map((plan) => {
           const totalAmount = billingCycle === 'annual' ? plan.annualPrice : plan.monthlyPrice;
           const monthlyEquivalent = billingCycle === 'annual' ? plan.annualPrice / 12 : plan.monthlyPrice;
-          const annualSavings = Math.max(0, plan.monthlyPrice * 12 - plan.annualPrice);
+          const regularMonthly = plan.regularMonthlyPrice || plan.monthlyPrice;
+          const regularAnnual = plan.regularAnnualPrice || plan.annualPrice;
+          const annualSavings = Math.max(0, regularMonthly * 12 - plan.annualPrice);
+          const hasPromo = Boolean(billing?.promoApplied || plan.promoApplied);
+          const monthlyDiscount = Math.max(0, regularMonthly - plan.monthlyPrice);
           const isPixLoading = processingKey === `pix:${plan.id}`;
           const isCheckoutLoading = processingKey === `checkout:${plan.id}`;
           const isLinkLoading = processingKey === `link:${plan.id}`;
@@ -390,12 +519,12 @@ export default function Subscription() {
           return (
             <div
               key={plan.id}
-              className={`rounded-2xl p-6 flex flex-col justify-between border transition-shadow ${
+              className={`rounded-2xl p-6 flex flex-col justify-between transition-shadow ${
                 isCurrentPlan
-                  ? 'bg-white dark:bg-zinc-900 border-emerald-500 ring-1 ring-emerald-500/40 shadow-md'
+                  ? 'bg-white dark:bg-zinc-900 border-2 border-emerald-500 shadow-md'
                   : plan.highlighted
-                    ? 'bg-white dark:bg-zinc-900 border-[#D4AF37] shadow-lg'
-                    : 'bg-white dark:bg-zinc-900 border-gray-200 dark:border-zinc-800 shadow-sm'
+                    ? 'bg-white dark:bg-[#19150B] border-2 border-[#D4AF37] shadow-lg'
+                    : 'bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 shadow-sm'
               }`}
             >
               <div className="space-y-4">
@@ -418,11 +547,15 @@ export default function Subscription() {
                 <p className="text-xs text-gray-500 dark:text-zinc-400">{plan.subtitle}</p>
 
                 <div className="pt-2 pb-4 border-b border-gray-100 dark:border-zinc-800">
-                  {billingCycle === 'annual' && (
+                  {billingCycle === 'annual' ? (
                     <p className="text-xs text-gray-400 line-through tabular-nums">
-                      De R$ {formatBRL(plan.monthlyPrice)}/mês
+                      De R$ {formatBRL(regularMonthly)}/mês · R$ {formatBRL(regularAnnual)}/ano
                     </p>
-                  )}
+                  ) : hasPromo && monthlyDiscount > 0 ? (
+                    <p className="text-xs text-gray-400 line-through tabular-nums">
+                      Tabela padrão: R$ {formatBRL(regularMonthly)}/mês
+                    </p>
+                  ) : null}
                   <div className="flex items-baseline gap-1 tabular-nums">
                     <span className="text-xs text-gray-500 dark:text-zinc-400">R$</span>
                     <span className="text-3xl font-bold text-gray-900 dark:text-white">
@@ -433,7 +566,9 @@ export default function Subscription() {
                   <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1 tabular-nums">
                     {billingCycle === 'annual'
                       ? `R$ ${formatBRL(totalAmount)}/ano · Economize R$ ${formatBRL(annualSavings)}`
-                      : `Cobrança avulsa de R$ ${formatBRL(totalAmount)}`}
+                      : hasPromo && monthlyDiscount > 0
+                        ? `Condição promocional · Economia de R$ ${formatBRL(monthlyDiscount)}/mês`
+                        : `Cobrança avulsa de R$ ${formatBRL(totalAmount)}`}
                   </p>
                 </div>
 

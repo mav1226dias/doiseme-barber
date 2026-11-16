@@ -16,6 +16,7 @@ import {
 import heroStudioImg from '../../assets/images/hero_doiseme_studio_1794534284924.jpg';
 import { SEGMENTS, SegmentPreset } from '../../lib/segments';
 import { SegmentIcon } from '../../components/SegmentIcon';
+import { captureReferralFromSearch, getActiveReferralCode } from '../../lib/referral';
 
 interface PlanOption {
   id: string;
@@ -28,28 +29,35 @@ interface PlanOption {
   features: string[];
 }
 
+const PLAN_PRIORITY: Record<string, number> = {
+  premium: 0,
+  profissional: 1,
+  essencial: 2
+};
+
 const DEFAULT_PLANS: PlanOption[] = [
   {
-    id: 'essencial',
-    name: 'Agenda Individual',
-    subtitle: 'Ideal para quem trabalha sozinho (1 profissional)',
-    monthlyPrice: 59.90,
-    annualPrice: 479.00,
-    highlighted: false,
-    badge: '1 Profissional',
+    id: 'premium',
+    name: 'Plano Completo',
+    subtitle: 'Retenção, pacotes e lucro sem limites',
+    monthlyPrice: 139.90,
+    annualPrice: 1197.00,
+    highlighted: true,
+    badge: 'Mais Lucrativo · Recomendado',
     features: [
-      '1 profissional ativo na agenda',
-      'Link exclusivo de agendamento (/b/sua-marca)',
-      'Cadastro de clientes e histórico completo',
-      'Agenda inteligente sem conflitos de horário'
+      'Profissionais e serviços ilimitados',
+      'Campanhas de reativação p/ trazer clientes sumidos',
+      'Pacotes de sessões e combos recorrentes',
+      'Vitrine VIP (logo, banner e paleta personalizada)',
+      'Implantação assistida + Suporte VIP no WhatsApp'
     ]
   },
   {
     id: 'profissional',
     name: 'Plano Pro',
     subtitle: 'Perfeito para equipes de 1 a 3 funcionários',
-    monthlyPrice: 99.90,
-    annualPrice: 859.00,
+    monthlyPrice: 119.90,
+    annualPrice: 1039.00,
     highlighted: false,
     badge: 'Equipe 1 a 3',
     features: [
@@ -60,19 +68,18 @@ const DEFAULT_PLANS: PlanOption[] = [
     ]
   },
   {
-    id: 'premium',
-    name: 'Plano Completo',
-    subtitle: 'Retenção, pacotes e lucro sem limites',
-    monthlyPrice: 119.90,
-    annualPrice: 997.00,
-    highlighted: true,
-    badge: 'Melhor Custo-Benefício',
+    id: 'essencial',
+    name: 'Agenda Individual',
+    subtitle: 'Opção de entrada para quem trabalha sozinho',
+    monthlyPrice: 79.90,
+    annualPrice: 659.00,
+    highlighted: false,
+    badge: '1 Profissional',
     features: [
-      'Profissionais e serviços ilimitados',
-      'Campanhas de reativação p/ trazer clientes sumidos',
-      'Pacotes de sessões e combos recorrentes',
-      'Vitrine VIP (logo, banner e paleta personalizada)',
-      'Implantação assistida + Suporte VIP no WhatsApp'
+      '1 profissional ativo na agenda',
+      'Link exclusivo de agendamento (/b/sua-marca)',
+      'Cadastro de clientes e histórico completo',
+      'Agenda inteligente sem conflitos de horário'
     ]
   }
 ];
@@ -87,14 +94,24 @@ export default function Landing() {
   const [plans, setPlans] = useState<PlanOption[]>(DEFAULT_PLANS);
   const [supportWhatsapp, setSupportWhatsapp] = useState<string>('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [activeRefCode, setActiveRefCode] = useState<string | null>(() => getActiveReferralCode());
 
   const activeSegment: SegmentPreset = SEGMENTS[selectedSegmentId] || segmentList[0];
 
   useEffect(() => {
+    const captured = captureReferralFromSearch(window.location.search);
+    if (captured) setActiveRefCode(captured);
+
     fetch('/api/public/plans')
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data?.plans?.length) setPlans(data.plans);
+        if (data?.plans?.length) {
+          setPlans(
+            [...data.plans].sort(
+              (a: PlanOption, b: PlanOption) => (PLAN_PRIORITY[a.id] ?? 99) - (PLAN_PRIORITY[b.id] ?? 99)
+            )
+          );
+        }
       })
       .catch(() => {});
 
@@ -107,7 +124,7 @@ export default function Landing() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#0A0A0A] text-white font-sans antialiased selection:bg-[#D4AF37] selection:text-black">
+    <div className="min-h-screen w-full overflow-x-clip bg-[#0A0A0A] text-white font-sans antialiased selection:bg-[#D4AF37] selection:text-black">
       {/* Top Bar (3 zones: Brand — Nav Links — Primary CTA) */}
       <header className="sticky top-0 z-50 border-b border-white/10 bg-[#0A0A0A]/85 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
@@ -435,11 +452,11 @@ export default function Landing() {
           </div>
 
           {/* Monthly / Annual Toggle */}
-          <div className="inline-flex items-center bg-[#141414] border border-white/10 rounded-xl p-1 self-start md:self-auto">
+          <div className="grid grid-cols-2 sm:inline-flex w-full sm:w-auto bg-[#141414] border border-white/10 rounded-xl p-1 gap-1 self-start md:self-auto">
             <button
               type="button"
               onClick={() => setBillingCycle('annual')}
-              className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors whitespace-nowrap ${
+              className={`px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors text-center ${
                 billingCycle === 'annual'
                   ? 'bg-[#D4AF37] text-black'
                   : 'text-zinc-400 hover:text-white'
@@ -450,7 +467,7 @@ export default function Landing() {
             <button
               type="button"
               onClick={() => setBillingCycle('monthly')}
-              className={`px-4 py-2 rounded-lg text-sm font-semibold transition-colors whitespace-nowrap ${
+              className={`px-3 sm:px-4 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-colors text-center ${
                 billingCycle === 'monthly'
                   ? 'bg-[#D4AF37] text-black'
                   : 'text-zinc-400 hover:text-white'
@@ -461,6 +478,26 @@ export default function Landing() {
           </div>
         </div>
 
+        {activeRefCode && (
+          <div className="mb-8 px-5 py-4 rounded-2xl border border-[#D4AF37]/40 bg-[#15130D] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <p className="text-sm font-bold text-white">
+                Você acessou anteriormente por um link de parceiro ({activeRefCode.toUpperCase()}).
+              </p>
+              <p className="text-xs text-zinc-300 mt-0.5">
+                Veja sua página de oferta exclusiva com R$ 20/mês OFF no mensal ou até R$ 681 off no anual.
+              </p>
+            </div>
+            <Link
+              to={`/r/${encodeURIComponent(activeRefCode)}`}
+              className="inline-flex items-center justify-center gap-2 bg-[#D4AF37] text-black font-bold text-xs sm:text-sm px-4 py-2.5 rounded-xl hover:bg-[#e3c04f] transition-colors whitespace-nowrap shrink-0"
+            >
+              Ver oferta promocional
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {plans.map((plan) => {
             const displayPrice =
@@ -469,14 +506,14 @@ export default function Landing() {
             return (
               <div
                 key={plan.id}
-                className={`rounded-2xl p-7 flex flex-col justify-between border transition-colors ${
+                className={`min-w-0 rounded-2xl p-6 sm:p-7 flex flex-col justify-between transition-colors ${
                   plan.highlighted
-                    ? 'bg-[#161510] border-[#D4AF37] shadow-[0_0_50px_-18px_rgba(212,175,55,0.35)]'
-                    : 'bg-[#141414] border-white/10'
+                    ? 'bg-[#19150B] border-2 border-[#D4AF37]'
+                    : 'bg-[#141414] border border-white/10'
                 }`}
               >
                 <div className="space-y-5">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <h3 className="text-xl font-bold text-white">{plan.name}</h3>
                     {(plan.badge || plan.highlighted) && (
                       <span className={`text-[11px] font-bold uppercase tracking-wider ${
@@ -567,6 +604,9 @@ export default function Landing() {
             </Link>
             <Link to="/cadastro" className="hover:text-white transition-colors">
               Criar conta
+            </Link>
+            <Link to="/afiliado" className="hover:text-white transition-colors">
+              Parceiros &amp; Afiliados
             </Link>
             <Link to="/admin/login" className="hover:text-white transition-colors">
               Acessar painel

@@ -3,19 +3,21 @@ import {
   Shield, Users, Server, Database, Activity, Lock, Plus, Globe, Mail, Key, Trash2,
   ShieldCheck, ShieldAlert, Calendar, ExternalLink, Unlock, CheckCircle2, XCircle, Sparkles,
   Cloud, Copy, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, MessageCircle, Save, CreditCard, Clock, Bot,
-  TrendingUp, DollarSign, Filter, Phone, SlidersHorizontal, Search, X, Send
+  TrendingUp, DollarSign, Filter, Phone, SlidersHorizontal, Search, X, Send, Handshake
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 import { SEGMENTS, getSegment } from '../../lib/segments';
 import { useBusinessConfig } from '../../hooks/useBusinessConfig';
 import { SegmentIcon } from '../../components/SegmentIcon';
+import MasterAffiliatesTab from '../../components/MasterAffiliatesTab';
+import { getSessionAuth, getHomePathForRole, clearSessionStorage } from '../../lib/auth';
 
 const PLAN_OPTIONS = [
   { id: 'trial', label: 'Teste Grátis (7 dias)', price: 0 },
-  { id: 'essencial', label: 'Agenda Individual (Básico) — R$ 59,90', price: 59.9 },
-  { id: 'profissional', label: 'Plano Pro — R$ 99,90', price: 99.9 },
-  { id: 'premium', label: 'Plano Completo — R$ 119,90', price: 119.9 }
+  { id: 'essencial', label: 'Agenda Individual — R$ 79,90 (Promo R$ 59,90)', price: 79.9 },
+  { id: 'profissional', label: 'Plano Pro — R$ 119,90 (Promo R$ 99,90)', price: 119.9 },
+  { id: 'premium', label: 'Plano Completo — R$ 139,90 (Promo R$ 119,90)', price: 139.9 }
 ] as const;
 
 const formatBRL = (value: number) =>
@@ -29,7 +31,10 @@ const formatWhatsappDigits = (raw?: string | null) => {
 
 export default function MasterAdmin() {
   const navigate = useNavigate();
-  const [activeTab, setActiveTab] = useState<'overview' | 'admins' | 'settings'>('overview');
+  const initialSession = getSessionAuth();
+  const isAuthorizedSession = initialSession.isAuthenticated && initialSession.role === 'master';
+  const [masterVerified, setMasterVerified] = useState(false);
+  const [activeTab, setActiveTab] = useState<'overview' | 'admins' | 'settings' | 'affiliates'>('overview');
   const [stats, setStats] = useState({
     totalShops: 0,
     totalUsers: 0,
@@ -225,13 +230,20 @@ export default function MasterAdmin() {
         const data = await res.json();
         setShops(data || []);
         setStats(prev => ({ ...prev, totalShops: (data || []).length }));
+        setMasterVerified(true);
       } else {
         const text = await res.text();
         console.error('Fetch Master Data failed:', res.status, text.substring(0, 100));
-        if (!res.ok && (res.status === 401 || res.status === 403)) {
-          localStorage.removeItem('token');
-          localStorage.removeItem('user');
-          navigate('/admin/login');
+        if (res.status === 401) {
+          clearSessionStorage();
+          navigate('/admin/login', { replace: true });
+        } else if (res.status === 403) {
+          const current = getSessionAuth();
+          if (!current.isAuthenticated) {
+            navigate('/admin/login', { replace: true });
+          } else {
+            navigate(getHomePathForRole(current.role === 'master' ? 'admin' : current.role), { replace: true });
+          }
         } else if (!res.ok) {
           console.warn('Response was not OK and/or not JSON');
         }
@@ -527,6 +539,15 @@ export default function MasterAdmin() {
   };
 
   useEffect(() => {
+    const liveSession = getSessionAuth();
+    if (!liveSession.isAuthenticated) {
+      navigate('/admin/login', { replace: true });
+      return;
+    }
+    if (liveSession.role !== 'master') {
+      navigate(getHomePathForRole(liveSession.role), { replace: true });
+      return;
+    }
     fetchMasterData();
     fetchAnalytics('', '', 'all');
     fetchCloudStatus();
@@ -536,7 +557,7 @@ export default function MasterAdmin() {
       fetchEvolutionConfig();
     }
     setStats(prev => ({ ...prev, systemStatus: 'Online', dbSize: '4.8 MB' }));
-  }, []);
+  }, [navigate]);
 
   const handleToggleBlock = async (shopId: string, currentStatus: boolean) => {
     const token = localStorage.getItem('token');
@@ -916,6 +937,19 @@ export default function MasterAdmin() {
     ...(analytics?.bySegment || []).map((s: any) => Math.max(s.saasRevenue || 0, s.mrrEstimate || 0))
   );
 
+  if (!isAuthorizedSession) {
+    return null;
+  }
+
+  if (!masterVerified) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-3 text-gray-500 dark:text-zinc-400">
+        <div className="w-8 h-8 border-2 border-[#D4AF37]/30 border-t-[#D4AF37] rounded-full animate-spin" />
+        <p className="text-xs font-medium">Verificando permissões...</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8 pb-20">
       {/* Header + Master Navigation Menu */}
@@ -955,6 +989,18 @@ export default function MasterAdmin() {
             >
               <MessageCircle className="w-3.5 h-3.5" />
               Contato Admins ({shops.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('affiliates')}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
+                activeTab === 'affiliates'
+                  ? 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              <Handshake className="w-3.5 h-3.5" />
+              Afiliados
             </button>
             <button
               type="button"
@@ -2327,6 +2373,9 @@ export default function MasterAdmin() {
           </div>
         </div>
       )}
+
+      {/* TAB 4: AFFILIATES & RECURRING COMMISSIONS */}
+      {activeTab === 'affiliates' && <MasterAffiliatesTab />}
 
       <div className="bg-amber-50 dark:bg-amber-900/10 p-6 rounded-2xl border border-amber-100 dark:border-amber-900/30 flex items-start gap-4">
         <div className="w-10 h-10 bg-amber-500/20 rounded-xl flex items-center justify-center text-amber-600 flex-shrink-0">
