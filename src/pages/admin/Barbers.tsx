@@ -1,5 +1,18 @@
 import React, { useState, useEffect, useRef, FormEvent } from 'react';
-import { Plus, User, X, CheckSquare, Square, Edit2, Camera, Trash2, Loader2, KeyRound, Eye, EyeOff } from 'lucide-react';
+import {
+  Plus,
+  User,
+  X,
+  CheckSquare,
+  Square,
+  Edit2,
+  Camera,
+  Trash2,
+  Loader2,
+  KeyRound,
+  Eye,
+  EyeOff
+} from 'lucide-react';
 import { getSegment } from '../../lib/segments';
 import { toast } from 'sonner';
 
@@ -25,38 +38,29 @@ interface BarberItem {
 export default function Barbers() {
   const [barbers, setBarbers] = useState<BarberItem[]>([]);
   const [services, setServices] = useState<ServiceItem[]>([]);
-  const [newBarber, setNewBarber] = useState('');
-  const [newCommission, setNewCommission] = useState(50);
-  const [newSelectedServices, setNewSelectedServices] = useState<string[]>([]);
-  const [newPhotoUrl, setNewPhotoUrl] = useState('');
-  const [newLoginEmail, setNewLoginEmail] = useState('');
-  const [newLoginPassword, setNewLoginPassword] = useState('');
-  const [showNewPassword, setShowNewPassword] = useState(false);
-  const [uploadingNewPhoto, setUploadingNewPhoto] = useState(false);
-  const newFileInputRef = useRef<HTMLInputElement>(null);
-  
-  // Editing state
-  const [editingBarber, setEditingBarber] = useState<BarberItem | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editCommission, setEditCommission] = useState(50);
-  const [editSelectedServices, setEditSelectedServices] = useState<string[]>([]);
-  const [editPhotoUrl, setEditPhotoUrl] = useState('');
-  const [editLoginEmail, setEditLoginEmail] = useState('');
-  const [editLoginPassword, setEditLoginPassword] = useState('');
-  const [showEditPassword, setShowEditPassword] = useState(false);
-  const [removeAccess, setRemoveAccess] = useState(false);
-  const [uploadingEditPhoto, setUploadingEditPhoto] = useState(false);
-  const editFileInputRef = useRef<HTMLInputElement>(null);
-
   const [segment, setSegment] = useState('barbershop');
+
+  // Unified Create / Edit Modal State
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [editingBarber, setEditingBarber] = useState<BarberItem | null>(null);
+  const [modalName, setModalName] = useState('');
+  const [modalCommission, setModalCommission] = useState(50);
+  const [modalSelectedServices, setModalSelectedServices] = useState<string[]>([]);
+  const [modalPhotoUrl, setModalPhotoUrl] = useState('');
+  const [modalLoginEmail, setModalLoginEmail] = useState('');
+  const [modalLoginPassword, setModalLoginPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [removeAccess, setRemoveAccess] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const fetchBarbers = () => {
     const token = localStorage.getItem('token');
     fetch('/api/admin/barbers', {
-      headers: { 'Authorization': `Bearer ${token}` }
+      headers: { Authorization: `Bearer ${token}` }
     })
-      .then(async res => {
+      .then(async (res) => {
         if (res.status === 401 || res.status === 403) {
           localStorage.removeItem('token');
           window.location.href = '/admin/login';
@@ -65,7 +69,7 @@ export default function Barbers() {
         const text = await res.text();
         return text ? JSON.parse(text) : [];
       })
-      .then(data => {
+      .then((data) => {
         if (Array.isArray(data)) setBarbers(data);
         else console.error('Expected array for barbers, got:', data);
       })
@@ -75,14 +79,12 @@ export default function Barbers() {
   const fetchServices = () => {
     const token = localStorage.getItem('token');
     fetch('/api/admin/services', {
-      headers: { 'Authorization': `Bearer ${token}` }
+      headers: { Authorization: `Bearer ${token}` }
     })
-      .then(res => res.json())
-      .then(data => {
+      .then((res) => res.json())
+      .then((data) => {
         if (Array.isArray(data)) {
-          setServices(data.filter(s => s.active !== false));
-          // Preselect all services for a new professional by default
-          setNewSelectedServices(data.map(s => s.id.toString()));
+          setServices(data.filter((s) => s.active !== false));
         }
       })
       .catch(console.error);
@@ -93,48 +95,78 @@ export default function Barbers() {
     fetchServices();
     const token = localStorage.getItem('token');
     fetch('/api/admin/shop-info', {
-      headers: { 'Authorization': `Bearer ${token}` }
+      headers: { Authorization: `Bearer ${token}` }
     })
-      .then(res => res.json())
-      .then(data => {
+      .then((res) => res.json())
+      .then((data) => {
         if (data?.segment) setSegment(data.segment);
       })
       .catch(console.error);
   }, []);
 
-  const handleToggleNewService = (serviceId: string) => {
-    setNewSelectedServices(prev => 
-      prev.includes(serviceId)
-        ? prev.filter(id => id !== serviceId)
-        : [...prev, serviceId]
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !isLoading && !uploadingPhoto) {
+        setIsModalOpen(false);
+        setEditingBarber(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isModalOpen, isLoading, uploadingPhoto]);
+
+  const openCreateModal = () => {
+    setEditingBarber(null);
+    setModalName('');
+    setModalCommission(50);
+    setModalPhotoUrl('');
+    setModalLoginEmail('');
+    setModalLoginPassword('');
+    setShowPassword(false);
+    setRemoveAccess(false);
+    setModalSelectedServices(services.map((s) => s.id.toString()));
+    setIsModalOpen(true);
+  };
+
+  const openEditModal = (barber: BarberItem) => {
+    setEditingBarber(barber);
+    setModalName(barber.name);
+    setModalCommission(barber.commission_percentage ?? 50);
+    setModalPhotoUrl(barber.photo_url || barber.photoUrl || '');
+    setModalLoginEmail(barber.loginEmail || '');
+    setModalLoginPassword('');
+    setShowPassword(false);
+    setRemoveAccess(false);
+    const currentIds =
+      Array.isArray(barber.service_ids) && barber.service_ids.length > 0
+        ? barber.service_ids.map(String)
+        : services.map((s) => s.id.toString());
+    setModalSelectedServices(currentIds);
+    setIsModalOpen(true);
+  };
+
+  const closeModal = () => {
+    if (isLoading || uploadingPhoto) return;
+    setIsModalOpen(false);
+    setEditingBarber(null);
+  };
+
+  const handleToggleService = (serviceId: string) => {
+    setModalSelectedServices((prev) =>
+      prev.includes(serviceId) ? prev.filter((id) => id !== serviceId) : [...prev, serviceId]
     );
   };
 
-  const handleSelectAllNew = () => {
-    if (newSelectedServices.length === services.length) {
-      setNewSelectedServices([]);
+  const handleSelectAllServices = () => {
+    if (modalSelectedServices.length === services.length) {
+      setModalSelectedServices([]);
     } else {
-      setNewSelectedServices(services.map(s => s.id.toString()));
+      setModalSelectedServices(services.map((s) => s.id.toString()));
     }
   };
 
-  const handleToggleEditService = (serviceId: string) => {
-    setEditSelectedServices(prev => 
-      prev.includes(serviceId)
-        ? prev.filter(id => id !== serviceId)
-        : [...prev, serviceId]
-    );
-  };
-
-  const handleSelectAllEdit = () => {
-    if (editSelectedServices.length === services.length) {
-      setEditSelectedServices([]);
-    } else {
-      setEditSelectedServices(services.map(s => s.id.toString()));
-    }
-  };
-
-  const handleUploadPhoto = async (file: File, isEdit: boolean) => {
+  const handleUploadPhoto = async (file: File) => {
     if (!file) return;
     if (!file.type.startsWith('image/')) {
       toast.error('Selecione uma imagem válida (PNG, JPG, WEBP)');
@@ -145,13 +177,11 @@ export default function Barbers() {
       return;
     }
 
-    if (isEdit) setUploadingEditPhoto(true);
-    else setUploadingNewPhoto(true);
-
+    setUploadingPhoto(true);
     try {
       const ext = file.name.split('.').pop() || 'jpg';
       const filePath = `barbers/${Date.now()}-${Math.random().toString(36).substring(2, 7)}.${ext}`;
-      
+
       const base64Promise = new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => {
@@ -169,7 +199,7 @@ export default function Barbers() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({
           filePath,
@@ -180,105 +210,35 @@ export default function Barbers() {
 
       if (!res.ok) throw new Error('Upload falhou');
       const { publicUrl } = await res.json();
-      if (isEdit) {
-        setEditPhotoUrl(publicUrl);
-      } else {
-        setNewPhotoUrl(publicUrl);
-      }
+      setModalPhotoUrl(publicUrl);
       toast.success('Foto carregada com sucesso!');
     } catch (err) {
       console.error(err);
       toast.error('Erro ao fazer upload da foto');
     } finally {
-      if (isEdit) setUploadingEditPhoto(false);
-      else setUploadingNewPhoto(false);
+      setUploadingPhoto(false);
     }
   };
 
-  const handleAdd = async (e: FormEvent) => {
+  const handleSubmitModal = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newBarber.trim()) {
+    if (!modalName.trim()) {
       toast.error('Informe o nome do profissional');
       return;
     }
 
-    const cleanLoginEmail = newLoginEmail.trim();
-    if (cleanLoginEmail && newLoginPassword.length < 6) {
-      toast.error('A senha de acesso individual deve ter no mínimo 6 caracteres.');
-      return;
-    }
-
-    setIsLoading(true);
-    const token = localStorage.getItem('token');
-    try {
-      const res = await fetch('/api/admin/barbers', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({ 
-          name: newBarber.trim(), 
-          commission_percentage: newCommission,
-          service_ids: newSelectedServices,
-          photo_url: newPhotoUrl || null,
-          ...(cleanLoginEmail ? { loginEmail: cleanLoginEmail, loginPassword: newLoginPassword } : {})
-        })
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        toast.success(
-          cleanLoginEmail
-            ? 'Profissional e acesso individual cadastrados com sucesso!'
-            : 'Profissional cadastrado com sucesso!'
-        );
-        setNewBarber('');
-        setNewCommission(50);
-        setNewPhotoUrl('');
-        setNewLoginEmail('');
-        setNewLoginPassword('');
-        setNewSelectedServices(services.map(s => s.id.toString()));
-        fetchBarbers();
-      } else {
-        toast.error(data.error || 'Erro ao cadastrar profissional');
+    const cleanLoginEmail = modalLoginEmail.trim();
+    if (!editingBarber) {
+      if (cleanLoginEmail && modalLoginPassword.length < 6) {
+        toast.error('A senha de acesso individual deve ter no mínimo 6 caracteres.');
+        return;
       }
-    } catch {
-      toast.error('Erro de conexão');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const startEditing = (barber: BarberItem) => {
-    setEditingBarber(barber);
-    setEditName(barber.name);
-    setEditCommission(barber.commission_percentage || 50);
-    setEditPhotoUrl(barber.photo_url || barber.photoUrl || '');
-    setEditLoginEmail(barber.loginEmail || '');
-    setEditLoginPassword('');
-    setShowEditPassword(false);
-    setRemoveAccess(false);
-    const currentIds = Array.isArray(barber.service_ids) && barber.service_ids.length > 0
-      ? barber.service_ids.map(String)
-      : services.map(s => s.id.toString());
-    setEditSelectedServices(currentIds);
-  };
-
-  const saveEdit = async () => {
-    if (!editingBarber) return;
-    if (!editName.trim()) {
-      toast.error('Informe o nome');
-      return;
-    }
-
-    const cleanEditEmail = editLoginEmail.trim();
-    if (!removeAccess && cleanEditEmail) {
-      if (!editingBarber.loginEmail && editLoginPassword.length < 6) {
+    } else if (!removeAccess && cleanLoginEmail) {
+      if (!editingBarber.loginEmail && modalLoginPassword.length < 6) {
         toast.error('Defina uma senha com no mínimo 6 caracteres para liberar o acesso.');
         return;
       }
-      if (editLoginPassword && editLoginPassword.length < 6) {
+      if (modalLoginPassword && modalLoginPassword.length < 6) {
         toast.error('A nova senha deve ter no mínimo 6 caracteres.');
         return;
       }
@@ -286,35 +246,67 @@ export default function Barbers() {
 
     setIsLoading(true);
     const token = localStorage.getItem('token');
-    try {
-      const res = await fetch(`/api/admin/barbers/${editingBarber.id}`, {
-        method: 'PATCH',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          name: editName.trim(),
-          commission_percentage: Number(editCommission),
-          service_ids: editSelectedServices,
-          photo_url: editPhotoUrl || null,
-          removeAccess,
-          ...(!removeAccess && cleanEditEmail
-            ? {
-                loginEmail: cleanEditEmail,
-                ...(editLoginPassword ? { loginPassword: editLoginPassword } : {})
-              }
-            : {})
-        })
-      });
 
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        toast.success('Profissional atualizado com sucesso!');
-        setEditingBarber(null);
-        fetchBarbers();
+    try {
+      if (editingBarber) {
+        const res = await fetch(`/api/admin/barbers/${editingBarber.id}`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            name: modalName.trim(),
+            commission_percentage: Number(modalCommission),
+            service_ids: modalSelectedServices,
+            photo_url: modalPhotoUrl || null,
+            removeAccess,
+            ...(!removeAccess && cleanLoginEmail
+              ? {
+                  loginEmail: cleanLoginEmail,
+                  ...(modalLoginPassword ? { loginPassword: modalLoginPassword } : {})
+                }
+              : {})
+          })
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          toast.success('Profissional atualizado com sucesso!');
+          setIsModalOpen(false);
+          setEditingBarber(null);
+          fetchBarbers();
+        } else {
+          toast.error(data.error || 'Erro ao atualizar profissional');
+        }
       } else {
-        toast.error(data.error || 'Erro ao atualizar profissional');
+        const res = await fetch('/api/admin/barbers', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            name: modalName.trim(),
+            commission_percentage: Number(modalCommission),
+            service_ids: modalSelectedServices,
+            photo_url: modalPhotoUrl || null,
+            ...(cleanLoginEmail ? { loginEmail: cleanLoginEmail, loginPassword: modalLoginPassword } : {})
+          })
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          toast.success(
+            cleanLoginEmail
+              ? 'Profissional e acesso individual cadastrados com sucesso!'
+              : 'Profissional cadastrado com sucesso!'
+          );
+          setIsModalOpen(false);
+          fetchBarbers();
+        } else {
+          toast.error(data.error || 'Erro ao cadastrar profissional');
+        }
       }
     } catch {
       toast.error('Erro de conexão');
@@ -328,14 +320,14 @@ export default function Barbers() {
     try {
       await fetch(`/api/admin/barbers/${barber.id}`, {
         method: 'PATCH',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          Authorization: `Bearer ${token}`
         },
         body: JSON.stringify({ active: !barber.active })
       });
       fetchBarbers();
-    } catch (err) {
+    } catch {
       toast.error('Erro ao alterar status');
     }
   };
@@ -343,446 +335,82 @@ export default function Barbers() {
   const currentPreset = getSegment(segment);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100 font-serif">
             {currentPreset.terms.professionalPlural}
           </h1>
-          <p className="text-gray-500 dark:text-gray-400 mt-1">
-            Cadastre os {currentPreset.terms.professionalPlural.toLowerCase()} e defina quais {currentPreset.terms.servicePlural.toLowerCase()} cada um realiza
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+            Nicho: {currentPreset.name} · Gerencie equipe, comissões, serviços e acesso individual
           </p>
         </div>
-        <span className="text-xs px-3.5 py-1.5 rounded-full font-semibold bg-[#D4AF37]/10 text-[#D4AF37] self-start sm:self-auto border border-[#D4AF37]/20">
-          Nicho: {currentPreset.name}
-        </span>
+
+        <button
+          type="button"
+          onClick={openCreateModal}
+          className="inline-flex items-center justify-center gap-2 bg-black dark:bg-[#D4AF37] text-white dark:text-black px-5 py-3 rounded-xl font-bold text-sm hover:opacity-90 transition-opacity shrink-0"
+        >
+          <Plus className="w-4 h-4" />
+          Novo(a) {currentPreset.terms.professional}
+        </button>
       </div>
-
-      {/* Cadastro de Novo Profissional com seleção de serviços */}
-      <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center gap-2">
-          <Plus className="w-5 h-5 text-[#D4AF37]" />
-          <span>Novo(a) {currentPreset.terms.professional}</span>
-        </h2>
-
-        <form onSubmit={handleAdd} className="space-y-5">
-          <div className="flex flex-col sm:flex-row items-center gap-4">
-            {/* Foto do Profissional */}
-            <div className="flex items-center gap-3 shrink-0">
-              <input 
-                type="file" 
-                ref={newFileInputRef}
-                accept="image/*"
-                className="hidden"
-                onChange={e => {
-                  if (e.target.files?.[0]) handleUploadPhoto(e.target.files[0], false);
-                }}
-              />
-              <div 
-                onClick={() => newFileInputRef.current?.click()}
-                className="relative group w-14 h-14 rounded-full border-2 border-dashed border-gray-300 dark:border-zinc-700 hover:border-[#D4AF37] dark:hover:border-[#D4AF37] cursor-pointer overflow-hidden flex items-center justify-center bg-gray-50 dark:bg-zinc-800 transition-colors shrink-0"
-                title="Clique para adicionar foto do profissional"
-              >
-                {uploadingNewPhoto ? (
-                  <Loader2 className="w-5 h-5 text-[#D4AF37] animate-spin" />
-                ) : newPhotoUrl ? (
-                  <>
-                    <img src={newPhotoUrl} alt="Foto" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white">
-                      <Camera className="w-4 h-4" />
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex flex-col items-center justify-center text-gray-400 group-hover:text-[#D4AF37]">
-                    <Camera className="w-5 h-5" />
-                    <span className="text-[9px] font-medium leading-none mt-1">Foto</span>
-                  </div>
-                )}
-              </div>
-              {newPhotoUrl && (
-                <button
-                  type="button"
-                  onClick={() => setNewPhotoUrl('')}
-                  className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800"
-                  title="Remover foto"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-
-            <input 
-              type="text" 
-              value={newBarber}
-              onChange={e => setNewBarber(e.target.value)}
-              placeholder={`Nome completo do(a) ${currentPreset.terms.professional.toLowerCase()}`}
-              className="flex-1 w-full border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl p-3 outline-none focus:border-black dark:focus:border-white transition-colors placeholder:text-gray-400"
-            />
-            <div className="flex items-center gap-2 bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-4 py-3 shrink-0">
-              <span className="text-sm text-gray-400">Comissão:</span>
-              <input 
-                type="number" 
-                value={newCommission}
-                onChange={e => setNewCommission(Number(e.target.value))}
-                min={0}
-                max={100}
-                className="w-14 bg-transparent text-gray-900 dark:text-gray-100 font-bold outline-none text-center"
-              />
-              <span className="text-sm text-gray-400">%</span>
-            </div>
-            <button 
-              type="submit" 
-              disabled={isLoading || uploadingNewPhoto || !newBarber.trim()}
-              className="bg-black dark:bg-[#D4AF37] text-white dark:text-black px-6 py-3 rounded-xl font-bold flex items-center justify-center gap-2 hover:opacity-90 transition-all disabled:opacity-50 shrink-0 w-full sm:w-auto"
-            >
-              <Plus className="w-5 h-5" /> Adicionar
-            </button>
-          </div>
-
-          {/* Seleção de Serviços que o profissional realiza */}
-          <div className="pt-3 border-t border-gray-100 dark:border-zinc-800">
-            <div className="flex items-center justify-between mb-3">
-              <label className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                {currentPreset.terms.servicePlural} que este(a) {currentPreset.terms.professional.toLowerCase()} realiza:
-              </label>
-              {services.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleSelectAllNew}
-                  className="text-xs text-[#D4AF37] hover:underline font-medium"
-                >
-                  {newSelectedServices.length === services.length ? 'Desmarcar Todos' : 'Selecionar Todos'}
-                </button>
-              )}
-            </div>
-
-            {services.length === 0 ? (
-              <p className="text-xs text-gray-400 italic">
-                Nenhum {currentPreset.terms.service.toLowerCase()} cadastrado ainda. Cadastre serviços na aba "{currentPreset.terms.servicePlural}".
-              </p>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-                {services.map(service => {
-                  const isChecked = newSelectedServices.includes(service.id.toString());
-                  return (
-                    <button
-                      key={service.id}
-                      type="button"
-                      onClick={() => handleToggleNewService(service.id.toString())}
-                      className={`flex items-center justify-between p-3 rounded-xl border text-left text-xs transition-all ${
-                        isChecked
-                          ? 'border-black dark:border-[#D4AF37] bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
-                          : 'border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700 text-gray-500 dark:text-gray-400'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 truncate pr-2">
-                        {isChecked ? (
-                          <CheckSquare className="w-4 h-4 text-black dark:text-[#D4AF37] shrink-0" />
-                        ) : (
-                          <Square className="w-4 h-4 text-gray-400 shrink-0" />
-                        )}
-                        <span className="truncate">{service.name}</span>
-                      </div>
-                      <span className="font-mono text-gray-400 shrink-0">R${service.price.toFixed(0)}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* Acesso Individual ao Painel (Opcional) */}
-          <div className="pt-4 border-t border-gray-100 dark:border-zinc-800 space-y-3">
-            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-              <KeyRound className="w-4 h-4 text-[#D4AF37]" />
-              <span>Acesso Individual ao Painel (Opcional)</span>
-            </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              Ao definir e-mail e senha, o profissional entra no painel vendo apenas a própria agenda, clientes atendidos e comissão (sem acesso ao financeiro geral).
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <input
-                type="email"
-                value={newLoginEmail}
-                onChange={(e) => setNewLoginEmail(e.target.value)}
-                placeholder="E-mail de acesso (ex: joao@suaempresa.com)"
-                className="w-full border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-black dark:focus:border-white"
-              />
-              <div className="relative">
-                <input
-                  type={showNewPassword ? 'text' : 'password'}
-                  value={newLoginPassword}
-                  onChange={(e) => setNewLoginPassword(e.target.value)}
-                  placeholder="Senha inicial (mín. 8 caracteres, letras/números)"
-                  className="w-full border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl pl-3.5 pr-10 py-2.5 text-sm outline-none focus:border-black dark:focus:border-white"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowNewPassword(!showNewPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                  aria-label="Mostrar ou ocultar senha"
-                >
-                  {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-          </div>
-        </form>
-      </div>
-
-      {/* Modal / Painel de Edição de Profissional */}
-      {editingBarber && (
-        <div className="bg-amber-500/5 dark:bg-[#D4AF37]/5 border-2 border-amber-500/30 dark:border-[#D4AF37]/30 p-6 rounded-2xl space-y-5 animate-in fade-in">
-          <div className="flex items-center justify-between">
-            <h3 className="text-base font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
-              <Edit2 className="w-4 h-4 text-[#D4AF37]" />
-              <span>Editando: {editingBarber.name}</span>
-            </h3>
-            <button 
-              onClick={() => setEditingBarber(null)}
-              className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xs flex items-center gap-1"
-            >
-              <X className="w-4 h-4" /> Cancelar
-            </button>
-          </div>
-
-          <div className="flex flex-col sm:flex-row items-center gap-4">
-            {/* Foto no modo edição */}
-            <div className="flex items-center gap-3 shrink-0">
-              <input 
-                type="file" 
-                ref={editFileInputRef}
-                accept="image/*"
-                className="hidden"
-                onChange={e => {
-                  if (e.target.files?.[0]) handleUploadPhoto(e.target.files[0], true);
-                }}
-              />
-              <div 
-                onClick={() => editFileInputRef.current?.click()}
-                className="relative group w-14 h-14 rounded-full border-2 border-dashed border-gray-300 dark:border-zinc-700 hover:border-[#D4AF37] dark:hover:border-[#D4AF37] cursor-pointer overflow-hidden flex items-center justify-center bg-white dark:bg-zinc-800 transition-colors shrink-0"
-                title="Clique para trocar foto do profissional"
-              >
-                {uploadingEditPhoto ? (
-                  <Loader2 className="w-5 h-5 text-[#D4AF37] animate-spin" />
-                ) : editPhotoUrl ? (
-                  <>
-                    <img src={editPhotoUrl} alt="Foto" className="w-full h-full object-cover" />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white">
-                      <Camera className="w-4 h-4" />
-                    </div>
-                  </>
-                ) : (
-                  <div className="flex flex-col items-center justify-center text-gray-400 group-hover:text-[#D4AF37]">
-                    <Camera className="w-5 h-5" />
-                    <span className="text-[9px] font-medium leading-none mt-1">Foto</span>
-                  </div>
-                )}
-              </div>
-              {editPhotoUrl && (
-                <button
-                  type="button"
-                  onClick={() => setEditPhotoUrl('')}
-                  className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800"
-                  title="Remover foto"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-
-            <div className="flex-1 w-full">
-              <label className="block text-xs font-semibold text-gray-500 mb-1">Nome</label>
-              <input 
-                type="text" 
-                value={editName}
-                onChange={e => setEditName(e.target.value)}
-                className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl p-2.5 text-sm outline-none"
-              />
-            </div>
-            <div className="w-full sm:w-32">
-              <label className="block text-xs font-semibold text-gray-500 mb-1">Comissão (%)</label>
-              <input 
-                type="number" 
-                value={editCommission}
-                onChange={e => setEditCommission(Number(e.target.value))}
-                min={0}
-                max={100}
-                className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl p-2.5 text-sm outline-none font-bold"
-              />
-            </div>
-          </div>
-
-          <div>
-            <div className="flex items-center justify-between mb-2">
-              <label className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                {currentPreset.terms.servicePlural} que este(a) profissional realiza:
-              </label>
-              <button
-                type="button"
-                onClick={handleSelectAllEdit}
-                className="text-xs text-[#D4AF37] hover:underline font-medium"
-              >
-                {editSelectedServices.length === services.length ? 'Desmarcar Todos' : 'Selecionar Todos'}
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
-              {services.map(service => {
-                const isChecked = editSelectedServices.includes(service.id.toString());
-                return (
-                  <button
-                    key={service.id}
-                    type="button"
-                    onClick={() => handleToggleEditService(service.id.toString())}
-                    className={`flex items-center justify-between p-2.5 rounded-xl border text-left text-xs transition-all ${
-                      isChecked
-                        ? 'border-black dark:border-[#D4AF37] bg-white dark:bg-zinc-800 text-gray-900 dark:text-white font-medium shadow-sm'
-                        : 'border-gray-200 dark:border-zinc-800 text-gray-400'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2 truncate pr-2">
-                      {isChecked ? (
-                        <CheckSquare className="w-4 h-4 text-[#D4AF37] shrink-0" />
-                      ) : (
-                        <Square className="w-4 h-4 text-gray-400 shrink-0" />
-                      )}
-                      <span className="truncate">{service.name}</span>
-                    </div>
-                    <span className="font-mono text-gray-400 shrink-0">R${service.price.toFixed(0)}</span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Acesso Individual no Painel de Edição */}
-          <div className="pt-4 border-t border-amber-500/20 dark:border-[#D4AF37]/20 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-600 dark:text-gray-300">
-                <KeyRound className="w-4 h-4 text-[#D4AF37]" />
-                <span>Acesso Individual ao Painel</span>
-              </div>
-              {editingBarber.loginEmail && (
-                <button
-                  type="button"
-                  onClick={() => setRemoveAccess(!removeAccess)}
-                  className={`text-xs font-semibold px-2.5 py-1 rounded-lg border transition-colors ${
-                    removeAccess
-                      ? 'bg-red-500 text-white border-red-500'
-                      : 'text-red-600 dark:text-red-400 border-red-300 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30'
-                  }`}
-                >
-                  {removeAccess ? 'Acesso será removido ao salvar' : 'Revogar acesso individual'}
-                </button>
-              )}
-            </div>
-
-            {!removeAccess && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">
-                    E-mail de login do profissional
-                  </label>
-                  <input
-                    type="email"
-                    value={editLoginEmail}
-                    onChange={(e) => setEditLoginEmail(e.target.value)}
-                    placeholder="profissional@empresa.com"
-                    className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl px-3 py-2 text-sm outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">
-                    {editingBarber.loginEmail ? 'Nova senha (deixe em branco p/ manter)' : 'Senha inicial (mín. 8 caracteres, letras e números)'}
-                  </label>
-                  <div className="relative">
-                    <input
-                      type={showEditPassword ? 'text' : 'password'}
-                      value={editLoginPassword}
-                      onChange={(e) => setEditLoginPassword(e.target.value)}
-                      placeholder={editingBarber.loginEmail ? '•••••••• (opcional)' : 'Mínimo 8 caracteres'}
-                      className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-gray-100 rounded-xl pl-3 pr-10 py-2 text-sm outline-none"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowEditPassword(!showEditPassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
-                    >
-                      {showEditPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex justify-end gap-3 pt-2">
-            <button
-              type="button"
-              onClick={() => setEditingBarber(null)}
-              className="px-4 py-2 rounded-xl text-xs text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-zinc-800"
-            >
-              Cancelar
-            </button>
-            <button
-              type="button"
-              onClick={saveEdit}
-              disabled={isLoading || !editName.trim()}
-              className="bg-black dark:bg-[#D4AF37] text-white dark:text-black px-6 py-2 rounded-xl text-xs font-bold hover:opacity-90 transition-all shadow-md"
-            >
-              Salvar Alterações
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* Lista de Profissionais Cadastrados */}
-      <div className="bg-white dark:bg-zinc-900 p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm">
-        <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-6 flex items-center justify-between">
-          <span>Equipe ({barbers.length})</span>
-          <span className="text-xs text-gray-400 font-normal">Clique em Editar para ajustar os serviços</span>
-        </h2>
+      <div className="bg-white dark:bg-zinc-900 p-5 sm:p-6 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-5">
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            Equipe ({barbers.length})
+          </h2>
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            Toque em Editar para ajustar dados, foto, serviços ou acesso
+          </span>
+        </div>
 
         <div className="space-y-3">
-          {(barbers || []).map(barber => {
-            const barberServiceIds = Array.isArray(barber.service_ids) && barber.service_ids.length > 0
-              ? barber.service_ids.map(String)
-              : [];
-            
+          {(barbers || []).map((barber) => {
+            const barberServiceIds =
+              Array.isArray(barber.service_ids) && barber.service_ids.length > 0
+                ? barber.service_ids.map(String)
+                : [];
+
             const performsAll = barberServiceIds.length === 0 || barberServiceIds.length === services.length;
-            const assignedServices = services.filter(s => barberServiceIds.includes(s.id.toString()));
+            const assignedServices = services.filter((s) => barberServiceIds.includes(s.id.toString()));
 
             return (
-              <div 
-                key={barber.id} 
-                className="flex flex-col sm:flex-row sm:items-center justify-between p-4 border border-gray-100 dark:border-zinc-800 bg-white dark:bg-zinc-800/40 rounded-xl hover:border-gray-200 dark:hover:border-zinc-700 transition-colors gap-4"
+              <div
+                key={barber.id}
+                className="flex flex-col sm:flex-row sm:items-center justify-between p-4 border border-gray-200 dark:border-zinc-800 bg-white dark:bg-zinc-800/40 rounded-xl hover:border-gray-300 dark:hover:border-zinc-700 transition-colors gap-4"
               >
-                <div className="flex items-start sm:items-center gap-4">
-                  <div className="w-12 h-12 bg-gray-50 dark:bg-zinc-700 rounded-full flex items-center justify-center shrink-0 mt-1 sm:mt-0 overflow-hidden border border-gray-200 dark:border-zinc-700">
-                    {(barber.photo_url || barber.photoUrl) ? (
-                      <img 
-                        src={barber.photo_url || barber.photoUrl || ''} 
-                        alt={barber.name} 
-                        className="w-full h-full object-cover" 
+                <div className="flex items-start sm:items-center gap-4 min-w-0">
+                  <div className="w-12 h-12 bg-gray-50 dark:bg-zinc-700 rounded-full flex items-center justify-center shrink-0 mt-0.5 sm:mt-0 overflow-hidden border border-gray-200 dark:border-zinc-700">
+                    {barber.photo_url || barber.photoUrl ? (
+                      <img
+                        src={barber.photo_url || barber.photoUrl || ''}
+                        alt={barber.name}
+                        className="w-full h-full object-cover"
                       />
                     ) : (
                       <User className="w-6 h-6 text-gray-400 dark:text-gray-300" />
                     )}
                   </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-gray-900 dark:text-gray-100 text-base">{barber.name}</span>
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${
-                        barber.active ? 'bg-green-500/10 text-green-500' : 'bg-gray-500/10 text-gray-400'
-                      }`}>
-                        {barber.active ? 'Ativo' : 'Inativo'}
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-gray-900 dark:text-gray-100 text-base truncate">
+                        {barber.name}
+                      </span>
+                      <span
+                        className={`text-xs font-semibold ${
+                          barber.active ? 'text-green-600 dark:text-green-400' : 'text-gray-400'
+                        }`}
+                      >
+                        · {barber.active ? 'Ativo' : 'Inativo'}
                       </span>
                     </div>
 
-                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex flex-wrap items-center gap-2">
-                      <span className="tabular-nums">{barber.commission_percentage || 50}% comissão</span>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <span className="tabular-nums">{barber.commission_percentage ?? 50}% comissão</span>
                       {barber.loginEmail && (
                         <>
                           <span>·</span>
@@ -797,37 +425,38 @@ export default function Barbers() {
                           Atende todos os {services.length} {currentPreset.terms.servicePlural.toLowerCase()}
                         </span>
                       ) : (
-                        <div className="flex flex-wrap gap-1 items-center">
-                          <span className="font-medium text-[#D4AF37]">{assignedServices.length} {currentPreset.terms.servicePlural.toLowerCase()}:</span>
-                          {assignedServices.slice(0, 3).map(s => (
-                            <span key={s.id} className="bg-gray-100 dark:bg-zinc-700 px-1.5 py-0.5 rounded text-[10px] text-gray-700 dark:text-gray-300">
-                              {s.name}
-                            </span>
-                          ))}
-                          {assignedServices.length > 3 && (
-                            <span className="text-[10px] text-gray-400">+{assignedServices.length - 3} mais</span>
-                          )}
-                        </div>
+                        <span className="font-medium text-[#D4AF37]">
+                          {assignedServices.length} {currentPreset.terms.servicePlural.toLowerCase()} selecionado(s)
+                        </span>
                       )}
                     </div>
                   </div>
                 </div>
-                
-                <div className="flex items-center gap-3 self-end sm:self-center">
-                  <button 
-                    onClick={() => startEditing(barber)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+
+                <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-100 dark:border-zinc-800 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => openEditModal(barber)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-gray-200 dark:border-zinc-700 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
                   >
                     <Edit2 className="w-3.5 h-3.5 text-[#D4AF37]" />
-                    <span>Editar Serviços</span>
+                    <span>Editar</span>
                   </button>
-                  
-                  <button 
+
+                  <button
+                    type="button"
                     onClick={() => toggleActiveStatus(barber)}
-                    className={`w-11 h-6 rounded-full relative transition-colors ${barber.active ? 'bg-green-500' : 'bg-gray-300 dark:bg-zinc-700'}`}
+                    className={`w-11 h-6 rounded-full relative transition-colors ${
+                      barber.active ? 'bg-green-500' : 'bg-gray-300 dark:bg-zinc-700'
+                    }`}
                     title={barber.active ? 'Desativar profissional' : 'Ativar profissional'}
+                    aria-label={barber.active ? 'Desativar profissional' : 'Ativar profissional'}
                   >
-                    <div className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-all ${barber.active ? 'left-6' : 'left-1'}`} />
+                    <div
+                      className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-all ${
+                        barber.active ? 'left-6' : 'left-1'
+                      }`}
+                    />
                   </button>
                 </div>
               </div>
@@ -835,12 +464,285 @@ export default function Barbers() {
           })}
 
           {(!barbers || barbers.length === 0) && (
-            <div className="text-center py-10 text-gray-500 dark:text-gray-400">
-              Nenhum {currentPreset.terms.professional.toLowerCase()} cadastrado ainda.
+            <div className="text-center py-12 space-y-3">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Nenhum(a) {currentPreset.terms.professional.toLowerCase()} cadastrado(a) ainda.
+              </p>
+              <button
+                type="button"
+                onClick={openCreateModal}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-black dark:bg-[#D4AF37] text-white dark:text-black hover:opacity-90"
+              >
+                <Plus className="w-4 h-4" />
+                Cadastrar primeiro(a) {currentPreset.terms.professional.toLowerCase()}
+              </button>
             </div>
           )}
         </div>
       </div>
+
+      {/* Pop-up Modal: Cadastrar ou Editar Profissional */}
+      {isModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-sm"
+          onClick={closeModal}
+        >
+          <div
+            className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-gray-200 dark:border-zinc-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 sm:px-6 py-4 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between gap-3 shrink-0">
+              <div className="min-w-0">
+                <h2 className="text-lg font-bold font-serif text-gray-900 dark:text-white truncate">
+                  {editingBarber
+                    ? `Editar ${currentPreset.terms.professional}`
+                    : `Novo(a) ${currentPreset.terms.professional}`}
+                </h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                  {editingBarber
+                    ? `Atualizando "${editingBarber.name}"`
+                    : 'Defina foto, comissão, serviços atendidos e acesso individual'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closeModal}
+                disabled={isLoading || uploadingPhoto}
+                className="p-2 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors shrink-0"
+                aria-label="Fechar janela"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSubmitModal} className="flex flex-col flex-1 min-h-0">
+              <div className="overflow-y-auto p-5 sm:p-6 space-y-6">
+                {/* Foto, Nome e Comissão */}
+                <div className="flex flex-col sm:flex-row sm:items-end gap-4">
+                  <div className="flex items-center gap-3 shrink-0">
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files?.[0]) handleUploadPhoto(e.target.files[0]);
+                      }}
+                    />
+                    <div
+                      onClick={() => fileInputRef.current?.click()}
+                      className="relative group w-16 h-16 rounded-full border-2 border-dashed border-gray-300 dark:border-zinc-700 hover:border-[#D4AF37] cursor-pointer overflow-hidden flex items-center justify-center bg-gray-50 dark:bg-zinc-800 transition-colors shrink-0"
+                      title="Clique para selecionar foto"
+                    >
+                      {uploadingPhoto ? (
+                        <Loader2 className="w-5 h-5 text-[#D4AF37] animate-spin" />
+                      ) : modalPhotoUrl ? (
+                        <>
+                          <img src={modalPhotoUrl} alt="Foto" className="w-full h-full object-cover" />
+                          <div className="absolute inset-0 bg-black/45 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity text-white">
+                            <Camera className="w-4 h-4" />
+                          </div>
+                        </>
+                      ) : (
+                        <div className="flex flex-col items-center justify-center text-gray-400 group-hover:text-[#D4AF37]">
+                          <Camera className="w-5 h-5" />
+                          <span className="text-[10px] font-medium leading-none mt-1">Foto</span>
+                        </div>
+                      )}
+                    </div>
+                    {modalPhotoUrl && (
+                      <button
+                        type="button"
+                        onClick={() => setModalPhotoUrl('')}
+                        className="p-2 text-gray-400 hover:text-red-500 rounded-xl hover:bg-gray-100 dark:hover:bg-zinc-800"
+                        title="Remover foto"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="flex-1 w-full">
+                    <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">
+                      Nome completo *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={modalName}
+                      onChange={(e) => setModalName(e.target.value)}
+                      placeholder={`Nome do(a) ${currentPreset.terms.professional.toLowerCase()}`}
+                      className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+
+                  <div className="w-full sm:w-32 shrink-0">
+                    <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">
+                      Comissão (%)
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      value={modalCommission}
+                      onChange={(e) => setModalCommission(Number(e.target.value))}
+                      className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white rounded-xl px-3.5 py-2.5 text-sm font-bold outline-none focus:border-[#D4AF37] tabular-nums"
+                    />
+                  </div>
+                </div>
+
+                {/* Serviços que realiza */}
+                <div className="pt-4 border-t border-gray-100 dark:border-zinc-800">
+                  <div className="flex items-center justify-between mb-3">
+                    <label className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      {currentPreset.terms.servicePlural} que realiza:
+                    </label>
+                    {services.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleSelectAllServices}
+                        className="text-xs text-[#D4AF37] hover:underline font-semibold"
+                      >
+                        {modalSelectedServices.length === services.length
+                          ? 'Desmarcar Todos'
+                          : 'Selecionar Todos'}
+                      </button>
+                    )}
+                  </div>
+
+                  {services.length === 0 ? (
+                    <p className="text-xs text-gray-400 italic">
+                      Nenhum(a) {currentPreset.terms.service.toLowerCase()} cadastrado(a) ainda.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {services.map((service) => {
+                        const isChecked = modalSelectedServices.includes(service.id.toString());
+                        return (
+                          <button
+                            key={service.id}
+                            type="button"
+                            onClick={() => handleToggleService(service.id.toString())}
+                            className={`flex items-center justify-between p-3 rounded-xl border text-left text-xs transition-all ${
+                              isChecked
+                                ? 'border-black dark:border-[#D4AF37] bg-gray-50 dark:bg-zinc-800 text-gray-900 dark:text-white font-medium'
+                                : 'border-gray-200 dark:border-zinc-800 hover:border-gray-300 dark:hover:border-zinc-700 text-gray-500 dark:text-gray-400'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2 truncate pr-2">
+                              {isChecked ? (
+                                <CheckSquare className="w-4 h-4 text-black dark:text-[#D4AF37] shrink-0" />
+                              ) : (
+                                <Square className="w-4 h-4 text-gray-400 shrink-0" />
+                              )}
+                              <span className="truncate">{service.name}</span>
+                            </div>
+                            <span className="font-mono text-gray-400 shrink-0 tabular-nums">
+                              R$ {service.price.toFixed(0)}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Acesso Individual ao Painel */}
+                <div className="pt-4 border-t border-gray-100 dark:border-zinc-800 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-gray-600 dark:text-gray-300">
+                      <KeyRound className="w-4 h-4 text-[#D4AF37]" />
+                      <span>Acesso Individual ao Painel (Opcional)</span>
+                    </div>
+                    {editingBarber?.loginEmail && (
+                      <button
+                        type="button"
+                        onClick={() => setRemoveAccess(!removeAccess)}
+                        className={`text-xs font-semibold px-2.5 py-1 rounded-lg border transition-colors ${
+                          removeAccess
+                            ? 'bg-red-500 text-white border-red-500'
+                            : 'text-red-600 dark:text-red-400 border-red-300 dark:border-red-900/50 hover:bg-red-50 dark:hover:bg-red-950/30'
+                        }`}
+                      >
+                        {removeAccess ? 'Acesso será removido ao salvar' : 'Revogar acesso individual'}
+                      </button>
+                    )}
+                  </div>
+
+                  {!editingBarber && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      Ao definir e-mail e senha, o profissional entra no painel vendo apenas a própria agenda, clientes e comissão.
+                    </p>
+                  )}
+
+                  {!removeAccess && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+                          E-mail de acesso
+                        </label>
+                        <input
+                          type="email"
+                          value={modalLoginEmail}
+                          onChange={(e) => setModalLoginEmail(e.target.value)}
+                          placeholder="profissional@empresa.com"
+                          className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-[#D4AF37]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1">
+                          {editingBarber?.loginEmail
+                            ? 'Nova senha (vazio p/ manter)'
+                            : 'Senha (mín. 6 caracteres)'}
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showPassword ? 'text' : 'password'}
+                            value={modalLoginPassword}
+                            onChange={(e) => setModalLoginPassword(e.target.value)}
+                            placeholder={editingBarber?.loginEmail ? '•••••••• (opcional)' : 'Mínimo 6 caracteres'}
+                            className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white rounded-xl pl-3.5 pr-10 py-2.5 text-sm outline-none focus:border-[#D4AF37]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPassword(!showPassword)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                            aria-label="Mostrar ou ocultar senha"
+                          >
+                            {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="px-5 sm:px-6 py-4 bg-gray-50 dark:bg-zinc-950/60 border-t border-gray-200 dark:border-zinc-800 flex items-center justify-end gap-3 shrink-0">
+                <button
+                  type="button"
+                  onClick={closeModal}
+                  disabled={isLoading || uploadingPhoto}
+                  className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isLoading || uploadingPhoto || !modalName.trim()}
+                  className="px-5 py-2.5 rounded-xl text-sm font-bold bg-black dark:bg-[#D4AF37] text-white dark:text-black hover:opacity-90 transition-opacity disabled:opacity-50"
+                >
+                  {isLoading
+                    ? 'Salvando...'
+                    : editingBarber
+                    ? 'Salvar Alterações'
+                    : `Cadastrar ${currentPreset.terms.professional}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

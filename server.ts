@@ -57,8 +57,10 @@ const IS_PRODUCTION =
 const isVercel = process.env.VERCEL === '1' || Boolean(process.env.VERCEL_ENV);
 
 function resolveJwtSecret(): { secret: string; configuredInEnv: boolean } {
-  const envSecret = process.env.JWT_SECRET?.trim();
-  if (envSecret && envSecret.length >= 16) {
+  const rawSecret = process.env.JWT_SECRET?.trim() || '';
+  const envSecret = rawSecret.replace(/^["'](.+)["']$/, '$1').trim();
+  const isPlaceholder = envSecret.toUpperCase().startsWith('CHANGE_ME');
+  if (envSecret && envSecret.length >= 16 && !isPlaceholder) {
     return { secret: envSecret, configuredInEnv: true };
   }
 
@@ -2522,7 +2524,7 @@ async function startServer() {
   api.post('/auth/login', loginLimiter, async (req, res) => {
     if (IS_PRODUCTION && !hasJwtSecretEnv) {
       return res.status(503).json({
-        error: 'Configuração de segurança incompleta no servidor (JWT_SECRET ausente).'
+        error: 'Configuração de segurança incompleta no servidor (JWT_SECRET ausente ou menor que 16 caracteres nas variáveis de ambiente da Vercel).'
       });
     }
 
@@ -3329,6 +3331,7 @@ async function startServer() {
         clientPhone: (apt.clients as any)?.phone,
         barberId: apt.barber_id,
         barberName: (apt.barbers as any)?.name,
+        serviceId: apt.service_id,
         serviceName: (apt.services as any)?.name,
         servicePrice: (apt.services as any)?.price,
         durationMinutes: (apt.services as any)?.duration_minutes
@@ -3496,6 +3499,158 @@ async function startServer() {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Erro ao criar agendamento' });
+    }
+  });
+
+  api.patch('/admin/appointments/:id', authenticateToken, async (req: any, res) => {
+    const { id } = req.params;
+    const { barberId: bodyBarberId, serviceId, clientName, clientPhone, date, startTime, notes } = req.body;
+    const barbershopId = req.user.barbershopId;
+
+    try {
+      const { data: existingAppt, error: existingErr } = await supabase
+        .from('appointments')
+        .select('*')
+        .eq('id', id)
+        .eq('barbershop_id', barbershopId)
+        .maybeSingle();
+
+      if (existingErr || !existingAppt) {
+        return res.status(404).json({ error: 'Agendamento não encontrado.' });
+      }
+
+      let barberId = bodyBarberId || existingAppt.barber_id;
+      if (req.user.role === 'barber') {
+        const ownBarberId = await resolveBarberId(req.user);
+        if (!ownBarberId || existingAppt.barber_id !== ownBarberId) {
+          return res.status(403).json({ error: 'Você só pode editar seus próprios agendamentos.' });
+        }
+        barberId = ownBarberId;
+      }
+
+      const { data: barberRow } = await supabase
+        .from('barbers')
+        .select('id')
+        .eq('id', barberId)
+        .eq('barbershop_id', barbershopId)
+        .maybeSingle();
+      if (!barberRow) {
+        return res.status(404).json({ error: 'Profissional não encontrado neste estabelecimento.' });
+      }
+
+      const targetServiceId = serviceId || existingAppt.service_id;
+      const { data: service, error: svcErr } = await supabase
+        .from('services')
+        .select('*')
+        .eq('id', targetServiceId)
+        .eq('barbershop_id', barbershopId)
+        .maybeSingle();
+      if (svcErr || !service) {
+        return res.status(404).json({ error: 'Serviço não encontrado neste estabelecimento.' });
+      }
+
+      const targetDate = date || existingAppt.date;
+      const startMin = timeToMinutes(startTime || existingAppt.start_time, -1);
+      if (startMin < 0) {
+        return res.status(400).json({ error: 'Horário de início inválido.' });
+      }
+      const endMin = startMin + Number(service.duration_minutes || 30);
+      const computedStart = minutesToTime(startMin);
+      const computedEnd = minutesToTime(endMin);
+
+      const { data: dayAppts } = await supabase
+        .from('appointments')
+        .select('id, start_time, end_time, status')
+        .eq('barbershop_id', barbershopId)
+        .eq('barber_id', barberId)
+        .eq('date', targetDate)
+        .neq('id', id)
+        .in('status', ['scheduled', 'blocked']);
+
+      const occupied = buildOccupiedIntervals(dayAppts || []);
+      const hasOverlap = occupied.some(([aStart, aEnd]) => startMin < aEnd && endMin > aStart);
+      if (hasOverlap) {
+        return res.status(409).json({ error: 'Horário em conflito com outro atendimento ou bloqueio.' });
+      }
+
+      let targetClientId = existingAppt.client_id;
+      const cleanPhone = typeof clientPhone === 'string' ? clientPhone.replace(/\D/g, '') : '';
+      const cleanName = typeof clientName === 'string' ? sanitizePlainText(clientName, 120) : '';
+
+      if (cleanPhone.length >= 8) {
+        const { data: clientByPhone } = await supabase
+          .from('clients')
+          .select('*')
+          .eq('barbershop_id', barbershopId)
+          .eq('phone', cleanPhone)
+          .maybeSingle();
+
+        if (clientByPhone) {
+          targetClientId = clientByPhone.id;
+          if (cleanName && clientByPhone.name !== cleanName) {
+            await supabase
+              .from('clients')
+              .update({ name: cleanName })
+              .eq('id', clientByPhone.id)
+              .eq('barbershop_id', barbershopId);
+          }
+        } else if (targetClientId) {
+          const clientUpdates: Record<string, any> = { phone: cleanPhone };
+          if (cleanName) clientUpdates.name = cleanName;
+          await supabase
+            .from('clients')
+            .update(clientUpdates)
+            .eq('id', targetClientId)
+            .eq('barbershop_id', barbershopId);
+        } else {
+          const newClientId = crypto.randomUUID();
+          await supabase.from('clients').insert({
+            id: newClientId,
+            barbershop_id: barbershopId,
+            name: cleanName || 'Cliente',
+            phone: cleanPhone
+          });
+          targetClientId = newClientId;
+        }
+      } else if (cleanName && targetClientId) {
+        await supabase
+          .from('clients')
+          .update({ name: cleanName })
+          .eq('id', targetClientId)
+          .eq('barbershop_id', barbershopId);
+      }
+
+      const trimmedNotes = typeof notes === 'string' ? notes.trim() : '';
+      const baseUpdate: Record<string, any> = {
+        barber_id: barberId,
+        service_id: targetServiceId,
+        client_id: targetClientId,
+        date: targetDate,
+        start_time: computedStart,
+        end_time: computedEnd
+      };
+
+      let updRes = await supabase
+        .from('appointments')
+        .update({ ...baseUpdate, notes: trimmedNotes || null })
+        .eq('id', id)
+        .eq('barbershop_id', barbershopId);
+
+      if (updRes.error && /notes|column|schema cache/i.test(updRes.error.message || '')) {
+        updRes = await supabase
+          .from('appointments')
+          .update(baseUpdate)
+          .eq('id', id)
+          .eq('barbershop_id', barbershopId);
+      }
+
+      if (updRes.error) throw updRes.error;
+
+      await cloudNicheDb.upsertAppointmentNote(id, barbershopId, trimmedNotes);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('[UPDATE_APPOINTMENT_ERR]', error);
+      res.status(500).json({ error: 'Erro ao atualizar agendamento' });
     }
   });
 
@@ -4200,6 +4355,58 @@ async function startServer() {
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Erro ao cadastrar cliente' });
+    }
+  });
+
+  api.patch('/admin/clients/:id', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    const { id } = req.params;
+    const cleanName = sanitizePlainText(req.body?.name || '', 120);
+    const cleanPhone = String(req.body?.phone || '').replace(/\D/g, '').slice(0, 15);
+
+    if (!cleanName || cleanName.length < 2) {
+      return res.status(400).json({ error: 'Informe um nome válido para o cliente.' });
+    }
+    if (!cleanPhone || cleanPhone.length < 8) {
+      return res.status(400).json({ error: 'Informe um telefone/WhatsApp válido.' });
+    }
+
+    try {
+      const { data: existingClient } = await supabase
+        .from('clients')
+        .select('id')
+        .eq('id', id)
+        .eq('barbershop_id', req.user.barbershopId)
+        .maybeSingle();
+
+      if (!existingClient) {
+        return res.status(404).json({ error: 'Cliente não encontrado.' });
+      }
+
+      const { data: duplicatePhone } = await supabase
+        .from('clients')
+        .select('id')
+        .eq('barbershop_id', req.user.barbershopId)
+        .eq('phone', cleanPhone)
+        .neq('id', id)
+        .maybeSingle();
+
+      if (duplicatePhone) {
+        return res.status(409).json({ error: 'Já existe outro cliente cadastrado com este telefone.' });
+      }
+
+      const { data: updated, error } = await supabase
+        .from('clients')
+        .update({ name: cleanName, phone: cleanPhone })
+        .eq('id', id)
+        .eq('barbershop_id', req.user.barbershopId)
+        .select('*')
+        .single();
+
+      if (error) throw error;
+      res.json({ success: true, client: updated });
+    } catch (error) {
+      console.error('[UPDATE_CLIENT_ERR]', error);
+      res.status(500).json({ error: 'Erro ao atualizar cliente' });
     }
   });
 

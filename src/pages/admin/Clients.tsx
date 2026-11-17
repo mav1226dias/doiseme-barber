@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, Upload, Users, UserPlus, Trash2, Brain, Sparkles, AlertTriangle, X } from 'lucide-react';
+import { Search, Upload, Users, UserPlus, Trash2, Brain, Sparkles, AlertTriangle, X, Edit2 } from 'lucide-react';
 import { readSheet } from 'read-excel-file/browser';
 import Papa from 'papaparse';
 import { toast } from 'sonner';
@@ -30,7 +30,8 @@ export default function Clients() {
   });
   const isBarber = userRole === 'barber';
 
-  // New Client Form
+  // Create / Edit Client Modal Form
+  const [editingClient, setEditingClient] = useState<any | null>(null);
   const [newName, setNewName] = useState('');
   const [newPhone, setNewPhone] = useState('');
 
@@ -121,31 +122,70 @@ export default function Clients() {
     }
   };
 
-  const handleManualAdd = async (e: React.FormEvent) => {
+  const openCreateModal = () => {
+    setEditingClient(null);
+    setNewName('');
+    setNewPhone('');
+    setIsModalOpen(true);
+  };
+
+  const openEditModal = (client: any) => {
+    setEditingClient(client);
+    setNewName(client.name || '');
+    setNewPhone(client.phone || '');
+    setIsModalOpen(true);
+  };
+
+  const closeClientModal = () => {
+    if (loading) return;
+    setIsModalOpen(false);
+    setEditingClient(null);
+  };
+
+  useEffect(() => {
+    if (!isModalOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !loading) {
+        setIsModalOpen(false);
+        setEditingClient(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isModalOpen, loading]);
+
+  const handleSaveClientModal = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     const token = localStorage.getItem('token');
+    const cleanPhone = newPhone.replace(/\D/g, '');
     try {
-      const res = await fetch('/api/admin/clients', {
-        method: 'POST',
+      const endpoint = editingClient
+        ? `/api/admin/clients/${encodeURIComponent(editingClient.id)}`
+        : '/api/admin/clients';
+      const method = editingClient ? 'PATCH' : 'POST';
+
+      const res = await fetch(endpoint, {
+        method,
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
+          Authorization: `Bearer ${token}`
         },
-        body: JSON.stringify({ name: newName, phone: newPhone.replace(/\D/g, '') })
+        body: JSON.stringify({ name: newName.trim(), phone: cleanPhone })
       });
       if (res.ok) {
-        toast.success('Cliente adicionado com sucesso!');
+        toast.success(editingClient ? 'Cliente atualizado com sucesso!' : 'Cliente adicionado com sucesso!');
         setIsModalOpen(false);
+        setEditingClient(null);
         setNewName('');
         setNewPhone('');
         fetchClients();
       } else {
-        const error = await res.json();
-        toast.error(error.error || 'Erro ao adicionar cliente');
+        const error = await res.json().catch(() => ({}));
+        toast.error(error.error || 'Erro ao salvar cliente');
       }
     } catch {
-      toast.error('Erro ao adicionar cliente');
+      toast.error('Erro de conexão ao salvar cliente');
     }
     setLoading(false);
   };
@@ -346,8 +386,9 @@ export default function Clients() {
         {!isBarber && (
           <div className="flex flex-wrap gap-3">
             <button 
-              onClick={() => setIsModalOpen(true)}
-              className="flex items-center gap-2 bg-black dark:bg-zinc-100 text-white dark:text-black px-4 py-2 rounded-xl font-medium hover:bg-gray-800 dark:hover:bg-white transition-colors"
+              type="button"
+              onClick={openCreateModal}
+              className="flex items-center gap-2 bg-black dark:bg-[#D4AF37] text-white dark:text-black px-4 py-2.5 rounded-xl font-bold text-sm hover:opacity-90 transition-opacity"
             >
               <UserPlus className="w-4 h-4" /> Novo {currentPreset.terms.client}
             </button>
@@ -480,14 +521,27 @@ export default function Clients() {
                         </td>
                         {!isBarber && (
                           <td className="p-4 text-right">
-                            <button 
-                              disabled={loading}
-                              onClick={() => handleDelete([c.id])}
-                              className="text-gray-400 hover:text-red-500 transition-colors p-2 disabled:opacity-50 shrink-0"
-                              title="Excluir Cliente"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            <div className="inline-flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                disabled={loading}
+                                onClick={() => openEditModal(c)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                                title="Editar Cliente"
+                              >
+                                <Edit2 className="w-3.5 h-3.5 text-[#D4AF37]" />
+                                <span className="hidden sm:inline">Editar</span>
+                              </button>
+                              <button 
+                                type="button"
+                                disabled={loading}
+                                onClick={() => handleDelete([c.id])}
+                                className="text-gray-400 hover:text-red-500 transition-colors p-2 disabled:opacity-50 shrink-0"
+                                title="Excluir Cliente"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
                           </td>
                         )}
                       </tr>
@@ -505,54 +559,84 @@ export default function Clients() {
         )}
       </div>
 
-      {/* Manual Add Modal */}
+      {/* Create / Edit Client Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl border border-gray-100 dark:border-zinc-800">
-            <div className="p-6 border-b border-gray-100 dark:border-zinc-800">
-              <h2 className="text-xl font-bold font-serif text-gray-900 dark:text-gray-100">
-                Cadastrar {currentPreset.terms.client}
-              </h2>
-            </div>
-            <form onSubmit={handleManualAdd} className="p-6 space-y-4">
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-sm"
+          onClick={closeClientModal}
+        >
+          <div
+            className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-gray-200 dark:border-zinc-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-gray-200 dark:border-zinc-800 flex items-center justify-between gap-3 shrink-0">
               <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-                  Nome do(a) {currentPreset.terms.client}
-                </label>
-                <input 
-                  type="text" 
-                  required
-                  value={newName}
-                  onChange={e => setNewName(e.target.value)}
-                  className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white rounded-xl p-3 outline-none focus:border-black dark:focus:border-white"
-                />
+                <h2 className="text-lg font-bold font-serif text-gray-900 dark:text-white">
+                  {editingClient
+                    ? `Editar ${currentPreset.terms.client}`
+                    : `Cadastrar ${currentPreset.terms.client}`}
+                </h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {editingClient
+                    ? `Atualizando dados de "${editingClient.name || 'Cliente'}"`
+                    : `Adicione um novo ${currentPreset.terms.client.toLowerCase()} à base`}
+                </p>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Telefone (WhatsApp)</label>
-                <input 
-                  type="text" 
-                  required
-                  placeholder="Ex: 53981536614"
-                  value={newPhone}
-                  onChange={e => setNewPhone(e.target.value)}
-                  className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white rounded-xl p-3 outline-none focus:border-black dark:focus:border-white font-mono"
-                />
+              <button
+                type="button"
+                onClick={closeClientModal}
+                disabled={loading}
+                className="p-2 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                aria-label="Fechar janela"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <form onSubmit={handleSaveClientModal} className="flex flex-col flex-1 min-h-0">
+              <div className="overflow-y-auto p-6 space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">
+                    Nome do(a) {currentPreset.terms.client} *
+                  </label>
+                  <input 
+                    type="text" 
+                    required
+                    value={newName}
+                    onChange={e => setNewName(e.target.value)}
+                    placeholder="Ex: Maria Silva"
+                    className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white rounded-xl px-3.5 py-3 text-sm outline-none focus:border-[#D4AF37]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">
+                    Telefone (WhatsApp) *
+                  </label>
+                  <input 
+                    type="text" 
+                    required
+                    placeholder="Ex: 53981536614"
+                    value={newPhone}
+                    onChange={e => setNewPhone(e.target.value)}
+                    className="w-full border border-gray-300 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-900 dark:text-white rounded-xl px-3.5 py-3 text-sm outline-none focus:border-[#D4AF37] font-mono tabular-nums"
+                  />
+                </div>
               </div>
               
-              <div className="flex gap-3 pt-4">
+              <div className="px-6 py-4 bg-gray-50 dark:bg-zinc-950/60 border-t border-gray-200 dark:border-zinc-800 flex items-center justify-end gap-3 shrink-0">
                 <button 
                   type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="flex-1 px-4 py-3 bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-gray-300 rounded-xl font-medium hover:bg-gray-200 dark:hover:bg-zinc-700 transition-colors"
+                  disabled={loading}
+                  onClick={closeClientModal}
+                  className="px-4 py-2.5 bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 rounded-xl text-sm font-semibold hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
                 >
                   Cancelar
                 </button>
                 <button 
                   type="submit"
                   disabled={loading}
-                  className="flex-1 px-4 py-3 bg-[#D4AF37] text-white rounded-xl font-bold hover:bg-[#b0912e] transition-colors disabled:opacity-50"
+                  className="px-5 py-2.5 bg-black dark:bg-[#D4AF37] text-white dark:text-black rounded-xl text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50"
                 >
-                  {loading ? 'Salvando...' : 'Salvar Cliente'}
+                  {loading ? 'Salvando...' : editingClient ? 'Salvar Alterações' : `Cadastrar ${currentPreset.terms.client}`}
                 </button>
               </div>
             </form>

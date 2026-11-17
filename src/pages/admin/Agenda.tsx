@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar as CalendarIcon, Clock, User, Scissors, Check, X, ShieldAlert, Plus, Brain, Sparkles } from 'lucide-react';
+import { Calendar as CalendarIcon, X, ShieldAlert, Plus, Brain, Sparkles, Edit2 } from 'lucide-react';
 import { toast } from 'sonner';
 import PatientRecordModal from '../../components/PatientRecordModal';
 import ConfirmModal from '../../components/ConfirmModal';
@@ -18,17 +18,19 @@ export default function Agenda() {
 
   // Modals state
   const [isApptModalOpen, setIsApptModalOpen] = useState(false);
+  const [editingAppt, setEditingAppt] = useState<any | null>(null);
   const [isBlockModalOpen, setIsBlockModalOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pendingStatusUpdate, setPendingStatusUpdate] = useState<{ id: string; status: string } | null>(null);
   const [updatingStatus, setUpdatingStatus] = useState(false);
 
-  // New Appt form
+  // Create / Edit Appt form
   const [newAppt, setNewAppt] = useState({
     clientName: '',
     clientPhone: '',
     serviceId: '',
     barberId: '',
+    apptDate: date,
     time: '09:00',
     notes: ''
   });
@@ -142,35 +144,90 @@ export default function Agenda() {
     }
   };
 
-  const handleCreateAppointment = async (e: React.FormEvent) => {
+  useEffect(() => {
+    if (!isApptModalOpen && !isBlockModalOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !loading) {
+        setIsApptModalOpen(false);
+        setEditingAppt(null);
+        setIsBlockModalOpen(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isApptModalOpen, isBlockModalOpen, loading]);
+
+  const openCreateApptModal = () => {
+    setEditingAppt(null);
+    setNewAppt({
+      clientName: '',
+      clientPhone: '',
+      serviceId: '',
+      barberId: ownBarberId || (barbersListOptions.length === 1 ? barbersListOptions[0]?.id || '' : ''),
+      apptDate: date,
+      time: '09:00',
+      notes: ''
+    });
+    setIsApptModalOpen(true);
+  };
+
+  const openEditApptModal = (apt: any) => {
+    setEditingAppt(apt);
+    setNewAppt({
+      clientName: apt.clientName || '',
+      clientPhone: apt.clientPhone || '',
+      serviceId: apt.serviceId || '',
+      barberId: apt.barberId || ownBarberId || '',
+      apptDate: apt.date || date,
+      time: apt.startTime || '09:00',
+      notes: apt.notes || ''
+    });
+    setIsApptModalOpen(true);
+  };
+
+  const handleSaveAppointment = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     const token = localStorage.getItem('token');
     try {
-      const res = await fetch('/api/admin/appointments', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      const endpoint = editingAppt
+        ? `/api/admin/appointments/${encodeURIComponent(editingAppt.id)}`
+        : '/api/admin/appointments';
+      const method = editingAppt ? 'PATCH' : 'POST';
+
+      const res = await fetch(endpoint, {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           clientName: newAppt.clientName,
           clientPhone: newAppt.clientPhone,
           serviceId: newAppt.serviceId,
           barberId: newAppt.barberId,
-          date,
+          date: newAppt.apptDate || date,
           startTime: newAppt.time,
           notes: newAppt.notes
         })
       });
       if (res.ok) {
-        toast.success('Agendamento criado com sucesso!');
+        toast.success(editingAppt ? 'Agendamento atualizado com sucesso!' : 'Agendamento criado com sucesso!');
         setIsApptModalOpen(false);
-        setNewAppt({ clientName: '', clientPhone: '', serviceId: '', barberId: ownBarberId || '', time: '09:00', notes: '' });
+        setEditingAppt(null);
+        setNewAppt({
+          clientName: '',
+          clientPhone: '',
+          serviceId: '',
+          barberId: ownBarberId || '',
+          apptDate: date,
+          time: '09:00',
+          notes: ''
+        });
         fetchAppointments();
       } else {
         const err = await res.json().catch(() => ({}));
-        toast.error(err.error || 'Erro ao criar agendamento');
+        toast.error(err.error || 'Erro ao salvar agendamento');
       }
     } catch {
-      toast.error('Erro de rede ao criar agendamento');
+      toast.error('Erro de rede ao salvar agendamento');
     }
     setLoading(false);
   };
@@ -223,14 +280,16 @@ export default function Agenda() {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <button 
-            onClick={() => setIsApptModalOpen(true)}
-            className="flex items-center gap-2 bg-[#D4AF37] text-white px-4 py-2.5 rounded-xl font-medium hover:bg-[#b0912e] transition-colors"
+            type="button"
+            onClick={openCreateApptModal}
+            className="flex items-center gap-2 bg-[#D4AF37] text-black px-4 py-2.5 rounded-xl font-bold text-sm hover:opacity-90 transition-opacity"
           >
             <Plus className="w-4 h-4" /> Nova Marcação
           </button>
           <button 
+            type="button"
             onClick={() => setIsBlockModalOpen(true)}
-            className="flex items-center gap-2 bg-gray-900 dark:bg-white text-white dark:text-black px-4 py-2.5 rounded-xl font-medium hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors"
+            className="flex items-center gap-2 bg-gray-900 dark:bg-white text-white dark:text-black px-4 py-2.5 rounded-xl font-semibold text-sm hover:bg-gray-800 dark:hover:bg-gray-100 transition-colors"
           >
             <ShieldAlert className="w-4 h-4" /> Bloquear Horário
           </button>
@@ -298,9 +357,30 @@ export default function Agenda() {
                                 </div>
                               )}
                               {apt.status === 'scheduled' && (
-                                <div className="mt-3 flex gap-2">
-                                  <button onClick={() => updateStatus(apt.id, 'completed')} className="text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 flex-1 py-1 rounded font-medium hover:bg-green-200 dark:hover:bg-green-900/50">Concluir</button>
-                                  <button onClick={() => updateStatus(apt.id, 'cancelled')} className="text-xs bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 px-2 py-1 rounded font-medium hover:bg-red-200 dark:hover:bg-red-900/50">Cancelar</button>
+                                <div className="mt-3 flex flex-wrap gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => updateStatus(apt.id, 'completed')}
+                                    className="text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2.5 py-1.5 rounded-lg font-semibold hover:bg-green-200 dark:hover:bg-green-900/50 flex-1"
+                                  >
+                                    Concluir
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditApptModal(apt)}
+                                    className="text-xs bg-gray-100 dark:bg-zinc-700 text-gray-700 dark:text-gray-200 px-2.5 py-1.5 rounded-lg font-semibold hover:bg-gray-200 dark:hover:bg-zinc-600 inline-flex items-center gap-1"
+                                    title="Editar agendamento"
+                                  >
+                                    <Edit2 className="w-3 h-3 text-[#D4AF37]" />
+                                    Editar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => updateStatus(apt.id, 'cancelled')}
+                                    className="text-xs bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 px-2.5 py-1.5 rounded-lg font-semibold hover:bg-red-200 dark:hover:bg-red-900/50"
+                                  >
+                                    Cancelar
+                                  </button>
                                 </div>
                               )}
                               {isCompleted && <div className="text-xs font-medium text-green-600 dark:text-green-400 mt-2">Concluído ✓</div>}
@@ -361,100 +441,228 @@ export default function Agenda() {
       </div>
 
       {isApptModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl border border-gray-100 dark:border-zinc-800">
-            <div className="p-6 border-b border-gray-100 dark:border-zinc-800 flex justify-between items-center">
-              <h2 className="text-xl font-bold font-serif text-gray-900 dark:text-gray-100">Nova Marcação</h2>
-              <button onClick={() => setIsApptModalOpen(false)} className="text-gray-500"><X className="w-5 h-5"/></button>
-            </div>
-            <form onSubmit={handleCreateAppointment} className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Nome</label>
-                  <input required type="text" value={newAppt.clientName} onChange={e => setNewAppt({...newAppt, clientName: e.target.value})} className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">WhatsApp</label>
-                  <input required type="text" value={newAppt.clientPhone} onChange={e => setNewAppt({...newAppt, clientPhone: e.target.value})} className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700 font-mono" placeholder="5511999999999" />
-                </div>
-              </div>
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-sm"
+          onClick={() => !loading && (setIsApptModalOpen(false), setEditingAppt(null))}
+        >
+          <div
+            className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-md max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-gray-200 dark:border-zinc-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-gray-200 dark:border-zinc-800 flex justify-between items-center gap-3 shrink-0">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Profissional</label>
-                <select
-                  required
-                  disabled={userRole === 'barber'}
-                  value={newAppt.barberId}
-                  onChange={e => setNewAppt({...newAppt, barberId: e.target.value})}
-                  className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700 disabled:opacity-70"
-                >
-                  <option value="">Selecione...</option>
-                  {barbersListOptions.map(b => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
+                <h2 className="text-lg font-bold font-serif text-gray-900 dark:text-white">
+                  {editingAppt ? 'Editar Agendamento' : 'Nova Marcação'}
+                </h2>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {editingAppt ? 'Altere horário, serviço, profissional ou dados do cliente' : 'Agende manualmente um novo atendimento'}
+                </p>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Serviço</label>
-                <select required value={newAppt.serviceId} onChange={e => setNewAppt({...newAppt, serviceId: e.target.value})} className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700">
-                  <option value="">Selecione...</option>
-                  {servicesListOptions.map(s => (
-                    <option key={s.id} value={s.id}>{s.name} - R${s.price}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Horário de Início</label>
-                <input required type="time" value={newAppt.time} onChange={e => setNewAppt({...newAppt, time: e.target.value})} className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700" />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Observações / Briefing (Opcional)</label>
-                <textarea rows={2} value={newAppt.notes} onChange={e => setNewAppt({...newAppt, notes: e.target.value})} placeholder="Detalhes do atendimento, medidas, referências..." className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700 text-sm resize-none" />
-              </div>
-              <button disabled={loading} type="submit" className="w-full py-3 bg-[#D4AF37] text-white rounded-xl font-bold hover:bg-[#b0912e] transition-colors disabled:opacity-50 mt-4">
-                {loading ? 'Salvando...' : 'Salvar Agendamento'}
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  setIsApptModalOpen(false);
+                  setEditingAppt(null);
+                }}
+                className="p-2 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800"
+                aria-label="Fechar janela"
+              >
+                <X className="w-5 h-5" />
               </button>
+            </div>
+            <form onSubmit={handleSaveAppointment} className="flex flex-col flex-1 min-h-0">
+              <div className="overflow-y-auto p-6 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">Nome *</label>
+                    <input
+                      required
+                      type="text"
+                      value={newAppt.clientName}
+                      onChange={e => setNewAppt({ ...newAppt, clientName: e.target.value })}
+                      className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">WhatsApp *</label>
+                    <input
+                      required
+                      type="text"
+                      value={newAppt.clientPhone}
+                      onChange={e => setNewAppt({ ...newAppt, clientPhone: e.target.value })}
+                      className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white font-mono tabular-nums focus:border-[#D4AF37]"
+                      placeholder="5553999999999"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">Profissional *</label>
+                  <select
+                    required
+                    disabled={userRole === 'barber'}
+                    value={newAppt.barberId}
+                    onChange={e => setNewAppt({ ...newAppt, barberId: e.target.value })}
+                    className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white disabled:opacity-70 focus:border-[#D4AF37]"
+                  >
+                    <option value="">Selecione...</option>
+                    {barbersListOptions.map(b => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">Serviço *</label>
+                  <select
+                    required
+                    value={newAppt.serviceId}
+                    onChange={e => setNewAppt({ ...newAppt, serviceId: e.target.value })}
+                    className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white focus:border-[#D4AF37]"
+                  >
+                    <option value="">Selecione...</option>
+                    {servicesListOptions.map(s => (
+                      <option key={s.id} value={s.id}>{s.name} - R${s.price}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">Data *</label>
+                    <input
+                      required
+                      type="date"
+                      value={newAppt.apptDate}
+                      onChange={e => setNewAppt({ ...newAppt, apptDate: e.target.value })}
+                      className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white focus:border-[#D4AF37] tabular-nums"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">Horário de Início *</label>
+                    <input
+                      required
+                      type="time"
+                      value={newAppt.time}
+                      onChange={e => setNewAppt({ ...newAppt, time: e.target.value })}
+                      className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white focus:border-[#D4AF37] tabular-nums"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">Observações / Briefing (Opcional)</label>
+                  <textarea
+                    rows={2}
+                    value={newAppt.notes}
+                    onChange={e => setNewAppt({ ...newAppt, notes: e.target.value })}
+                    placeholder="Detalhes do atendimento, medidas, referências..."
+                    className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white resize-none focus:border-[#D4AF37]"
+                  />
+                </div>
+              </div>
+              <div className="px-6 py-4 bg-gray-50 dark:bg-zinc-950/60 border-t border-gray-200 dark:border-zinc-800 flex items-center justify-end gap-3 shrink-0">
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => {
+                    setIsApptModalOpen(false);
+                    setEditingAppt(null);
+                  }}
+                  className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  disabled={loading}
+                  type="submit"
+                  className="px-5 py-2.5 bg-black dark:bg-[#D4AF37] text-white dark:text-black rounded-xl text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50"
+                >
+                  {loading ? 'Salvando...' : editingAppt ? 'Salvar Alterações' : 'Agendar Horário'}
+                </button>
+              </div>
             </form>
           </div>
         </div>
       )}
 
       {isBlockModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl border border-gray-100 dark:border-zinc-800">
-            <div className="p-6 border-b border-gray-100 dark:border-zinc-800 flex justify-between items-center">
-              <h2 className="text-xl font-bold font-serif text-gray-900 dark:text-gray-100">Bloquear Horário</h2>
-              <button onClick={() => setIsBlockModalOpen(false)} className="text-gray-500"><X className="w-5 h-5"/></button>
-            </div>
-            <form onSubmit={handleCreateBlock} className="p-6 space-y-4">
-              <p className="text-sm text-gray-500 mb-4">Isto criará blocos de indisponibilidade para o período. Útil para folgas do dia e pausas.</p>
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Profissional</label>
-                <select
-                  required
-                  disabled={userRole === 'barber'}
-                  value={newBlock.barberId}
-                  onChange={e => setNewBlock({...newBlock, barberId: e.target.value})}
-                  className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700 disabled:opacity-70"
-                >
-                  <option value="">Selecione...</option>
-                  {barbersListOptions.map(b => (
-                    <option key={b.id} value={b.id}>{b.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Início</label>
-                  <input required type="time" value={newBlock.startTime} onChange={e => setNewBlock({...newBlock, startTime: e.target.value})} className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700" />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Fim (Opcional)</label>
-                  <input type="time" value={newBlock.endTime} onChange={e => setNewBlock({...newBlock, endTime: e.target.value})} className="w-full border rounded-xl p-2 outline-none dark:bg-zinc-800 dark:border-zinc-700" />
-                </div>
-              </div>
-              <button disabled={loading} type="submit" className="w-full py-3 bg-black dark:bg-white text-white dark:text-black rounded-xl font-bold hover:bg-gray-800 transition-colors disabled:opacity-50 mt-4">
-                {loading ? 'Bloqueando...' : 'Confirmar Bloqueio'}
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/65 backdrop-blur-sm"
+          onClick={() => !loading && setIsBlockModalOpen(false)}
+        >
+          <div
+            className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-sm overflow-hidden shadow-2xl border border-gray-200 dark:border-zinc-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-6 py-4 border-b border-gray-200 dark:border-zinc-800 flex justify-between items-center">
+              <h2 className="text-lg font-bold font-serif text-gray-900 dark:text-white">Bloquear Horário</h2>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => setIsBlockModalOpen(false)}
+                className="p-2 rounded-xl text-gray-400 hover:text-gray-700 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800"
+                aria-label="Fechar janela"
+              >
+                <X className="w-5 h-5" />
               </button>
+            </div>
+            <form onSubmit={handleCreateBlock}>
+              <div className="p-6 space-y-4">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Isto criará blocos de indisponibilidade para o período. Útil para folgas do dia e pausas.
+                </p>
+                <div>
+                  <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">Profissional *</label>
+                  <select
+                    required
+                    disabled={userRole === 'barber'}
+                    value={newBlock.barberId}
+                    onChange={e => setNewBlock({ ...newBlock, barberId: e.target.value })}
+                    className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white disabled:opacity-70"
+                  >
+                    <option value="">Selecione...</option>
+                    {barbersListOptions.map(b => (
+                      <option key={b.id} value={b.id}>{b.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">Início *</label>
+                    <input
+                      required
+                      type="time"
+                      value={newBlock.startTime}
+                      onChange={e => setNewBlock({ ...newBlock, startTime: e.target.value })}
+                      className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white tabular-nums"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1.5">Fim (Opcional)</label>
+                    <input
+                      type="time"
+                      value={newBlock.endTime}
+                      onChange={e => setNewBlock({ ...newBlock, endTime: e.target.value })}
+                      className="w-full border border-gray-300 dark:border-zinc-700 rounded-xl px-3 py-2.5 text-sm outline-none bg-white dark:bg-zinc-800 text-gray-900 dark:text-white tabular-nums"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div className="px-6 py-4 bg-gray-50 dark:bg-zinc-950/60 border-t border-gray-200 dark:border-zinc-800 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => setIsBlockModalOpen(false)}
+                  className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-white dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-700 transition-colors disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  disabled={loading}
+                  type="submit"
+                  className="px-5 py-2.5 bg-black dark:bg-white text-white dark:text-black rounded-xl text-sm font-bold hover:opacity-90 transition-opacity disabled:opacity-50"
+                >
+                  {loading ? 'Bloqueando...' : 'Confirmar Bloqueio'}
+                </button>
+              </div>
             </form>
           </div>
         </div>
