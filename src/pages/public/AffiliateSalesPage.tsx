@@ -18,7 +18,7 @@ import {
 import heroStudioImg from '../../assets/images/hero_doiseme_studio_1794534284924.jpg';
 import { SEGMENTS, SegmentPreset } from '../../lib/segments';
 import { SegmentIcon } from '../../components/SegmentIcon';
-import { normalizeReferralCode, saveReferralCode, trackAffiliateClick } from '../../lib/referral';
+import { normalizeReferralCode, saveReferralCode, trackAffiliateClick, trackSalesChannelClick, trackSalesChannelVisit } from '../../lib/referral';
 
 interface SalesPlanOption {
   id: string;
@@ -128,6 +128,7 @@ export default function AffiliateSalesPage() {
 
   useEffect(() => {
     window.scrollTo(0, 0);
+    trackSalesChannelVisit('propria');
     if (normalizedCode) {
       saveReferralCode(normalizedCode);
     }
@@ -840,6 +841,7 @@ export default function AffiliateSalesPage() {
 
                 <Link
                   to={buildRegisterUrl({ plano: plan.id, ciclo: billingCycle })}
+                  onClick={() => trackSalesChannelClick('propria', `${plan.id}_${billingCycle}`)}
                   className={`mt-7 w-full inline-flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl font-bold text-sm transition-colors text-center ${
                     isTopProfitPlan
                       ? 'bg-[#D4AF37] text-black hover:bg-[#e3c04f]'

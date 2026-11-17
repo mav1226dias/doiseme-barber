@@ -19,6 +19,7 @@ import {
 
 const warnedTables = new Set<string>();
 let affiliateClickWriteLock: Promise<any> = Promise.resolve();
+let salesChannelMetricsWriteLock: Promise<any> = Promise.resolve();
 
 function isTableMissingOrUnmigrated(error: any): boolean {
   if (!error) return false;
@@ -2085,6 +2086,131 @@ export const cloudNicheDb = {
       }
     });
     affiliateClickWriteLock = runTask.catch(() => {});
+    return runTask;
+  },
+
+  async getSalesChannelMetricsMap(): Promise<
+    Record<
+      string,
+      {
+        totalVisits: number;
+        uniqueVisits: number;
+        totalClicks: number;
+        uniqueClicks: number;
+        byPlanClicks: Record<string, number>;
+        lastVisitedAt: string | null;
+        lastClickedAt: string | null;
+      }
+    >
+  > {
+    try {
+      const raw = await this.getPlatformSetting('sales_channel_metrics_map');
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return {};
+      const result: Record<string, any> = {};
+      for (const [channel, entry] of Object.entries(parsed as Record<string, any>)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const rawByPlan = entry.byPlanClicks && typeof entry.byPlanClicks === 'object' ? entry.byPlanClicks : {};
+        const byPlanClicks: Record<string, number> = {};
+        for (const [k, v] of Object.entries(rawByPlan)) {
+          byPlanClicks[k] = Math.max(0, Math.floor(Number(v) || 0));
+        }
+        result[channel] = {
+          totalVisits: Math.max(0, Math.floor(Number(entry.totalVisits) || 0)),
+          uniqueVisits: Math.max(0, Math.floor(Number(entry.uniqueVisits) || 0)),
+          totalClicks: Math.max(0, Math.floor(Number(entry.totalClicks) || 0)),
+          uniqueClicks: Math.max(0, Math.floor(Number(entry.uniqueClicks) || 0)),
+          byPlanClicks,
+          lastVisitedAt: typeof entry.lastVisitedAt === 'string' ? entry.lastVisitedAt : null,
+          lastClickedAt: typeof entry.lastClickedAt === 'string' ? entry.lastClickedAt : null
+        };
+      }
+      return result;
+    } catch {
+      return {};
+    }
+  },
+
+  async recordSalesChannelEvent(
+    channel: string,
+    eventType: 'visit' | 'click',
+    visitorHash?: string | null,
+    planKey?: string | null
+  ): Promise<void> {
+    const runTask = salesChannelMetricsWriteLock.then(async () => {
+      let map: Record<string, any> = {};
+      try {
+        const raw = await this.getPlatformSetting('sales_channel_metrics_map');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            map = parsed;
+          }
+        }
+      } catch {
+        map = {};
+      }
+
+      const existing = map[channel] || {
+        totalVisits: 0,
+        uniqueVisits: 0,
+        totalClicks: 0,
+        uniqueClicks: 0,
+        byPlanClicks: {},
+        recentVisitHashes: [],
+        recentClickHashes: [],
+        lastVisitedAt: null,
+        lastClickedAt: null
+      };
+
+      const cleanHash = typeof visitorHash === 'string' && visitorHash.trim() ? visitorHash.trim().slice(0, 48) : '';
+      const now = new Date().toISOString();
+
+      if (eventType === 'visit') {
+        const hashes = Array.isArray(existing.recentVisitHashes) ? [...existing.recentVisitHashes] : [];
+        let isUnique = true;
+        if (cleanHash) {
+          if (hashes.includes(cleanHash)) {
+            isUnique = false;
+          } else {
+            hashes.push(cleanHash);
+            if (hashes.length > 1000) hashes.splice(0, hashes.length - 1000);
+          }
+        }
+        existing.totalVisits = Math.max(0, Math.floor(Number(existing.totalVisits) || 0)) + 1;
+        existing.uniqueVisits = Math.max(0, Math.floor(Number(existing.uniqueVisits) || 0)) + (isUnique ? 1 : 0);
+        existing.recentVisitHashes = hashes;
+        existing.lastVisitedAt = now;
+      } else {
+        const hashes = Array.isArray(existing.recentClickHashes) ? [...existing.recentClickHashes] : [];
+        let isUnique = true;
+        if (cleanHash) {
+          if (hashes.includes(cleanHash)) {
+            isUnique = false;
+          } else {
+            hashes.push(cleanHash);
+            if (hashes.length > 1000) hashes.splice(0, hashes.length - 1000);
+          }
+        }
+        existing.totalClicks = Math.max(0, Math.floor(Number(existing.totalClicks) || 0)) + 1;
+        existing.uniqueClicks = Math.max(0, Math.floor(Number(existing.uniqueClicks) || 0)) + (isUnique ? 1 : 0);
+        existing.recentClickHashes = hashes;
+        existing.lastClickedAt = now;
+
+        const cleanPlan = typeof planKey === 'string' ? planKey.trim().slice(0, 48) : '';
+        if (cleanPlan) {
+          const prevPlan = existing.byPlanClicks && typeof existing.byPlanClicks === 'object' ? existing.byPlanClicks : {};
+          prevPlan[cleanPlan] = Math.max(0, Math.floor(Number(prevPlan[cleanPlan]) || 0)) + 1;
+          existing.byPlanClicks = prevPlan;
+        }
+      }
+
+      map[channel] = existing;
+      await this.setPlatformSetting('sales_channel_metrics_map', JSON.stringify(map));
+    });
+
+    salesChannelMetricsWriteLock = runTask.catch(() => {});
     return runTask;
   }
 };

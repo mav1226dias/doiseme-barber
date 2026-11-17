@@ -112,3 +112,36 @@ export function trackAffiliateClick(rawCode?: string | null): void {
     // Silently ignore non-fatal analytics failure
   });
 }
+
+export type SalesPlatformChannel = 'propria' | 'kiwify' | 'eduzz' | 'hotmart';
+
+export function trackSalesChannelVisit(channel: SalesPlatformChannel): void {
+  const sessionKey = `doiseme_sales_visit_${channel}`;
+  try {
+    if (sessionStorage.getItem(sessionKey) === '1') {
+      return;
+    }
+    sessionStorage.setItem(sessionKey, '1');
+  } catch {
+    // Proceed even if sessionStorage is restricted
+  }
+
+  const visitorId = getOrCreateVisitorId();
+  fetch('/api/public/sales-metrics/event', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel, eventType: 'visit', visitorId }),
+    keepalive: true
+  }).catch(() => {});
+}
+
+export function trackSalesChannelClick(channel: SalesPlatformChannel, planKey?: string): void {
+  const visitorId = getOrCreateVisitorId();
+  fetch('/api/public/sales-metrics/event', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel, eventType: 'click', visitorId, planKey }),
+    keepalive: true
+  }).catch(() => {});
+}
+

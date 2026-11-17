@@ -15,6 +15,7 @@ import Terms from './pages/public/Terms';
 import Privacy from './pages/public/Privacy';
 import AffiliatePortal from './pages/public/AffiliatePortal';
 import AffiliateSalesPage from './pages/public/AffiliateSalesPage';
+import KiwifySalesPage from './pages/public/KiwifySalesPage';
 import Login from './pages/admin/Login';
 import Register from './pages/admin/Register';
 import ForgotPassword from './pages/admin/ForgotPassword';
@@ -91,6 +92,11 @@ export default function App() {
             <Route path="/afiliado" element={<AffiliatePortal />} />
             <Route path="/parceiros" element={<AffiliatePortal />} />
             <Route path="/r/:code" element={<AffiliateSalesPage />} />
+            <Route path="/vendas" element={<KiwifySalesPage defaultChannel="kiwify" />} />
+            <Route path="/vendas/:platform" element={<KiwifySalesPage />} />
+            <Route path="/kiwify" element={<KiwifySalesPage defaultChannel="kiwify" />} />
+            <Route path="/eduzz" element={<KiwifySalesPage defaultChannel="eduzz" />} />
+            <Route path="/hotmart" element={<KiwifySalesPage defaultChannel="hotmart" />} />
             <Route path="/b/:slug" element={<PublicLayout />}>
               <Route index element={<Booking />} />
             </Route>

@@ -6103,6 +6103,27 @@ async function startServer() {
     }
   });
 
+  // Exit shop impersonation and restore Master session without logging out
+  api.post('/admin/master/exit-impersonation', authenticateToken, requireMaster, async (req, res) => {
+    try {
+      const token = jwt.sign(
+        {
+          id: (req as any).user.id,
+          barbershopId: 'shop-1',
+          role: 'master',
+          email: (req as any).user.email,
+          isImpersonating: false
+        },
+        JWT_SECRET,
+        { expiresIn: '24h' }
+      );
+      setSessionCookie(res, req, token, 24 * 60 * 60 * 1000);
+      res.json({ success: true, token });
+    } catch (e: any) {
+      res.status(500).json(safeErrorResponse(e, 'Erro ao retornar ao Painel Master'));
+    }
+  });
+
   // Generate password reset link for any shop's admin (Master only)
   api.post('/admin/master/shops/:id/reset-link', authenticateToken, requireMaster, async (req, res) => {
     try {
@@ -6417,6 +6438,82 @@ async function startServer() {
     }
   };
 
+  const KIWIFY_LINK_KEYS = [
+    'premium_annual',
+    'premium_monthly',
+    'profissional_annual',
+    'profissional_monthly',
+    'essencial_annual',
+    'essencial_monthly'
+  ] as const;
+
+  const SALES_PLATFORM_CHANNELS = ['propria', 'kiwify', 'eduzz', 'hotmart'] as const;
+  type SalesPlatformChannel = (typeof SALES_PLATFORM_CHANNELS)[number];
+
+  const isValidSalesChannel = (val: string): val is SalesPlatformChannel =>
+    (SALES_PLATFORM_CHANNELS as readonly string[]).includes(val);
+
+  const getKiwifyCheckoutLinks = async (): Promise<Record<string, string>> => {
+    const raw = await cloudNicheDb.getPlatformSetting('kiwify_checkout_links');
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return typeof parsed === 'object' && parsed ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const getPlatformSalesLinksMap = async (): Promise<Record<string, Record<string, string>>> => {
+    const [rawAll, legacyKiwify] = await Promise.all([
+      cloudNicheDb.getPlatformSetting('platform_sales_links'),
+      getKiwifyCheckoutLinks()
+    ]);
+    let map: Record<string, Record<string, string>> = {};
+    if (rawAll) {
+      try {
+        const parsed = JSON.parse(rawAll);
+        if (parsed && typeof parsed === 'object') {
+          map = parsed;
+        }
+      } catch {
+        map = {};
+      }
+    }
+    if (Object.keys(legacyKiwify).length > 0) {
+      map.kiwify = { ...legacyKiwify, ...(map.kiwify || {}) };
+    }
+    return map;
+  };
+
+  const getPlatformCheckoutLinks = async (channel: SalesPlatformChannel): Promise<Record<string, string>> => {
+    const all = await getPlatformSalesLinksMap();
+    return all[channel] && typeof all[channel] === 'object' ? all[channel] : {};
+  };
+
+  const savePlatformCheckoutLinks = async (
+    channel: SalesPlatformChannel,
+    links: Record<string, string>
+  ): Promise<Record<string, string>> => {
+    const all = await getPlatformSalesLinksMap();
+    const cleaned: Record<string, string> = {};
+    for (const key of KIWIFY_LINK_KEYS) {
+      if (typeof links[key] === 'string' && links[key].trim()) {
+        const parsed = new URL(links[key].trim());
+        if (parsed.protocol !== 'https:') {
+          throw new Error(`O link (${key}) deve começar com https://.`);
+        }
+        cleaned[key] = parsed.toString();
+      }
+    }
+    all[channel] = cleaned;
+    await cloudNicheDb.setPlatformSetting('platform_sales_links', JSON.stringify(all));
+    if (channel === 'kiwify') {
+      await cloudNicheDb.setPlatformSetting('kiwify_checkout_links', JSON.stringify(cleaned));
+    }
+    return cleaned;
+  };
+
   // Official Banco Central PIX BR Code (EMVCo + CRC16-CCITT)
   const formatTlv = (id: string, value: string): string => {
     const len = String(value.length).padStart(2, '0');
@@ -6594,6 +6691,211 @@ async function startServer() {
       res.json({ plans: buildPublicPlansList(promoApplied), trialDays: 7, promoApplied, partner });
     } catch {
       res.json({ plans: buildPublicPlansList(false), trialDays: 7, promoApplied: false, partner: null });
+    }
+  });
+
+  // Public Kiwify Sales Page config (/vendas)
+  api.get('/public/kiwify-config', async (_req, res) => {
+    try {
+      const [kiwifyLinks, savedWhatsapp] = await Promise.all([
+        getPlatformCheckoutLinks('kiwify'),
+        cloudNicheDb.getPlatformSetting('support_whatsapp')
+      ]);
+      const rawWhatsapp = savedWhatsapp || process.env.SUPPORT_WHATSAPP || '';
+      res.json({
+        channel: 'kiwify',
+        plans: buildPublicPlansList(false),
+        kiwifyLinks,
+        checkoutLinks: kiwifyLinks,
+        supportWhatsapp: normalizeSupportWhatsapp(rawWhatsapp)
+      });
+    } catch {
+      res.json({
+        channel: 'kiwify',
+        plans: buildPublicPlansList(false),
+        kiwifyLinks: {},
+        checkoutLinks: {},
+        supportWhatsapp: ''
+      });
+    }
+  });
+
+  // Public multi-platform sales page config (/vendas/:channel)
+  api.get('/public/sales-config/:channel', async (req, res) => {
+    const rawChannel = String(req.params.channel || '').trim().toLowerCase();
+    const channel: SalesPlatformChannel = isValidSalesChannel(rawChannel) ? rawChannel : 'kiwify';
+    try {
+      const [checkoutLinks, savedWhatsapp] = await Promise.all([
+        getPlatformCheckoutLinks(channel),
+        cloudNicheDb.getPlatformSetting('support_whatsapp')
+      ]);
+      const rawWhatsapp = savedWhatsapp || process.env.SUPPORT_WHATSAPP || '';
+      res.json({
+        channel,
+        plans: buildPublicPlansList(false),
+        checkoutLinks,
+        supportWhatsapp: normalizeSupportWhatsapp(rawWhatsapp)
+      });
+    } catch {
+      res.json({
+        channel,
+        plans: buildPublicPlansList(false),
+        checkoutLinks: {},
+        supportWhatsapp: ''
+      });
+    }
+  });
+
+  // Public site/sales-page visit & link click tracking (per affiliate platform channel)
+  api.post('/public/sales-metrics/event', affiliateClickLimiter, async (req, res) => {
+    try {
+      const rawChannel = String(req.body?.channel || '').trim().toLowerCase();
+      if (!isValidSalesChannel(rawChannel)) {
+        return res.json({ ok: false });
+      }
+      const eventType = req.body?.eventType === 'click' ? 'click' : req.body?.eventType === 'visit' ? 'visit' : null;
+      if (!eventType) {
+        return res.json({ ok: false });
+      }
+      const rawVisitorId =
+        typeof req.body?.visitorId === 'string'
+          ? req.body.visitorId.trim().slice(0, 80)
+          : '';
+      const rawIp = String(req.ip || req.headers['x-forwarded-for'] || 'anon').split(',')[0].trim();
+      const rawUa = String(req.headers['user-agent'] || '').slice(0, 120);
+      const fingerprintSource = rawVisitorId
+        ? `${rawChannel}|vid:${rawVisitorId}`
+        : `${rawChannel}|ip:${rawIp}|ua:${rawUa}`;
+      const visitorHash = nodeCrypto
+        .createHash('sha256')
+        .update(fingerprintSource)
+        .digest('hex')
+        .slice(0, 24);
+      const planKey = typeof req.body?.planKey === 'string' ? req.body.planKey.trim().slice(0, 48) : null;
+      await cloudNicheDb.recordSalesChannelEvent(rawChannel, eventType, visitorHash, planKey);
+      return res.json({ ok: true });
+    } catch {
+      return res.json({ ok: false });
+    }
+  });
+
+  // Master: Sales channels overview (Própria, Kiwify, Eduzz, Hotmart) with visits & link clicks
+  api.get('/admin/master/sales-channels', authenticateToken, requireMaster, async (_req, res) => {
+    try {
+      const [metricsMap, linksMap, affiliateClicksMap] = await Promise.all([
+        cloudNicheDb.getSalesChannelMetricsMap(),
+        getPlatformSalesLinksMap(),
+        cloudNicheDb.getAffiliateClicksMap()
+      ]);
+
+      const channelMeta: Record<
+        SalesPlatformChannel,
+        { name: string; subtitle: string; path: string; altPath: string; badge: string }
+      > = {
+        propria: {
+          name: 'Plataforma Própria',
+          subtitle: 'Site principal (/) + página direta /vendas/propria com PIX e Mercado Pago',
+          path: '/vendas/propria',
+          altPath: '/',
+          badge: 'Site & Afiliados Próprios'
+        },
+        kiwify: {
+          name: 'Kiwify',
+          subtitle: 'Página de vendas dedicada e checkout recorrente na Kiwify',
+          path: '/vendas/kiwify',
+          altPath: '/vendas',
+          badge: 'Marketplace Kiwify'
+        },
+        eduzz: {
+          name: 'Eduzz',
+          subtitle: 'Página de vendas dedicada e checkout recorrente na Eduzz',
+          path: '/vendas/eduzz',
+          altPath: '/eduzz',
+          badge: 'Marketplace Eduzz'
+        },
+        hotmart: {
+          name: 'Hotmart',
+          subtitle: 'Página de vendas dedicada e checkout recorrente na Hotmart',
+          path: '/vendas/hotmart',
+          altPath: '/hotmart',
+          badge: 'Marketplace Hotmart'
+        }
+      };
+
+      const channels = SALES_PLATFORM_CHANNELS.map((id) => {
+        const m = metricsMap[id] || {
+          totalVisits: 0,
+          uniqueVisits: 0,
+          totalClicks: 0,
+          uniqueClicks: 0,
+          byPlanClicks: {},
+          lastVisitedAt: null,
+          lastClickedAt: null
+        };
+        const ctr = m.totalVisits > 0 ? Number(((m.totalClicks / m.totalVisits) * 100).toFixed(1)) : 0;
+        const checkoutLinks = linksMap[id] && typeof linksMap[id] === 'object' ? linksMap[id] : {};
+        const configuredLinksCount = Object.values(checkoutLinks).filter((u) => typeof u === 'string' && u.trim()).length;
+        return {
+          id,
+          ...channelMeta[id],
+          totalVisits: m.totalVisits,
+          uniqueVisits: m.uniqueVisits,
+          totalClicks: m.totalClicks,
+          uniqueClicks: m.uniqueClicks,
+          ctr,
+          byPlanClicks: m.byPlanClicks || {},
+          lastVisitedAt: m.lastVisitedAt,
+          lastClickedAt: m.lastClickedAt,
+          checkoutLinks,
+          configuredLinksCount
+        };
+      });
+
+      let affiliateTotalClicks = 0;
+      let affiliateUniqueClicks = 0;
+      for (const entry of Object.values(affiliateClicksMap)) {
+        affiliateTotalClicks += entry.totalClicks || 0;
+        affiliateUniqueClicks += entry.uniqueClicks || 0;
+      }
+
+      const totalVisits = channels.reduce((sum, c) => sum + c.totalVisits, 0);
+      const uniqueVisits = channels.reduce((sum, c) => sum + c.uniqueVisits, 0);
+      const totalClicks = channels.reduce((sum, c) => sum + c.totalClicks, 0);
+      const uniqueClicks = channels.reduce((sum, c) => sum + c.uniqueClicks, 0);
+      const avgCtr = totalVisits > 0 ? Number(((totalClicks / totalVisits) * 100).toFixed(1)) : 0;
+
+      res.json({
+        summary: {
+          totalVisits,
+          uniqueVisits,
+          totalClicks,
+          uniqueClicks,
+          avgCtr,
+          affiliateTotalClicks,
+          affiliateUniqueClicks
+        },
+        channels
+      });
+    } catch (e: any) {
+      res.status(500).json(safeErrorResponse(e, 'Erro ao carregar métricas das páginas de vendas'));
+    }
+  });
+
+  // Master: Save checkout links for a specific sales channel (propria, kiwify, eduzz, hotmart)
+  api.post('/admin/master/sales-channels/:channel/links', authenticateToken, requireMaster, async (req, res) => {
+    const rawChannel = String(req.params.channel || '').trim().toLowerCase();
+    if (!isValidSalesChannel(rawChannel)) {
+      return res.status(400).json({ error: 'Plataforma inválida.' });
+    }
+    try {
+      const links = req.body?.links;
+      if (!links || typeof links !== 'object') {
+        return res.status(400).json({ error: 'Objeto de links inválido.' });
+      }
+      const savedLinks = await savePlatformCheckoutLinks(rawChannel, links);
+      res.json({ success: true, channel: rawChannel, checkoutLinks: savedLinks });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || 'Erro ao salvar links da plataforma.' });
     }
   });
 
@@ -7229,10 +7531,11 @@ async function startServer() {
   // Master Gateway Config & Payments Management
   api.get('/admin/master/billing-config', authenticateToken, requireMaster, async (_req, res) => {
     try {
-      const [mpToken, pixProfile, mpLinks] = await Promise.all([
+      const [mpToken, pixProfile, mpLinks, kiwifyLinks] = await Promise.all([
         getMpAccessToken(),
         getPlatformPixProfile(),
-        getMpPaymentLinks()
+        getMpPaymentLinks(),
+        getKiwifyCheckoutLinks()
       ]);
       res.json({
         mpConfigured: Boolean(mpToken),
@@ -7240,7 +7543,8 @@ async function startServer() {
         pixKey: pixProfile.pixKey,
         pixReceiverName: pixProfile.receiverName,
         pixReceiverCity: pixProfile.receiverCity,
-        mpLinks
+        mpLinks,
+        kiwifyLinks
       });
     } catch (e: any) {
       res.status(500).json(safeErrorResponse(e, 'Erro ao carregar configuração de pagamentos'));
@@ -7249,7 +7553,7 @@ async function startServer() {
 
   api.post('/admin/master/billing-config', authenticateToken, requireMaster, async (req, res) => {
     try {
-      const { mpAccessToken, pixKey, pixReceiverName, pixReceiverCity, mpLinks } = req.body;
+      const { mpAccessToken, pixKey, pixReceiverName, pixReceiverCity, mpLinks, kiwifyLinks } = req.body;
 
       if (typeof mpAccessToken === 'string' && mpAccessToken.trim()) {
         const cleanToken = mpAccessToken.trim();
@@ -7288,11 +7592,30 @@ async function startServer() {
         }
         await cloudNicheDb.setPlatformSetting('mp_payment_links', JSON.stringify(cleanedLinks));
       }
+      if (kiwifyLinks && typeof kiwifyLinks === 'object') {
+        const cleanedKiwify: Record<string, string> = {};
+        for (const key of KIWIFY_LINK_KEYS) {
+          if (typeof kiwifyLinks[key] === 'string' && kiwifyLinks[key].trim()) {
+            const rawUrl = kiwifyLinks[key].trim();
+            try {
+              const parsed = new URL(rawUrl);
+              if (parsed.protocol !== 'https:') {
+                return res.status(400).json({ error: `O link da Kiwify (${key}) deve começar com https://.` });
+              }
+              cleanedKiwify[key] = parsed.toString();
+            } catch {
+              return res.status(400).json({ error: `Link da Kiwify inválido para ${key}.` });
+            }
+          }
+        }
+        await cloudNicheDb.setPlatformSetting('kiwify_checkout_links', JSON.stringify(cleanedKiwify));
+      }
 
-      const [updatedToken, updatedProfile, updatedLinks] = await Promise.all([
+      const [updatedToken, updatedProfile, updatedLinks, updatedKiwifyLinks] = await Promise.all([
         getMpAccessToken(),
         getPlatformPixProfile(),
-        getMpPaymentLinks()
+        getMpPaymentLinks(),
+        getKiwifyCheckoutLinks()
       ]);
       res.json({
         success: true,
@@ -7301,7 +7624,8 @@ async function startServer() {
         pixKey: updatedProfile.pixKey,
         pixReceiverName: updatedProfile.receiverName,
         pixReceiverCity: updatedProfile.receiverCity,
-        mpLinks: updatedLinks
+        mpLinks: updatedLinks,
+        kiwifyLinks: updatedKiwifyLinks
       });
     } catch (e: any) {
       console.error('[MASTER_BILLING_CONFIG_ERR]', e);

@@ -162,14 +162,36 @@ export default function AdminLayout() {
   };
 
   const handleStopImpersonation = async () => {
+    const token = localStorage.getItem('token');
     try {
-      await fetch('/api/auth/logout', {
+      const res = await fetch('/api/admin/master/exit-impersonation', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        headers: {
+          'Authorization': `Bearer ${token || ''}`,
+          'X-Requested-With': 'XMLHttpRequest'
+        }
       });
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.token) {
+          localStorage.setItem('token', data.token);
+          try {
+            const existingUser = JSON.parse(localStorage.getItem('user') || '{}');
+            localStorage.setItem('user', JSON.stringify({
+              ...existingUser,
+              barbershopId: 'shop-1',
+              isImpersonating: false
+            }));
+          } catch {
+            // ignore storage errors
+          }
+          window.location.href = '/admin/master';
+          return;
+        }
+      }
     } catch {
-      // ignore
+      // fallback below
     }
     clearSessionStorage();
     navigate('/admin/login');
@@ -350,13 +372,16 @@ export default function AdminLayout() {
       {/* Main Content */}
       <main className="flex-1 overflow-x-hidden overflow-y-auto w-full bg-[#f5f5f5] dark:bg-zinc-950">
         {isImpersonating && (
-          <div className="bg-red-600 text-white p-2 text-center text-xs font-bold flex items-center justify-center gap-4 sticky top-0 md:relative z-50">
-            <span>VOCÊ ESTÁ ACESSANDO COMO ADMINISTRADOR MASTER (MODO VISUALIZAÇÃO)</span>
-            <button 
+          <div className="bg-red-600 text-white px-4 py-2 text-center text-xs font-bold flex flex-wrap items-center justify-center gap-3 sticky top-0 md:relative z-50">
+            <span>
+              MODO SUPORTE MASTER — ACESSANDO PAINEL DE {shopName ? shopName.toUpperCase() : 'LOJA DO CLIENTE'}
+            </span>
+            <button
+              type="button"
               onClick={handleStopImpersonation}
-              className="bg-white text-red-600 px-3 py-1 rounded-md hover:bg-gray-100 transition-colors uppercase"
+              className="bg-white text-red-600 px-3 py-1 rounded-md hover:bg-gray-100 transition-colors uppercase whitespace-nowrap shrink-0"
             >
-              Parar Acesso Rapído
+              Voltar ao Painel Master
             </button>
           </div>
         )}

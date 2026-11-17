@@ -16,7 +16,7 @@ import {
 import heroStudioImg from '../../assets/images/hero_doiseme_studio_1794534284924.jpg';
 import { SEGMENTS, SegmentPreset } from '../../lib/segments';
 import { SegmentIcon } from '../../components/SegmentIcon';
-import { captureReferralFromSearch, getActiveReferralCode } from '../../lib/referral';
+import { captureReferralFromSearch, getActiveReferralCode, trackSalesChannelClick, trackSalesChannelVisit } from '../../lib/referral';
 
 interface PlanOption {
   id: string;
@@ -99,6 +99,7 @@ export default function Landing() {
   const activeSegment: SegmentPreset = SEGMENTS[selectedSegmentId] || segmentList[0];
 
   useEffect(() => {
+    trackSalesChannelVisit('propria');
     const captured = captureReferralFromSearch(window.location.search);
     if (captured) setActiveRefCode(captured);
 
@@ -155,6 +156,7 @@ export default function Landing() {
           <div className="flex items-center gap-3 shrink-0">
             <Link
               to="/cadastro"
+              onClick={() => trackSalesChannelClick('propria', 'hero_header')}
               className="hidden sm:inline-flex items-center gap-2 bg-[#D4AF37] text-black font-bold text-sm px-4 py-2 rounded-lg hover:bg-[#e3c04f] transition-colors whitespace-nowrap shrink-0"
             >
               Testar 7 dias grátis
@@ -249,6 +251,7 @@ export default function Landing() {
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
               <Link
                 to="/cadastro"
+                onClick={() => trackSalesChannelClick('propria', 'hero_primary')}
                 className="inline-flex items-center justify-center gap-2 bg-[#D4AF37] text-black font-bold text-base px-6 py-3.5 rounded-xl hover:bg-[#e3c04f] transition-colors whitespace-nowrap"
               >
                 Começar 7 dias grátis
@@ -561,6 +564,7 @@ export default function Landing() {
 
                 <Link
                   to={`/cadastro?plano=${plan.id}`}
+                  onClick={() => trackSalesChannelClick('propria', `${plan.id}_${billingCycle}`)}
                   className={`mt-8 w-full inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm transition-colors ${
                     plan.highlighted
                       ? 'bg-[#D4AF37] text-black hover:bg-[#e3c04f]'

@@ -3,7 +3,7 @@ import {
   Shield, Users, Server, Database, Activity, Lock, Plus, Globe, Mail, Key, Trash2,
   ShieldCheck, ShieldAlert, Calendar, ExternalLink, Unlock, CheckCircle2, XCircle, Sparkles,
   Cloud, Copy, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, MessageCircle, Save, CreditCard, Clock, Bot,
-  TrendingUp, DollarSign, Filter, Phone, SlidersHorizontal, Search, X, Send, Handshake
+  TrendingUp, DollarSign, Filter, Phone, SlidersHorizontal, Search, X, Send, Handshake, Eye, MousePointerClick
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
@@ -34,7 +34,48 @@ export default function MasterAdmin() {
   const initialSession = getSessionAuth();
   const isAuthorizedSession = initialSession.isAuthenticated && initialSession.role === 'master';
   const [masterVerified, setMasterVerified] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'admins' | 'settings' | 'affiliates'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'admins' | 'sales' | 'affiliates' | 'settings'>('overview');
+  const [quickSwitchShopId, setQuickSwitchShopId] = useState<string>('');
+  const [salesChannelsData, setSalesChannelsData] = useState<{
+    summary: {
+      totalVisits: number;
+      uniqueVisits: number;
+      totalClicks: number;
+      uniqueClicks: number;
+      avgCtr: number;
+      affiliateTotalClicks: number;
+      affiliateUniqueClicks: number;
+    };
+    channels: Array<{
+      id: string;
+      name: string;
+      subtitle: string;
+      path: string;
+      altPath: string;
+      badge: string;
+      totalVisits: number;
+      uniqueVisits: number;
+      totalClicks: number;
+      uniqueClicks: number;
+      ctr: number;
+      byPlanClicks: Record<string, number>;
+      lastVisitedAt: string | null;
+      lastClickedAt: string | null;
+      checkoutLinks: Record<string, string>;
+      configuredLinksCount: number;
+    }>;
+  } | null>(null);
+  const [loadingSalesChannels, setLoadingSalesChannels] = useState(false);
+  const [editingChannelModal, setEditingChannelModal] = useState<string | null>(null);
+  const [channelLinksDraft, setChannelLinksDraft] = useState<Record<string, string>>({
+    premium_annual: '',
+    premium_monthly: '',
+    profissional_annual: '',
+    profissional_monthly: '',
+    essencial_annual: '',
+    essencial_monthly: ''
+  });
+  const [savingChannelLinks, setSavingChannelLinks] = useState(false);
   const [stats, setStats] = useState({
     totalShops: 0,
     totalUsers: 0,
@@ -102,6 +143,15 @@ export default function MasterAdmin() {
   const [pixReceiverNameInput, setPixReceiverNameInput] = useState('DOISEME PRO');
   const [pixReceiverCityInput, setPixReceiverCityInput] = useState('SAO PAULO');
   const [mpLinksInput, setMpLinksInput] = useState({ solo: '', pro: '' });
+  const [kiwifyLinksInput, setKiwifyLinksInput] = useState({
+    premium_annual: '',
+    premium_monthly: '',
+    profissional_annual: '',
+    profissional_monthly: '',
+    essencial_annual: '',
+    essencial_monthly: ''
+  });
+  const [showKiwifyLinks, setShowKiwifyLinks] = useState(false);
   const [showAdvancedMpApi, setShowAdvancedMpApi] = useState(false);
   const [savingBillingConfig, setSavingBillingConfig] = useState(false);
   const [saasPayments, setSaasPayments] = useState<any[]>([]);
@@ -314,6 +364,14 @@ export default function MasterAdmin() {
           solo: cfg.mpLinks?.solo || cfg.mpLinks?.essencial || '',
           pro: cfg.mpLinks?.pro || cfg.mpLinks?.profissional || ''
         });
+        setKiwifyLinksInput({
+          premium_annual: cfg.kiwifyLinks?.premium_annual || '',
+          premium_monthly: cfg.kiwifyLinks?.premium_monthly || '',
+          profissional_annual: cfg.kiwifyLinks?.profissional_annual || '',
+          profissional_monthly: cfg.kiwifyLinks?.profissional_monthly || '',
+          essencial_annual: cfg.kiwifyLinks?.essencial_annual || '',
+          essencial_monthly: cfg.kiwifyLinks?.essencial_monthly || ''
+        });
       }
       if (payRes.ok) {
         const pData = await payRes.json();
@@ -321,6 +379,65 @@ export default function MasterAdmin() {
       }
     } catch (e) {
       console.error('Failed to load billing config/payments:', e);
+    }
+  };
+
+  const fetchSalesChannels = async () => {
+    const token = localStorage.getItem('token');
+    setLoadingSalesChannels(true);
+    try {
+      const res = await fetch('/api/admin/master/sales-channels', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSalesChannelsData(data);
+      }
+    } catch (e) {
+      console.error('Failed to load sales channels:', e);
+    } finally {
+      setLoadingSalesChannels(false);
+    }
+  };
+
+  const openChannelLinksModal = (channel: any) => {
+    setEditingChannelModal(channel.id);
+    setChannelLinksDraft({
+      premium_annual: channel.checkoutLinks?.premium_annual || '',
+      premium_monthly: channel.checkoutLinks?.premium_monthly || '',
+      profissional_annual: channel.checkoutLinks?.profissional_annual || '',
+      profissional_monthly: channel.checkoutLinks?.profissional_monthly || '',
+      essencial_annual: channel.checkoutLinks?.essencial_annual || '',
+      essencial_monthly: channel.checkoutLinks?.essencial_monthly || ''
+    });
+  };
+
+  const handleSaveChannelLinks = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingChannelModal) return;
+    const token = localStorage.getItem('token');
+    setSavingChannelLinks(true);
+    try {
+      const res = await fetch(`/api/admin/master/sales-channels/${encodeURIComponent(editingChannelModal)}/links`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ links: channelLinksDraft })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || 'Erro ao salvar links da plataforma');
+        return;
+      }
+      toast.success('Links de checkout salvos com sucesso!');
+      setEditingChannelModal(null);
+      await Promise.all([fetchSalesChannels(), fetchBillingConfigAndPayments()]);
+    } catch {
+      toast.error('Erro de conexão ao salvar links da plataforma');
+    } finally {
+      setSavingChannelLinks(false);
     }
   };
 
@@ -340,7 +457,8 @@ export default function MasterAdmin() {
           pixKey: pixKeyInput.trim(),
           pixReceiverName: pixReceiverNameInput.trim(),
           pixReceiverCity: pixReceiverCityInput.trim(),
-          mpLinks: mpLinksInput
+          mpLinks: mpLinksInput,
+          kiwifyLinks: kiwifyLinksInput
         })
       });
       const data = await res.json();
@@ -357,6 +475,14 @@ export default function MasterAdmin() {
       setMpLinksInput({
         solo: data.mpLinks?.solo || data.mpLinks?.essencial || '',
         pro: data.mpLinks?.pro || data.mpLinks?.profissional || ''
+      });
+      setKiwifyLinksInput({
+        premium_annual: data.kiwifyLinks?.premium_annual || '',
+        premium_monthly: data.kiwifyLinks?.premium_monthly || '',
+        profissional_annual: data.kiwifyLinks?.profissional_annual || '',
+        profissional_monthly: data.kiwifyLinks?.profissional_monthly || '',
+        essencial_annual: data.kiwifyLinks?.essencial_annual || '',
+        essencial_monthly: data.kiwifyLinks?.essencial_monthly || ''
       });
       toast.success('Configuração de pagamentos atualizada com sucesso!');
     } catch {
@@ -553,6 +679,7 @@ export default function MasterAdmin() {
     fetchCloudStatus();
     fetchSupportWhatsapp();
     fetchBillingConfigAndPayments();
+    fetchSalesChannels();
     if (showEvolutionSetup) {
       fetchEvolutionConfig();
     }
@@ -966,7 +1093,7 @@ export default function MasterAdmin() {
 
         <div className="flex flex-wrap items-center gap-3">
           {/* Sub-menu do Painel Master */}
-          <div className="inline-flex items-center bg-gray-100 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-xl p-1">
+          <div className="flex flex-wrap items-center gap-1 max-w-full bg-gray-100 dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-xl p-1">
             <button
               type="button"
               onClick={() => setActiveTab('overview')}
@@ -989,6 +1116,21 @@ export default function MasterAdmin() {
             >
               <MessageCircle className="w-3.5 h-3.5" />
               Contato Admins ({shops.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveTab('sales');
+                fetchSalesChannels();
+              }}
+              className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 ${
+                activeTab === 'sales'
+                  ? 'bg-white dark:bg-zinc-800 text-gray-900 dark:text-white shadow-sm'
+                  : 'text-gray-600 dark:text-zinc-400 hover:text-gray-900 dark:hover:text-white'
+              }`}
+            >
+              <TrendingUp className="w-3.5 h-3.5" />
+              Páginas de Vendas
             </button>
             <button
               type="button"
@@ -1806,7 +1948,127 @@ export default function MasterAdmin() {
             </div>
           </div>
 
-          {/* 3. Modo Avançado API (Colapsável) + Botão Salvar */}
+          {/* 3. Links de Checkout da Kiwify + Página de Vendas (/vendas) */}
+          <div className="pt-3 border-t border-gray-100 dark:border-zinc-800 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => setShowKiwifyLinks(!showKiwifyLinks)}
+                className="inline-flex items-center gap-1.5 text-xs font-bold text-gray-700 dark:text-gray-200 hover:text-[#D4AF37] transition-colors self-start"
+              >
+                {showKiwifyLinks ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                Página de Vendas Kiwify (/vendas) &amp; Links de Checkout
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const url = `${window.location.origin}/vendas`;
+                    navigator.clipboard.writeText(url);
+                    toast.success('URL da página de vendas copiada!');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:border-[#D4AF37] transition-colors"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  Copiar /vendas
+                </button>
+                <a
+                  href="/vendas"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-200 dark:border-zinc-700 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:border-[#D4AF37] transition-colors"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Abrir Página
+                </a>
+              </div>
+            </div>
+
+            {showKiwifyLinks && (
+              <div className="p-4 rounded-2xl bg-gray-50 dark:bg-zinc-800/60 border border-gray-200 dark:border-zinc-700 space-y-3">
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Cole os links de checkout da Kiwify (<span className="font-mono">https://pay.kiwify.com.br/...</span>). Quando preenchidos, os botões de assinatura da página <span className="font-mono">/vendas</span> levam direto para o checkout da Kiwify.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Plano Completo · Anual
+                    </label>
+                    <input
+                      type="url"
+                      value={kiwifyLinksInput.premium_annual}
+                      onChange={(e) => setKiwifyLinksInput({ ...kiwifyLinksInput, premium_annual: e.target.value })}
+                      placeholder="https://pay.kiwify.com.br/..."
+                      className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Plano Completo · Mensal
+                    </label>
+                    <input
+                      type="url"
+                      value={kiwifyLinksInput.premium_monthly}
+                      onChange={(e) => setKiwifyLinksInput({ ...kiwifyLinksInput, premium_monthly: e.target.value })}
+                      placeholder="https://pay.kiwify.com.br/..."
+                      className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Plano Pro · Anual
+                    </label>
+                    <input
+                      type="url"
+                      value={kiwifyLinksInput.profissional_annual}
+                      onChange={(e) => setKiwifyLinksInput({ ...kiwifyLinksInput, profissional_annual: e.target.value })}
+                      placeholder="https://pay.kiwify.com.br/..."
+                      className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Plano Pro · Mensal
+                    </label>
+                    <input
+                      type="url"
+                      value={kiwifyLinksInput.profissional_monthly}
+                      onChange={(e) => setKiwifyLinksInput({ ...kiwifyLinksInput, profissional_monthly: e.target.value })}
+                      placeholder="https://pay.kiwify.com.br/..."
+                      className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Agenda Individual · Anual
+                    </label>
+                    <input
+                      type="url"
+                      value={kiwifyLinksInput.essencial_annual}
+                      onChange={(e) => setKiwifyLinksInput({ ...kiwifyLinksInput, essencial_annual: e.target.value })}
+                      placeholder="https://pay.kiwify.com.br/..."
+                      className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Agenda Individual · Mensal
+                    </label>
+                    <input
+                      type="url"
+                      value={kiwifyLinksInput.essencial_monthly}
+                      onChange={(e) => setKiwifyLinksInput({ ...kiwifyLinksInput, essencial_monthly: e.target.value })}
+                      placeholder="https://pay.kiwify.com.br/..."
+                      className="w-full bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 4. Modo Avançado API (Colapsável) + Botão Salvar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
             <button
               type="button"
@@ -1930,50 +2192,82 @@ export default function MasterAdmin() {
       {/* TAB 1 CONT: SHOPS TABLE WITH PLAN LEVEL, USAGE PERMISSION & ADMIN CONTACT */}
       {activeTab === 'overview' && (
       <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-gray-200 dark:border-zinc-800 overflow-hidden">
-        <div className="p-5 border-b border-gray-100 dark:border-zinc-800 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          <div>
-            <h3 className="font-bold text-base sm:text-lg text-gray-900 dark:text-white">
-              Lojas, Planos &amp; Permissões ({filteredShops.length})
-            </h3>
-            <p className="text-xs text-gray-500 dark:text-zinc-400">
-              Edite o nível do plano manualmente, libere ou revogue a permissão de uso e fale direto com cada administrador.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={shopSearch}
-                onChange={(e) => setShopSearch(e.target.value)}
-                placeholder="Buscar loja, slug ou e-mail..."
-                className="bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg pl-8 pr-3 py-1.5 text-xs outline-none focus:border-[#D4AF37] w-52"
-              />
+        <div className="p-5 border-b border-gray-100 dark:border-zinc-800 space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div>
+              <h3 className="font-bold text-base sm:text-lg text-gray-900 dark:text-white">
+                Lojas, Planos &amp; Permissões ({filteredShops.length})
+              </h3>
+              <p className="text-xs text-gray-500 dark:text-zinc-400">
+                Acesse o painel completo de qualquer loja para dar suporte, edite o plano e gerencie permissões de uso.
+              </p>
             </div>
 
-            <select
-              value={shopPlanFilter}
-              onChange={(e) => setShopPlanFilter(e.target.value)}
-              className="bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-800 dark:text-gray-200 outline-none focus:border-[#D4AF37]"
-            >
-              <option value="all">Todos os planos</option>
-              {PLAN_OPTIONS.map((p) => (
-                <option key={p.id} value={p.id}>{p.label.split(' — ')[0]}</option>
-              ))}
-            </select>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={shopSearch}
+                  onChange={(e) => setShopSearch(e.target.value)}
+                  placeholder="Buscar loja, slug ou e-mail..."
+                  className="bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg pl-8 pr-3 py-1.5 text-xs outline-none focus:border-[#D4AF37] w-52"
+                />
+              </div>
 
-            <select
-              value={shopStatusFilter}
-              onChange={(e) => setShopStatusFilter(e.target.value as any)}
-              className="bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-800 dark:text-gray-200 outline-none focus:border-[#D4AF37]"
-            >
-              <option value="all">Todas permissões</option>
-              <option value="active">Liberadas (Ativas)</option>
-              <option value="blocked">Sem Permissão (Bloqueadas)</option>
-              <option value="expired">Vencidas</option>
-            </select>
+              <select
+                value={shopPlanFilter}
+                onChange={(e) => setShopPlanFilter(e.target.value)}
+                className="bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-800 dark:text-gray-200 outline-none focus:border-[#D4AF37]"
+              >
+                <option value="all">Todos os planos</option>
+                {PLAN_OPTIONS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label.split(' — ')[0]}</option>
+                ))}
+              </select>
+
+              <select
+                value={shopStatusFilter}
+                onChange={(e) => setShopStatusFilter(e.target.value as any)}
+                className="bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-lg px-2.5 py-1.5 text-xs text-gray-800 dark:text-gray-200 outline-none focus:border-[#D4AF37]"
+              >
+                <option value="all">Todas permissões</option>
+                <option value="active">Liberadas (Ativas)</option>
+                <option value="blocked">Sem Permissão (Bloqueadas)</option>
+                <option value="expired">Vencidas</option>
+              </select>
+            </div>
           </div>
+
+          {/* Acesso Rápido a Qualquer Painel de Loja */}
+          {shops.length > 0 && (
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 p-3 rounded-xl bg-gray-50 dark:bg-zinc-800/50 border border-gray-200 dark:border-zinc-700">
+              <span className="text-xs font-bold text-gray-700 dark:text-gray-200 whitespace-nowrap shrink-0">
+                Acesso Rápido ao Painel da Loja:
+              </span>
+              <select
+                value={quickSwitchShopId}
+                onChange={(e) => setQuickSwitchShopId(e.target.value)}
+                className="flex-1 min-w-0 bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-xs font-medium text-gray-900 dark:text-gray-100 outline-none focus:border-[#D4AF37]"
+              >
+                <option value="">Selecione uma loja para entrar como suporte...</option>
+                {shops.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} (/b/{s.slug}){s.admin_email ? ` · ${s.admin_email}` : ''}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!quickSwitchShopId}
+                onClick={() => quickSwitchShopId && handleEnterDashboard(quickSwitchShopId)}
+                className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold bg-black dark:bg-[#D4AF37] text-white dark:text-black hover:opacity-90 transition-opacity disabled:opacity-40 whitespace-nowrap shrink-0"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Acessar Painel
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="overflow-x-auto">
@@ -2013,6 +2307,16 @@ export default function MasterAdmin() {
                           Pago acumulado: R$ {formatBRL(shop.total_paid)}
                         </div>
                       )}
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() => handleEnterDashboard(shop.id)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-black dark:bg-[#D4AF37] text-white dark:text-black hover:opacity-90 transition-opacity whitespace-nowrap"
+                        >
+                          <ExternalLink className="w-3.5 h-3.5" />
+                          Acessar Painel
+                        </button>
+                      </div>
                     </td>
 
                     <td className="p-4">
@@ -2350,6 +2654,15 @@ export default function MasterAdmin() {
 
                           <button
                             type="button"
+                            onClick={() => handleEnterDashboard(shop.id)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-black dark:bg-[#D4AF37] text-white dark:text-black hover:opacity-90 transition-opacity whitespace-nowrap"
+                            title="Entrar no painel administrativo desta loja"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" /> Painel
+                          </button>
+
+                          <button
+                            type="button"
                             onClick={() => handleCopyResetLink(shop.id, shop.name)}
                             className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-800 whitespace-nowrap"
                             title="Copiar link de redefinição de senha"
@@ -2370,6 +2683,192 @@ export default function MasterAdmin() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: SALES PAGES PER AFFILIATE PLATFORM + SITE TRAFFIC & LINK CLICK METRICS */}
+      {activeTab === 'sales' && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg sm:text-xl font-bold text-gray-900 dark:text-white">
+                Páginas de Vendas &amp; Métricas por Plataforma
+              </h2>
+              <p className="text-xs sm:text-sm text-gray-500 dark:text-zinc-400">
+                Acesse, copie e configure os links de checkout de cada plataforma (Própria, Kiwify, Eduzz e Hotmart) e acompanhe visitas e cliques.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={fetchSalesChannels}
+              disabled={loadingSalesChannels}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-xs font-bold text-gray-700 dark:text-gray-200 hover:border-[#D4AF37] transition-colors self-start sm:self-auto"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loadingSalesChannels ? 'animate-spin' : ''}`} />
+              Atualizar Métricas
+            </button>
+          </div>
+
+          {/* Top KPI Strip */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl p-4 sm:p-5">
+              <div className="flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-zinc-400">
+                <span>Visitas no Site</span>
+                <Eye className="w-4 h-4 text-[#D4AF37]" />
+              </div>
+              <p className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">
+                {salesChannelsData?.summary?.totalVisits ?? 0}
+              </p>
+              <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1 tabular-nums">
+                {salesChannelsData?.summary?.uniqueVisits ?? 0} visitantes únicos
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl p-4 sm:p-5">
+              <div className="flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-zinc-400">
+                <span>Cliques nos Links</span>
+                <MousePointerClick className="w-4 h-4 text-emerald-500" />
+              </div>
+              <p className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">
+                {salesChannelsData?.summary?.totalClicks ?? 0}
+              </p>
+              <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1 tabular-nums">
+                {salesChannelsData?.summary?.uniqueClicks ?? 0} cliques únicos em botões/planos
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl p-4 sm:p-5">
+              <div className="flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-zinc-400">
+                <span>Taxa de Clique (CTR)</span>
+                <TrendingUp className="w-4 h-4 text-blue-500" />
+              </div>
+              <p className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">
+                {salesChannelsData?.summary?.avgCtr ?? 0}%
+              </p>
+              <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1">
+                Cliques de compra / visitas totais
+              </p>
+            </div>
+
+            <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl p-4 sm:p-5">
+              <div className="flex items-center justify-between text-xs font-semibold text-gray-500 dark:text-zinc-400">
+                <span>Cliques de Afiliados</span>
+                <Handshake className="w-4 h-4 text-[#D4AF37]" />
+              </div>
+              <p className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mt-2 tabular-nums">
+                {salesChannelsData?.summary?.affiliateTotalClicks ?? 0}
+              </p>
+              <button
+                type="button"
+                onClick={() => setActiveTab('affiliates')}
+                className="text-xs font-semibold text-[#B69121] dark:text-[#D4AF37] hover:underline mt-1 text-left"
+              >
+                {salesChannelsData?.summary?.affiliateUniqueClicks ?? 0} únicos · Ver Afiliados
+              </button>
+            </div>
+          </div>
+
+          {/* 4 Platform Cards */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            {(salesChannelsData?.channels || []).map((ch) => {
+              const fullUrl = `${window.location.origin}${ch.path}`;
+              const topPlans = Object.entries(ch.byPlanClicks || {})
+                .sort((a, b) => Number(b[1]) - Number(a[1]))
+                .slice(0, 3);
+
+              return (
+                <div
+                  key={ch.id}
+                  className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl p-5 sm:p-6 flex flex-col justify-between space-y-5"
+                >
+                  <div className="space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                          <h3 className="text-lg font-bold text-gray-900 dark:text-white">{ch.name}</h3>
+                          <span className="text-xs text-gray-400">·</span>
+                          <span className="text-xs font-semibold text-[#B69121] dark:text-[#D4AF37]">{ch.badge}</span>
+                        </div>
+                        <p className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">{ch.subtitle}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-mono text-gray-600 dark:text-zinc-300 bg-gray-50 dark:bg-zinc-800/60 border border-gray-200 dark:border-zinc-700 rounded-xl px-3 py-2">
+                      <Globe className="w-3.5 h-3.5 text-[#D4AF37] shrink-0" />
+                      <span className="truncate">{fullUrl}</span>
+                    </div>
+
+                    {/* Channel Metrics Grid */}
+                    <div className="grid grid-cols-4 gap-2 pt-2 border-t border-gray-100 dark:border-zinc-800 text-center">
+                      <div className="p-2 rounded-xl bg-gray-50 dark:bg-zinc-800/40">
+                        <div className="text-[11px] text-gray-500 dark:text-zinc-400">Visitas</div>
+                        <div className="text-base sm:text-lg font-bold text-gray-900 dark:text-white tabular-nums">
+                          {ch.totalVisits}
+                        </div>
+                      </div>
+                      <div className="p-2 rounded-xl bg-gray-50 dark:bg-zinc-800/40">
+                        <div className="text-[11px] text-gray-500 dark:text-zinc-400">Únicas</div>
+                        <div className="text-base sm:text-lg font-bold text-gray-900 dark:text-white tabular-nums">
+                          {ch.uniqueVisits}
+                        </div>
+                      </div>
+                      <div className="p-2 rounded-xl bg-gray-50 dark:bg-zinc-800/40">
+                        <div className="text-[11px] text-gray-500 dark:text-zinc-400">Cliques</div>
+                        <div className="text-base sm:text-lg font-bold text-emerald-600 dark:text-emerald-400 tabular-nums">
+                          {ch.totalClicks}
+                        </div>
+                      </div>
+                      <div className="p-2 rounded-xl bg-gray-50 dark:bg-zinc-800/40">
+                        <div className="text-[11px] text-gray-500 dark:text-zinc-400">CTR</div>
+                        <div className="text-base sm:text-lg font-bold text-[#B69121] dark:text-[#D4AF37] tabular-nums">
+                          {ch.ctr}%
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-gray-500 dark:text-zinc-400">
+                      <span className="tabular-nums">
+                        Links de checkout configurados: <strong className="text-gray-800 dark:text-zinc-200">{ch.configuredLinksCount}/6</strong>
+                      </span>
+                      {topPlans.length > 0 && (
+                        <span className="tabular-nums">
+                          Top cliques: {topPlans.map(([k, count]) => `${k} (${count})`).join(' · ')}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-gray-100 dark:border-zinc-800">
+                    <a
+                      href={ch.path}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-black dark:bg-[#D4AF37] text-white dark:text-black hover:opacity-90 transition-opacity whitespace-nowrap"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      Acessar Página
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(fullUrl, `Link da página (${ch.name})`)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:border-[#D4AF37] transition-colors whitespace-nowrap"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      Copiar Link
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openChannelLinksModal(ch)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:border-[#D4AF37] transition-colors whitespace-nowrap"
+                    >
+                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                      Links Checkout
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -2662,6 +3161,137 @@ export default function MasterAdmin() {
                 {deletingShopId === shopToDelete.id ? 'Excluindo...' : 'Excluir Permanentemente'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Configurar Links de Checkout por Plataforma de Vendas */}
+      {editingChannelModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+          onClick={() => !savingChannelLinks && setEditingChannelModal(null)}
+        >
+          <div
+            className="bg-white dark:bg-zinc-900 rounded-2xl w-full max-w-xl max-h-[90vh] flex flex-col overflow-hidden shadow-2xl border border-gray-200 dark:border-zinc-800"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-5 border-b border-gray-100 dark:border-zinc-800 flex items-center justify-between gap-3 shrink-0">
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                  Links de Checkout —{' '}
+                  {salesChannelsData?.channels?.find((c) => c.id === editingChannelModal)?.name || editingChannelModal}
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-zinc-400">
+                  Cole as URLs (https://...) dos planos para direcionar os botões desta página de vendas.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingChannelModal(null)}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 dark:hover:text-white"
+                aria-label="Fechar modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveChannelLinks} className="flex flex-col flex-1 overflow-hidden">
+              <div className="p-5 space-y-3 overflow-y-auto flex-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Plano Completo · Anual
+                    </label>
+                    <input
+                      type="url"
+                      value={channelLinksDraft.premium_annual || ''}
+                      onChange={(e) => setChannelLinksDraft({ ...channelLinksDraft, premium_annual: e.target.value })}
+                      placeholder="https://..."
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono text-gray-900 dark:text-white outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Plano Completo · Mensal
+                    </label>
+                    <input
+                      type="url"
+                      value={channelLinksDraft.premium_monthly || ''}
+                      onChange={(e) => setChannelLinksDraft({ ...channelLinksDraft, premium_monthly: e.target.value })}
+                      placeholder="https://..."
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono text-gray-900 dark:text-white outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Plano Pro · Anual
+                    </label>
+                    <input
+                      type="url"
+                      value={channelLinksDraft.profissional_annual || ''}
+                      onChange={(e) => setChannelLinksDraft({ ...channelLinksDraft, profissional_annual: e.target.value })}
+                      placeholder="https://..."
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono text-gray-900 dark:text-white outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Plano Pro · Mensal
+                    </label>
+                    <input
+                      type="url"
+                      value={channelLinksDraft.profissional_monthly || ''}
+                      onChange={(e) => setChannelLinksDraft({ ...channelLinksDraft, profissional_monthly: e.target.value })}
+                      placeholder="https://..."
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono text-gray-900 dark:text-white outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Agenda Individual · Anual
+                    </label>
+                    <input
+                      type="url"
+                      value={channelLinksDraft.essencial_annual || ''}
+                      onChange={(e) => setChannelLinksDraft({ ...channelLinksDraft, essencial_annual: e.target.value })}
+                      placeholder="https://..."
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono text-gray-900 dark:text-white outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 dark:text-gray-400 mb-1">
+                      Agenda Individual · Mensal
+                    </label>
+                    <input
+                      type="url"
+                      value={channelLinksDraft.essencial_monthly || ''}
+                      onChange={(e) => setChannelLinksDraft({ ...channelLinksDraft, essencial_monthly: e.target.value })}
+                      placeholder="https://..."
+                      className="w-full bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-3.5 py-2 text-xs font-mono text-gray-900 dark:text-white outline-none focus:border-[#D4AF37]"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="p-4 sm:p-5 border-t border-gray-100 dark:border-zinc-800 bg-gray-50 dark:bg-zinc-800/40 flex items-center justify-end gap-3 shrink-0">
+                <button
+                  type="button"
+                  disabled={savingChannelLinks}
+                  onClick={() => setEditingChannelModal(null)}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold border border-gray-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-zinc-700"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingChannelLinks}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold bg-[#D4AF37] text-black hover:opacity-90 disabled:opacity-50"
+                >
+                  <Save className="w-3.5 h-3.5" />
+                  {savingChannelLinks ? 'Salvando...' : 'Salvar Links'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
