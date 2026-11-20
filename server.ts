@@ -6785,7 +6785,7 @@ async function startServer() {
     {
       id: 'premium',
       name: 'Plano Completo',
-      subtitle: 'Retenção, pacotes e lucro sem limites',
+      subtitle: 'Retenção ativa, marketing de retorno e caixa no bolso',
       monthlyPrice: 139.90,
       annualPrice: 1197.00,
       promoMonthlyPrice: 119.90,
@@ -6793,17 +6793,17 @@ async function startServer() {
       highlighted: true,
       badge: 'Mais Lucrativo · Recomendado',
       features: [
-        'Profissionais e serviços ilimitados',
-        'Campanhas de reativação p/ trazer clientes sumidos',
-        'Pacotes de sessões e combos recorrentes',
-        'Vitrine VIP (logo, banner e paleta personalizada)',
+        'Remarketing no WhatsApp para recuperar clientes inativos',
+        'Controle financeiro completo: receitas, despesas, comissões e lucro líquido',
+        'Pacotes recorrentes, combos e campanhas para lotar dias fracos',
+        'Equipe e serviços ilimitados + agenda 24h para captar novos clientes',
         'Implantação assistida + Suporte VIP no WhatsApp'
       ]
     },
     {
       id: 'profissional',
       name: 'Plano Pro',
-      subtitle: 'Perfeito para equipes de 1 a 3 funcionários',
+      subtitle: 'Caixa organizado, comissões automáticas e retorno recorrente',
       monthlyPrice: 119.90,
       annualPrice: 1039.00,
       promoMonthlyPrice: 99.90,
@@ -6811,16 +6811,16 @@ async function startServer() {
       highlighted: false,
       badge: 'Equipe 1 a 3',
       features: [
-        'Até 4 profissionais ativos (dono + equipe)',
-        'Cálculo automático de comissões',
-        'Controle financeiro diário e despesas',
-        'Prontuários, anamnese e fotos do seu nicho'
+        'Controle financeiro na palma da mão (caixa diário e despesas)',
+        'Cálculo automático de comissões para até 4 profissionais',
+        'Alertas de retorno para fidelizar clientes e reduzir sumiços',
+        'Link de agendamento 24h com ficha e histórico completo do cliente'
       ]
     },
     {
       id: 'essencial',
       name: 'Agenda Individual',
-      subtitle: 'Opção de entrada para quem trabalha sozinho',
+      subtitle: 'Pare de perder horários e clientes trabalhando sozinho',
       monthlyPrice: 79.90,
       annualPrice: 659.00,
       promoMonthlyPrice: 59.90,
@@ -6828,10 +6828,10 @@ async function startServer() {
       highlighted: false,
       badge: '1 Profissional',
       features: [
-        '1 profissional ativo na agenda',
-        'Link exclusivo de agendamento (/b/sua-marca)',
-        'Cadastro de clientes e histórico completo',
-        'Agenda inteligente sem conflitos de horário'
+        'Link exclusivo de agendamento 24h para Instagram, Google e WhatsApp',
+        'Histórico de visitas para saber exatamente quem precisa voltar',
+        'Agenda inteligente sem conflitos nem furos de horário',
+        'Controle essencial do faturamento diário para 1 profissional'
       ]
     }
   ];

@@ -2,22 +2,20 @@ import React, { useEffect, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import {
   ArrowRight,
-  CalendarClock,
   Check,
   CreditCard,
-  Globe,
   Menu,
   MessageCircle,
-  PhoneCall,
-  Repeat,
   ShieldCheck,
-  TrendingUp,
   X
 } from 'lucide-react';
-import heroStudioImg from '../../assets/images/hero_doiseme_studio_1794534284924.jpg';
-import { SEGMENTS, SegmentPreset } from '../../lib/segments';
-import { SegmentIcon } from '../../components/SegmentIcon';
+import ownerControlImg from '../../assets/images/sales_owner_control_1795203706375.jpg';
 import { SalesPlatformChannel, trackSalesChannelClick, trackSalesChannelVisit } from '../../lib/referral';
+import {
+  SalesGrowthPillarsSection,
+  SalesPainDiagnosisSection,
+  SalesRoiCalculatorSection
+} from '../../components/SalesConversionSections';
 
 interface KiwifyPlanOption {
   id: string;
@@ -43,47 +41,47 @@ const DEFAULT_PLANS: KiwifyPlanOption[] = [
   {
     id: 'premium',
     name: 'Plano Completo',
-    subtitle: 'Máxima recorrência de clientes, telemarketing e agenda ilimitada',
+    subtitle: 'Máxima retenção de clientes, remarketing no WhatsApp e financeiro completo sem limites',
     monthlyPrice: 139.90,
     annualPrice: 1197.00,
     highlighted: true,
     badge: 'Mais Vendido · Completo',
     features: [
-      'Profissionais e serviços ilimitados',
-      'Gestão de telemarketing e reativação de clientes sumidos',
-      'Pacotes de sessões e planos de recorrência',
-      'Vitrine VIP (logo, banner e cores da sua marca)',
-      'Gestão financeira completa + Suporte prioritário WhatsApp'
+      'Radar de clientes sumidos + remarketing em 1 clique no WhatsApp',
+      'Campanhas promocionais para encher dias parados e atrair novos clientes',
+      'Pacotes de sessões e planos de recorrência para caixa previsível',
+      'Controle financeiro completo: entradas, despesas, comissões e lucro líquido',
+      'Profissionais ilimitados + página profissional de agendamento 24h'
     ]
   },
   {
     id: 'profissional',
     name: 'Plano Pro',
-    subtitle: 'Para pequenos negócios e equipes de até 4 profissionais',
+    subtitle: 'Controle de agenda, equipe e financeiro completo para até 4 profissionais',
     monthlyPrice: 119.90,
     annualPrice: 1039.00,
     highlighted: false,
     badge: 'Equipe até 4',
     features: [
-      'Até 4 profissionais ativos na agenda inteligente 24h',
-      'Cálculo automático de comissões por atendimento',
-      'Controle financeiro diário de entradas e despesas',
-      'Cadastro de clientes, prontuários e histórico completo'
+      'Até 4 profissionais com agenda inteligente 24h e zero conflitos',
+      'Controle financeiro na palma da mão (caixa diário e despesas)',
+      'Cálculo automático de comissões sem planilhas manuais',
+      'Histórico completo de atendimentos e manutenção de clientes'
     ]
   },
   {
     id: 'essencial',
     name: 'Agenda Individual',
-    subtitle: 'Ideal para quem atende sozinho e quer profissionalizar a operação',
+    subtitle: 'Organize atendimentos, fidelize clientes e controle o caixa trabalhando sozinho',
     monthlyPrice: 79.90,
     annualPrice: 659.00,
     highlighted: false,
     badge: '1 Profissional',
     features: [
-      '1 profissional ativo com agenda inteligente 24h',
-      'Link exclusivo de agendamento (/b/sua-marca)',
-      'Gestão financeira básica e histórico de clientes',
-      'Zero conflitos de horário e bloqueio de folgas em 1 clique'
+      'Link exclusivo de captação e agendamento 24h na bio e WhatsApp',
+      'Agenda inteligente sem conflitos e bloqueio de folgas em 1 clique',
+      'Controle financeiro diário no celular e histórico completo de clientes',
+      'Fim dos horários perdidos por demora para responder mensagens'
     ]
   }
 ];
@@ -109,16 +107,11 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
     : defaultChannel;
   const channelLabel = CHANNEL_LABELS[activeChannel];
 
-  const segmentList = Object.values(SEGMENTS);
-
-  const [selectedSegmentId, setSelectedSegmentId] = useState<string>('barbershop');
   const [billingCycle, setBillingCycle] = useState<'annual' | 'monthly'>('annual');
   const [plans, setPlans] = useState<KiwifyPlanOption[]>(DEFAULT_PLANS);
   const [checkoutLinks, setCheckoutLinks] = useState<Record<string, string>>({});
   const [supportWhatsapp, setSupportWhatsapp] = useState<string>('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-
-  const activeSegment: SegmentPreset = SEGMENTS[selectedSegmentId] || segmentList[0];
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -172,6 +165,9 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
     };
   };
 
+  const featuredPlan = plans.find((p) => p.id === 'premium') || plans[0];
+  const featuredAnnualMonthly = (featuredPlan?.annualPrice || 1197) / 12;
+
   return (
     <div className="min-h-screen w-full overflow-x-clip bg-[#0A0A0A] text-white font-sans antialiased selection:bg-[#D4AF37] selection:text-black">
       {/* Top Bar (Strict 3-Zone Contract: Brand — 4 Single-Line Links — 1 Primary CTA) */}
@@ -187,14 +183,14 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
           </Link>
 
           <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-zinc-300">
-            <a href="#pilares" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
-              Ferramentas
+            <a href="#problema" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
+              O Problema
             </a>
-            <a href="#recorrencia" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
-              Recorrência
+            <a href="#como-lucrar" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
+              Como Lucrar
             </a>
-            <a href="#segmentos" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
-              Segmentos
+            <a href="#simulador" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
+              Simulador
             </a>
             <a href="#planos" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
               Planos
@@ -222,14 +218,14 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
 
         {mobileNavOpen && (
           <div className="md:hidden border-t border-white/10 bg-[#101010] px-4 py-4 space-y-2.5">
-            <a href="#pilares" onClick={() => setMobileNavOpen(false)} className="block py-2 text-sm text-zinc-300 hover:text-white">
-              Ferramentas de Gestão
+            <a href="#problema" onClick={() => setMobileNavOpen(false)} className="block py-2 text-sm text-zinc-300 hover:text-white">
+              O Problema
             </a>
-            <a href="#recorrencia" onClick={() => setMobileNavOpen(false)} className="block py-2 text-sm text-zinc-300 hover:text-white">
-              Recorrência &amp; Retorno
+            <a href="#como-lucrar" onClick={() => setMobileNavOpen(false)} className="block py-2 text-sm text-zinc-300 hover:text-white">
+              Retenção, Marketing &amp; Caixa
             </a>
-            <a href="#segmentos" onClick={() => setMobileNavOpen(false)} className="block py-2 text-sm text-zinc-300 hover:text-white">
-              Segmentos Atendidos
+            <a href="#simulador" onClick={() => setMobileNavOpen(false)} className="block py-2 text-sm text-zinc-300 hover:text-white">
+              Simulador de Retorno
             </a>
             <a href="#planos" onClick={() => setMobileNavOpen(false)} className="block py-2 text-sm text-[#D4AF37] font-semibold">
               Ver Planos e Preços
@@ -252,22 +248,22 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-stretch">
             <div className="lg:col-span-7 min-w-0 flex flex-col justify-center space-y-6">
               <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs sm:text-sm text-[#D4AF37] font-semibold">
-                <span>Sistema de Gestão para Pequenos Negócios</span>
+                <span>Retenção de Clientes</span>
                 <span className="text-zinc-600" aria-hidden="true">·</span>
-                <span className="text-zinc-300 font-normal">Foco em Recorrência de Clientes</span>
+                <span className="text-zinc-300 font-normal">Controle Financeiro na Palma da Mão</span>
+                <span className="text-zinc-600" aria-hidden="true">·</span>
+                <span className="text-zinc-300 font-normal">Marketing &amp; Remarketing</span>
               </div>
 
               <h1
                 className="font-serif font-bold text-white leading-[1.08] tracking-tight text-balance"
                 style={{ fontSize: 'clamp(2rem, 4.3vw, 3.65rem)' }}
               >
-                Venda todos os meses para os mesmos clientes com gestão completa no piloto automático.
+                Pare de perder clientes que somem e tenha o controle financeiro do seu negócio na palma da mão.
               </h1>
 
               <p className="text-base sm:text-lg text-zinc-300 leading-relaxed max-w-2xl">
-                O <strong className="text-white">DoisemePRO</strong> une <strong className="text-white">Agenda Inteligente 24hrs</strong>,{' '}
-                <strong className="text-white">Gestão de Telemarketing</strong> para resgatar clientes sumidos e{' '}
-                <strong className="text-white">Gestão Financeira</strong> completa em um único painel feito para pequenos negócios faturarem com previsibilidade.
+                O <strong className="text-white">DoisemePRO</strong> resgata clientes inativos com remarketing no WhatsApp, atrai novos agendamentos 24h por dia e mostra exatamente quanto sobra de lucro no seu caixa — custando menos que <strong className="text-white">2 atendimentos por mês</strong>.
               </p>
 
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
@@ -275,31 +271,31 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
                   href="#planos"
                   className="inline-flex items-center justify-center gap-2 bg-[#D4AF37] text-black font-bold text-sm sm:text-base px-6 py-3.5 rounded-xl hover:bg-[#e3c04f] transition-colors text-center whitespace-nowrap"
                 >
-                  <span>Escolher meu plano agora</span>
+                  <span>Quero controlar meu caixa e clientes</span>
                   <ArrowRight className="w-5 h-5 shrink-0" />
                 </a>
                 <a
-                  href="#pilares"
+                  href="#simulador"
                   className="inline-flex items-center justify-center gap-2 border border-white/20 bg-white/[0.03] text-white font-semibold text-sm px-6 py-3.5 rounded-xl hover:bg-white/10 transition-colors text-center whitespace-nowrap"
                 >
-                  Conhecer as ferramentas
+                  Simular meu retorno financeiro
                 </a>
               </div>
 
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-zinc-400">
-                <span>Acesso imediato após aprovação</span>
+                <span>Acesso imediato no celular e computador</span>
                 <span className="text-zinc-600" aria-hidden="true">·</span>
                 <span>Garantia incondicional de 7 dias</span>
                 <span className="text-zinc-600" aria-hidden="true">·</span>
-                <span>Funciona no celular e computador</span>
+                <span>Sem instalar aplicativo</span>
               </div>
             </div>
 
             {/* Right Visual Anchor */}
             <div className="lg:col-span-5 relative min-h-[300px] sm:min-h-[360px] lg:min-h-[480px] rounded-2xl overflow-hidden border border-white/10 bg-[#141414]">
               <img
-                src={heroStudioImg}
-                alt="Gestão profissional de pequenos negócios com agenda inteligente e controle financeiro DoisemePRO"
+                src={ownerControlImg}
+                alt="Dona de negócio acompanhando agendamentos e lucro financeiro na palma da mão pelo celular"
                 referrerPolicy="no-referrer"
                 className="w-full h-full object-cover object-center"
               />
@@ -307,17 +303,17 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
                 className="absolute inset-0 flex flex-col justify-end p-6 sm:p-8"
                 style={{
                   background:
-                    'linear-gradient(180deg, rgba(10,10,10,0.08) 0%, rgba(10,10,10,0.68) 55%, rgba(10,10,10,0.96) 100%)'
+                    'linear-gradient(180deg, rgba(10,10,10,0.06) 0%, rgba(10,10,10,0.65) 56%, rgba(10,10,10,0.96) 100%)'
                 }}
               >
                 <p className="text-xs uppercase tracking-[0.14em] text-[#D4AF37] font-semibold">
-                  Agenda Inteligente + Recorrência
+                  Seu negócio sob controle no celular
                 </p>
                 <p className="text-lg sm:text-xl font-bold text-white mt-1.5 leading-snug">
-                  Seu cliente agenda sozinho 24 horas por dia, enquanto seu telemarketing traz quem sumiu de volta.
+                  Clientes voltando no prazo certo, agenda cheia e lucro líquido claro na tela.
                 </p>
                 <p className="text-xs sm:text-sm text-zinc-300 mt-2">
-                  Sem depender de anúncios caros todo mês para manter a agenda cheia e o caixa previsível.
+                  Sem perder dinheiro no improviso e sem depender só de anúncios pagos para faturar.
                 </p>
               </div>
             </div>
@@ -326,292 +322,56 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
           {/* 4-Column Quantified Outcomes Strip Below Hero */}
           <div className="mt-10 pt-8 border-t border-white/10 grid grid-cols-2 lg:grid-cols-4 gap-6">
             <div className="min-w-0">
-              <p className="text-2xl sm:text-3xl font-bold text-[#D4AF37] tabular-nums">24hrs / dia</p>
+              <p className="text-2xl sm:text-3xl font-bold text-[#D4AF37] tabular-nums">2 atendimentos</p>
               <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-                Agenda inteligente aberta recebendo reservas sem você parar de atender
+                Recuperados no mês já pagam a assinatura inteira — todo o resto é lucro líquido
               </p>
             </div>
             <div className="min-w-0">
-              <p className="text-2xl sm:text-3xl font-bold text-white tabular-nums">30 · 60 · 90d</p>
+              <p className="text-2xl sm:text-3xl font-bold text-white tabular-nums">15 · 20 · 30d</p>
               <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-                Radar de telemarketing que identifica clientes inativos para reativação
+                Radar de retorno que avisa quem sumiu para resgatar com remarketing no WhatsApp
               </p>
             </div>
             <div className="min-w-0">
-              <p className="text-2xl sm:text-3xl font-bold text-emerald-400 tabular-nums">100% claro</p>
+              <p className="text-2xl sm:text-3xl font-bold text-emerald-400 tabular-nums">Caixa na mão</p>
               <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-                Gestão financeira com entradas, despesas, comissões e lucro líquido real
+                Entradas, despesas, comissões da equipe e lucro real atualizados direto no celular
               </p>
             </div>
             <div className="min-w-0">
-              <p className="text-2xl sm:text-3xl font-bold text-white tabular-nums">16 nichos</p>
+              <p className="text-2xl sm:text-3xl font-bold text-white tabular-nums">24h / dia</p>
               <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-                Estrutura adaptada para pequenos negócios de serviço pronta em minutos
+                Link de agendamento e campanhas atraindo novos clientes mesmo quando você está ocupado
               </p>
             </div>
           </div>
         </div>
       </section>
 
-      {/* Section 01: Core Tools (Agenda Inteligente 24h, Telemarketing, Financeiro, Vitrine) */}
-      <section id="pilares" className="max-w-7xl mx-auto px-4 sm:px-6 py-16 sm:py-24 border-b border-white/10">
-        <div className="max-w-3xl mb-10 sm:mb-12 space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#D4AF37]">
-            Três motores que sustentam o lucro de pequenos negócios
-          </p>
-          <h2 className="font-serif text-2xl sm:text-4xl font-bold text-white tracking-tight text-balance">
-            Tudo o que você precisa para atender melhor, controlar o dinheiro e fazer o cliente voltar sempre.
-          </h2>
-        </div>
+      {/* Section 01: Pain & Silent Revenue Leaks */}
+      <SalesPainDiagnosisSection />
 
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          <div className="lg:col-span-7 min-w-0 bg-[#141414] border border-white/10 rounded-2xl p-6 sm:p-8 flex flex-col justify-between space-y-5">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-xs font-semibold uppercase tracking-widest text-[#D4AF37]">
-                  01. Agenda Inteligente 24hrs
-                </span>
-                <CalendarClock className="w-5 h-5 text-[#D4AF37] shrink-0" />
-              </div>
-              <h3 className="text-xl sm:text-2xl font-bold text-white leading-snug">
-                Seu negócio aberto para agendamentos dia e noite, sem fila no WhatsApp
-              </h3>
-              <p className="text-sm sm:text-base text-zinc-300 leading-relaxed">
-                Cada cliente acessa seu link exclusivo (<span className="font-mono text-[#D4AF37]">/b/sua-empresa</span>), vê apenas os horários realmente disponíveis por profissional e serviço, e confirma em segundos sem gerar choque de agenda.
-              </p>
-            </div>
-            <div className="pt-4 border-t border-white/10 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs sm:text-sm text-zinc-300">
-              <div className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-[#D4AF37] shrink-0" />
-                <span>Cálculo automático de duração entre serviços</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-[#D4AF37] shrink-0" />
-                <span>Bloqueio de folgas, férias e pausas em 1 clique</span>
-              </div>
-            </div>
-          </div>
+      {/* Section 02: 4 Profit Engines (Retention, Finance, Marketing/Remarketing, 24h Booking) */}
+      <SalesGrowthPillarsSection />
 
-          <div className="lg:col-span-5 min-w-0 bg-[#141414] border border-white/10 rounded-2xl p-6 sm:p-8 flex flex-col justify-between space-y-5">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-xs font-semibold uppercase tracking-widest text-[#D4AF37]">
-                  02. Gestão de Telemarketing
-                </span>
-                <PhoneCall className="w-5 h-5 text-[#D4AF37] shrink-0" />
-              </div>
-              <h3 className="text-xl sm:text-2xl font-bold text-white leading-snug">
-                Traga clientes sumidos de volta e multiplique a recorrência
-              </h3>
-              <p className="text-sm text-zinc-300 leading-relaxed">
-                Em vez de esperar o cliente lembrar de você, o painel organiza contatos por tempo sem retorno (30, 60 ou 90 dias) para sua equipe fazer abordagem ativa no WhatsApp com roteiro e histórico na mão.
-              </p>
-            </div>
-            <p className="pt-4 border-t border-white/10 text-xs text-zinc-400">
-              Conquiste novas vendas com quem já confia no seu trabalho — com custo zero de tráfego pago.
-            </p>
-          </div>
+      {/* Section 03: Interactive ROI Simulator (Price vs Recovered & New Revenue) */}
+      <SalesRoiCalculatorSection
+        planMonthlyPrice={featuredAnnualMonthly}
+        planName="Plano Completo (no anual)"
+        ctaHref="#planos"
+        ctaLabel="Escolher meu plano e começar hoje"
+      />
 
-          <div className="lg:col-span-5 min-w-0 bg-[#141414] border border-white/10 rounded-2xl p-6 sm:p-8 flex flex-col justify-between space-y-5">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-xs font-semibold uppercase tracking-widest text-[#D4AF37]">
-                  03. Gestão Financeira Completa
-                </span>
-                <TrendingUp className="w-5 h-5 text-[#D4AF37] shrink-0" />
-              </div>
-              <h3 className="text-xl sm:text-2xl font-bold text-white leading-snug">
-                Saiba exatamente quanto entra, sai e sobra de lucro todo mês
-              </h3>
-              <p className="text-sm text-zinc-300 leading-relaxed">
-                Registre faturamento por atendimento, despesas fixas/variáveis e calcule automaticamente a comissão de cada profissional sem erros de planilha.
-              </p>
-            </div>
-            <p className="pt-4 border-t border-white/10 text-xs text-zinc-400">
-              Acesso individual para cada colaborador acompanhar apenas a própria agenda e comissões.
-            </p>
-          </div>
-
-          <div className="lg:col-span-7 min-w-0 bg-[#141414] border border-white/10 rounded-2xl p-6 sm:p-8 flex flex-col justify-between space-y-5">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-4">
-                <span className="text-xs font-semibold uppercase tracking-widest text-[#D4AF37]">
-                  04. Pacotes Recorrentes &amp; Vitrine VIP
-                </span>
-                <Repeat className="w-5 h-5 text-[#D4AF37] shrink-0" />
-              </div>
-              <h3 className="text-xl sm:text-2xl font-bold text-white leading-snug">
-                Previsibilidade no caixa com combos, pacotes e histórico completo
-              </h3>
-              <p className="text-sm sm:text-base text-zinc-300 leading-relaxed">
-                Venda pacotes de sessões ou planos mensais para fidelizar clientes e personalize sua vitrine com logo, banner, cores da marca e fichas de atendimento sem obrigar ninguém a baixar aplicativo.
-              </p>
-            </div>
-            <div className="pt-4 border-t border-white/10 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs sm:text-sm text-zinc-300">
-              <div className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-[#D4AF37] shrink-0" />
-                <span>Prontuários, anamnese e histórico por cliente</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-[#D4AF37] shrink-0" />
-                <span>Vitrine profissional pronta em 2 minutos</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Section 02: ROI / Recurrence Engine */}
-      <section id="recorrencia" className="max-w-7xl mx-auto px-4 sm:px-6 py-16 sm:py-24 border-b border-white/10">
-        <div className="bg-[#121212] border border-white/10 rounded-3xl p-6 sm:p-10 lg:p-12 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
-          <div className="lg:col-span-7 min-w-0 space-y-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#D4AF37]">
-              O segredo da recorrência em pequenos negócios
-            </p>
-            <h2 className="font-serif text-2xl sm:text-4xl font-bold text-white tracking-tight text-balance">
-              Reativando apenas 2 clientes por mês o sistema já gera lucro líquido para o seu caixa.
-            </h2>
-            <p className="text-sm sm:text-base text-zinc-300 leading-relaxed">
-              A maioria dos pequenos negócios perde faturamento porque atende bem uma vez, mas não tem rotina de telemarketing nem agenda prática para fazer o cliente voltar. Com o <strong className="text-white">DoisemePRO</strong>, você organiza quem sumiu, vende pacotes recorrentes e enxerga cada centavo no financeiro.
-            </p>
-          </div>
-
-          <div className="lg:col-span-5 min-w-0 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-1 gap-4">
-            <div className="bg-black/45 border border-[#D4AF37]/30 rounded-2xl p-5">
-              <p className="text-xs text-zinc-400">Menos de um café por dia no Plano Completo Anual</p>
-              <p className="text-2xl sm:text-3xl font-bold text-[#D4AF37] mt-1 tabular-nums">R$ 3,28 / dia</p>
-              <p className="text-xs text-zinc-400 mt-1.5">
-                Agenda 24hrs, telemarketing de reativação, gestão financeira, pacotes e vitrine VIP ilimitados.
-              </p>
-            </div>
-            <div className="bg-black/45 border border-white/10 rounded-2xl p-5">
-              <p className="text-xs text-zinc-400">Economia no Plano Anual vs. Mensal</p>
-              <p className="text-2xl sm:text-3xl font-bold text-emerald-400 mt-1 tabular-nums">R$ 481,80 / ano</p>
-              <p className="text-xs text-zinc-400 mt-1.5">
-                Pague menos por mês no anual ou assine no plano mensal sem fidelidade.
-              </p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Section 03: Interactive 16-Niche Showcase */}
-      <section id="segmentos" className="max-w-7xl mx-auto px-4 sm:px-6 py-16 sm:py-24 border-b border-white/10">
-        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4 mb-10">
-          <div className="max-w-2xl space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#D4AF37]">
-              Adaptado ao seu pequeno negócio
-            </p>
-            <h2 className="font-serif text-2xl sm:text-4xl font-bold text-white tracking-tight text-balance">
-              Escolha o seu segmento e veja a estrutura pronta para trabalhar por você.
-            </h2>
-          </div>
-          <p className="text-sm text-zinc-400 max-w-md">
-            Termos, fichas, serviços sugeridos e vitrine de agendamento já vêm configurados conforme o seu ramo.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8 items-start">
-          <div className="lg:col-span-7 min-w-0 grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-            {segmentList.map((seg) => {
-              const active = seg.id === activeSegment.id;
-              return (
-                <button
-                  key={seg.id}
-                  type="button"
-                  onClick={() => setSelectedSegmentId(seg.id)}
-                  className={`flex flex-col items-start gap-2 p-3 sm:p-3.5 rounded-xl border text-left transition-all min-w-0 ${
-                    active
-                      ? 'bg-[#D4AF37]/15 border-[#D4AF37] text-white'
-                      : 'bg-[#141414] border-white/10 text-zinc-300 hover:border-white/25 hover:text-white'
-                  }`}
-                >
-                  <SegmentIcon
-                    iconName={seg.icon}
-                    className="w-5 h-5 shrink-0"
-                    style={{ color: active ? '#D4AF37' : seg.defaultColors.primary }}
-                  />
-                  <span className="text-xs font-semibold leading-snug line-clamp-2 w-full">
-                    {seg.name}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          <div className="lg:col-span-5 min-w-0 bg-[#141414] border border-white/10 rounded-2xl p-5 sm:p-7 space-y-5">
-            <div className="flex items-center gap-3.5 border-b border-white/10 pb-4">
-              <div
-                className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0 border border-white/10"
-                style={{ backgroundColor: `${activeSegment.defaultColors.primary}1F` }}
-              >
-                <SegmentIcon
-                  iconName={activeSegment.icon}
-                  className="w-6 h-6"
-                  style={{ color: activeSegment.defaultColors.primary }}
-                />
-              </div>
-              <div className="min-w-0">
-                <h3 className="text-lg font-bold text-white truncate">{activeSegment.name}</h3>
-                <p className="text-xs text-zinc-400 mt-0.5 line-clamp-2">{activeSegment.layoutTheme.tagline}</p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div className="min-w-0">
-                <span className="text-[11px] uppercase tracking-wider text-zinc-500 block">Negócio</span>
-                <span className="font-semibold text-white truncate block">{activeSegment.terms.business}</span>
-              </div>
-              <div className="min-w-0">
-                <span className="text-[11px] uppercase tracking-wider text-zinc-500 block">Atendimento</span>
-                <span className="font-semibold text-white truncate block">{activeSegment.terms.professional}</span>
-              </div>
-              <div className="min-w-0">
-                <span className="text-[11px] uppercase tracking-wider text-zinc-500 block">Público</span>
-                <span className="font-semibold text-white truncate block">{activeSegment.terms.clientPlural}</span>
-              </div>
-              <div className="min-w-0">
-                <span className="text-[11px] uppercase tracking-wider text-zinc-500 block">Catálogo</span>
-                <span className="font-semibold text-white truncate block">{activeSegment.terms.servicePlural}</span>
-              </div>
-            </div>
-
-            <div className="space-y-2.5 pt-2 border-t border-white/10">
-              <p className="text-xs uppercase tracking-wider text-zinc-400 font-semibold">
-                Exemplos carregados no painel
-              </p>
-              <div className="divide-y divide-white/5">
-                {activeSegment.suggestedServices.slice(0, 3).map((srv) => (
-                  <div key={srv.name} className="py-2 flex items-center justify-between text-sm gap-4">
-                    <span className="text-zinc-200 truncate">{srv.name}</span>
-                    <span className="text-[#D4AF37] font-semibold tabular-nums shrink-0">
-                      {srv.price > 0 ? `R$ ${formatBRL(srv.price)}` : 'Sob consulta'}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <a
-              href="#planos"
-              className="w-full inline-flex items-center justify-center gap-2 bg-white text-black font-bold text-sm py-3 px-4 rounded-xl hover:bg-zinc-200 transition-colors text-center"
-            >
-              <Globe className="w-4 h-4 shrink-0" />
-              <span>Usar em {activeSegment.terms.business}</span>
-            </a>
-          </div>
-        </div>
-      </section>
-
-      {/* Section 04: Pricing Plans (Kiwify Checkout Ready) */}
+      {/* Section 04: Pricing Plans (Checkout Ready) */}
       <section id="planos" className="max-w-7xl mx-auto px-4 sm:px-6 py-16 sm:py-24 border-b border-white/10">
         <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 mb-10">
           <div className="space-y-3 max-w-2xl">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#D4AF37]">
-              Escolha seu plano e comece hoje
+              Investimento pequeno, retorno imediato no caixa
             </p>
             <h2 className="font-serif text-2xl sm:text-4xl font-bold text-white tracking-tight text-balance">
-              Planos transparentes para o tamanho atual do seu negócio.
+              Escolha o plano ideal e comece a recuperar clientes ainda esta semana.
             </h2>
           </div>
 
@@ -648,6 +408,7 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
             const monthlyEquivalent = plan.annualPrice / 12;
             const displayPrice = billingCycle === 'annual' ? monthlyEquivalent : plan.monthlyPrice;
             const annualSavings = Math.max(0, plan.monthlyPrice * 12 - plan.annualPrice);
+            const dailyEquivalent = displayPrice / 30;
             const { externalUrl, fallbackTo } = getCheckoutHref(plan.id, billingCycle);
 
             return (
@@ -685,7 +446,7 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
                           <span className="text-sm text-zinc-400">/mês</span>
                         </div>
                         <p className="text-xs sm:text-sm text-[#D4AF37] font-semibold tabular-nums">
-                          ou R$ {formatBRL(plan.annualPrice)} à vista no ano
+                          Apenas R$ {formatBRL(dailyEquivalent)}/dia · R$ {formatBRL(plan.annualPrice)} à vista no ano
                         </p>
                         <p className="text-xs text-emerald-400 tabular-nums">
                           Economia de R$ {formatBRL(annualSavings)} comparado ao mensal
@@ -700,8 +461,8 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
                           </span>
                           <span className="text-sm text-zinc-400">/mês</span>
                         </div>
-                        <p className="text-xs text-zinc-400">
-                          Cobrança recorrente mensal · Cancele quando quiser
+                        <p className="text-xs text-zinc-400 tabular-nums">
+                          Menos de R$ {formatBRL(dailyEquivalent)}/dia · Cancele quando quiser
                         </p>
                       </>
                     )}
@@ -770,41 +531,41 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
         </div>
       </section>
 
-      {/* Section 05: Delivery & 7-Day Guarantee (Kiwify Standard) */}
+      {/* Section 05: Delivery & 7-Day Guarantee */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 py-16 sm:py-20 border-b border-white/10">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
           <div className="lg:col-span-7 bg-[#141414] border border-white/10 rounded-2xl p-6 sm:p-8 space-y-5">
             <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#D4AF37]">
-              Como funciona após a compra
+              Sem complicação para começar
             </p>
             <h2 className="font-serif text-2xl sm:text-3xl font-bold text-white tracking-tight text-balance">
-              Do checkout ao seu painel funcionando em 3 passos simples.
+              Em menos de 5 minutos seu caixa, agenda e radar de retorno já estão rodando.
             </h2>
             <div className="space-y-4 pt-2">
               <div className="flex items-start gap-4">
                 <span className="font-mono text-sm font-bold text-[#D4AF37] pt-0.5 shrink-0">01.</span>
                 <div>
-                  <h3 className="text-sm sm:text-base font-bold text-white">Confirmação segura do pagamento</h3>
+                  <h3 className="text-sm sm:text-base font-bold text-white">Confirmação segura do plano escolhido</h3>
                   <p className="text-sm text-zinc-400 mt-0.5">
-                    Escolha seu plano e conclua via PIX ou Cartão de Crédito no ambiente criptografado de checkout.
+                    Conclua via PIX ou Cartão de Crédito no ambiente criptografado e receba o acesso imediatamente no seu e-mail.
                   </p>
                 </div>
               </div>
               <div className="flex items-start gap-4">
                 <span className="font-mono text-sm font-bold text-[#D4AF37] pt-0.5 shrink-0">02.</span>
                 <div>
-                  <h3 className="text-sm sm:text-base font-bold text-white">Liberação de acesso pelo seu e-mail</h3>
+                  <h3 className="text-sm sm:text-base font-bold text-white">Configuração guiada pelo celular</h3>
                   <p className="text-sm text-zinc-400 mt-0.5">
-                    Assim que a aprovação é confirmada, você recebe as instruções para entrar no painel DoisemePRO ou vincular sua conta existente.
+                    Cadastre seus serviços, horários e o prazo de retorno dos seus clientes com um passo a passo simples dentro do próprio painel.
                   </p>
                 </div>
               </div>
               <div className="flex items-start gap-4">
                 <span className="font-mono text-sm font-bold text-[#D4AF37] pt-0.5 shrink-0">03.</span>
                 <div>
-                  <h3 className="text-sm sm:text-base font-bold text-white">Configuração guiada em menos de 2 minutos</h3>
+                  <h3 className="text-sm sm:text-base font-bold text-white">Clientes agendando e voltando todo mês</h3>
                   <p className="text-sm text-zinc-400 mt-0.5">
-                    Selecione seu nicho, ative seu link de agenda inteligente 24hrs e comece a registrar atendimentos, caixa e reativação de clientes.
+                    Coloque seu link na bio do Instagram e WhatsApp, acompanhe seu lucro líquido diário e resgate quem sumiu em 1 clique.
                   </p>
                 </div>
               </div>
@@ -818,60 +579,60 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
                 Garantia Incondicional de 7 Dias
               </h3>
               <p className="text-sm text-zinc-300 leading-relaxed">
-                Use o DoisemePRO no seu negócio real durante 7 dias. Se você achar que a agenda inteligente, o telemarketing ou a gestão financeira não serviram para sua operação, basta solicitar o reembolso integral dentro do prazo de garantia sem burocracia.
+                Coloque o DoisemePRO para rodar no seu negócio real durante 7 dias. Se você não sentir mais clareza no financeiro, economia de tempo e facilidade para recuperar clientes, basta pedir reembolso total dentro do prazo sem burocracia.
               </p>
             </div>
             <p className="text-xs text-zinc-400 pt-4 border-t border-white/10">
-              Risco zero para testar no dia a dia do seu estabelecimento.
+              Risco zero para testar na rotina real do seu estabelecimento.
             </p>
           </div>
         </div>
       </section>
 
-      {/* Section 06: FAQ + Final CTA */}
+      {/* Section 06: Objection-Busting FAQ + Final CTA */}
       <section className="max-w-5xl mx-auto px-4 sm:px-6 py-16 sm:py-24">
         <div className="text-center max-w-2xl mx-auto mb-10 sm:mb-12 space-y-3">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-[#D4AF37]">
             Dúvidas Frequentes
           </p>
           <h2 className="font-serif text-2xl sm:text-4xl font-bold text-white tracking-tight text-balance">
-            Respostas rápidas antes de garantir seu acesso.
+            Respostas diretas antes de garantir seu acesso.
           </h2>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5 sm:gap-6 mb-12">
           <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 space-y-2">
-            <h3 className="text-base font-bold text-white">Preciso instalar algum aplicativo?</h3>
+            <h3 className="text-base font-bold text-white">Como o sistema me ajuda a recuperar clientes sumidos?</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              Não. O sistema roda direto no navegador do celular, tablet ou computador — tanto para você e sua equipe quanto para seus clientes agendarem.
+              Você escolhe o intervalo ideal de retorno (ex: 20 ou 30 dias). O sistema lista automaticamente quem passou desse prazo para você chamar no WhatsApp em 1 clique com oferta ou convite de retorno.
             </p>
           </div>
           <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 space-y-2">
-            <h3 className="text-base font-bold text-white">Serve para qualquer pequeno negócio?</h3>
+            <h3 className="text-base font-bold text-white">Consigo controlar todo o financeiro pelo celular?</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              Sim. Barbearias, salões, estética, clínicas, consultórios, pet shops, estúdios e prestadores de serviço com atendimento agendado usam o painel adaptado ao nicho.
+              Sim. Você acompanha entradas diárias, despesas fixas/variáveis, cálculo automático de comissões da equipe e o lucro líquido real direto no navegador do celular, sem instalar aplicativo.
             </p>
           </div>
           <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 space-y-2">
-            <h3 className="text-base font-bold text-white">Como funciona a gestão de telemarketing?</h3>
+            <h3 className="text-base font-bold text-white">Serve para o meu tipo de atendimento?</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              O sistema lista automaticamente clientes sem retorno recente para você ou sua recepção chamarem no WhatsApp e oferecerem horários ou pacotes promocionais.
+              Sim. Qualquer negócio que atende com hora marcada — barbearias, salões, estética, clínicas, estúdios, pet shops e autônomos — personaliza serviços, horários e regras em poucos minutos.
             </p>
           </div>
           <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 space-y-2">
-            <h3 className="text-base font-bold text-white">Posso cancelar a assinatura quando quiser?</h3>
+            <h3 className="text-base font-bold text-white">Tem fidelidade ou multa se eu quiser cancelar?</h3>
             <p className="text-sm text-zinc-400 leading-relaxed">
-              Sim. Não há multa nem fidelidade no plano mensal, e você conta com 7 dias de garantia incondicional na contratação.
+              Não. No plano mensal você cancela quando quiser sem multa, e qualquer contratação conta com 7 dias de garantia incondicional para testar na prática.
             </p>
           </div>
         </div>
 
         <div className="bg-[#15130D] border border-[#D4AF37]/40 rounded-3xl p-6 sm:p-10 text-center space-y-5">
           <h2 className="font-serif text-2xl sm:text-3xl font-bold text-white text-balance">
-            Organize sua agenda, seu financeiro e a recorrência dos seus clientes hoje mesmo.
+            Pare de deixar clientes sumirem e assuma o controle do seu faturamento hoje.
           </h2>
           <p className="text-sm sm:text-base text-zinc-300 max-w-xl mx-auto">
-            Escolha o plano ideal para o seu momento e coloque o DoisemePRO para rodar no seu negócio.
+            Menos de 2 atendimentos recuperados já pagam o mês inteiro. Escolha seu plano e comece com garantia de 7 dias.
           </p>
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 pt-1">
             <a
@@ -905,7 +666,7 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
             <span className="font-serif font-bold tracking-wider uppercase text-white">Doiseme</span>
             <span className="text-xs font-extrabold text-[#D4AF37]">PRO</span>
             <span className="text-zinc-600" aria-hidden="true">·</span>
-            <span className="text-xs text-zinc-500">Gestão para Pequenos Negócios &amp; Recorrência</span>
+            <span className="text-xs text-zinc-500">Retenção de Clientes &amp; Controle Financeiro</span>
           </div>
 
           <div className="flex flex-wrap items-center justify-center gap-5 sm:gap-6 text-xs sm:text-sm">

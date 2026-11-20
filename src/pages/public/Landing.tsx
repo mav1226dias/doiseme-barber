@@ -2,21 +2,20 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowRight,
-  Calendar,
   Check,
   CreditCard,
-  Globe,
   Menu,
   MessageCircle,
-  Sparkles,
-  TrendingUp,
-  Users,
+  ShieldCheck,
   X
 } from 'lucide-react';
-import heroStudioImg from '../../assets/images/hero_doiseme_studio_1794534284924.jpg';
-import { SEGMENTS, SegmentPreset } from '../../lib/segments';
-import { SegmentIcon } from '../../components/SegmentIcon';
+import ownerControlImg from '../../assets/images/sales_owner_control_1795203706375.jpg';
 import { captureReferralFromSearch, getActiveReferralCode, trackSalesChannelClick, trackSalesChannelVisit } from '../../lib/referral';
+import {
+  SalesGrowthPillarsSection,
+  SalesPainDiagnosisSection,
+  SalesRoiCalculatorSection
+} from '../../components/SalesConversionSections';
 
 interface PlanOption {
   id: string;
@@ -39,47 +38,47 @@ const DEFAULT_PLANS: PlanOption[] = [
   {
     id: 'premium',
     name: 'Plano Completo',
-    subtitle: 'Retenção, pacotes e lucro sem limites',
+    subtitle: 'Máxima retenção de clientes, remarketing no WhatsApp e financeiro completo sem limites',
     monthlyPrice: 139.90,
     annualPrice: 1197.00,
     highlighted: true,
     badge: 'Mais Lucrativo · Recomendado',
     features: [
-      'Profissionais e serviços ilimitados',
-      'Campanhas de reativação p/ trazer clientes sumidos',
-      'Pacotes de sessões e combos recorrentes',
-      'Vitrine VIP (logo, banner e paleta personalizada)',
-      'Implantação assistida + Suporte VIP no WhatsApp'
+      'Radar de clientes sumidos + remarketing em 1 clique no WhatsApp',
+      'Campanhas promocionais para encher dias parados e atrair novos clientes',
+      'Pacotes de sessões e planos de recorrência para caixa previsível',
+      'Controle financeiro completo: entradas, despesas, comissões e lucro real',
+      'Profissionais ilimitados + suporte VIP no WhatsApp'
     ]
   },
   {
     id: 'profissional',
     name: 'Plano Pro',
-    subtitle: 'Perfeito para equipes de 1 a 3 funcionários',
+    subtitle: 'Controle de agenda, equipe e financeiro completo para até 4 profissionais',
     monthlyPrice: 119.90,
     annualPrice: 1039.00,
     highlighted: false,
-    badge: 'Equipe 1 a 3',
+    badge: 'Equipe até 4',
     features: [
-      'Até 4 profissionais ativos (dono + equipe)',
-      'Cálculo automático de comissões',
-      'Controle financeiro diário e despesas',
-      'Prontuários, anamnese e fotos do seu nicho'
+      'Até 4 profissionais ativos na agenda online 24h',
+      'Controle financeiro diário de entradas, despesas e lucro',
+      'Cálculo automático de comissões sem planilhas manuais',
+      'Histórico completo de clientes para aumentar a fidelização'
     ]
   },
   {
     id: 'essencial',
     name: 'Agenda Individual',
-    subtitle: 'Opção de entrada para quem trabalha sozinho',
+    subtitle: 'Organize atendimentos, fidelize clientes e controle seu caixa trabalhando sozinho',
     monthlyPrice: 79.90,
     annualPrice: 659.00,
     highlighted: false,
     badge: '1 Profissional',
     features: [
-      '1 profissional ativo na agenda',
-      'Link exclusivo de agendamento (/b/sua-marca)',
-      'Cadastro de clientes e histórico completo',
-      'Agenda inteligente sem conflitos de horário'
+      'Link exclusivo de captação e agendamento 24h na bio e WhatsApp',
+      'Agenda inteligente sem conflitos e bloqueio de folgas em 1 clique',
+      'Controle financeiro diário no celular e histórico completo de clientes',
+      'Fim dos horários perdidos por demora para responder mensagens'
     ]
   }
 ];
@@ -88,15 +87,11 @@ const formatBRL = (value: number) =>
   value.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function Landing() {
-  const segmentList = Object.values(SEGMENTS);
-  const [selectedSegmentId, setSelectedSegmentId] = useState<string>('barbershop');
   const [billingCycle, setBillingCycle] = useState<'monthly' | 'annual'>('annual');
   const [plans, setPlans] = useState<PlanOption[]>(DEFAULT_PLANS);
   const [supportWhatsapp, setSupportWhatsapp] = useState<string>('');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [activeRefCode, setActiveRefCode] = useState<string | null>(() => getActiveReferralCode());
-
-  const activeSegment: SegmentPreset = SEGMENTS[selectedSegmentId] || segmentList[0];
 
   useEffect(() => {
     trackSalesChannelVisit('propria');
@@ -124,11 +119,14 @@ export default function Landing() {
       .catch(() => {});
   }, []);
 
+  const featuredPlan = plans.find((p) => p.id === 'premium') || plans[0];
+  const featuredAnnualMonthly = (featuredPlan?.annualPrice || 1197) / 12;
+
   return (
     <div className="min-h-screen w-full overflow-x-clip bg-[#0A0A0A] text-white font-sans antialiased selection:bg-[#D4AF37] selection:text-black">
-      {/* Top Bar (3 zones: Brand — Nav Links — Primary CTA) */}
-      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#0A0A0A]/85 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4">
+      {/* Top Bar (Strict 3-Zone Contract: Brand — 4 Single-Line Links — 1 Primary CTA) */}
+      <header className="sticky top-0 z-50 border-b border-white/10 bg-[#0A0A0A]/90 backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-4 sm:gap-8">
           <Link to="/" className="flex items-center gap-2 shrink-0 whitespace-nowrap">
             <span className="font-serif text-xl font-bold tracking-[0.14em] uppercase text-white">
               Doiseme
@@ -139,17 +137,20 @@ export default function Landing() {
           </Link>
 
           <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-zinc-300">
-            <a href="#recursos" className="hover:text-white transition-colors whitespace-nowrap">
-              Recursos
+            <a href="#problema" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
+              O Problema
             </a>
-            <a href="#segmentos" className="hover:text-white transition-colors whitespace-nowrap">
-              16 Segmentos
+            <a href="#como-lucrar" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
+              Como Lucrar
             </a>
-            <a href="#planos" className="hover:text-white transition-colors whitespace-nowrap">
+            <a href="#simulador" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
+              Simulador
+            </a>
+            <a href="#planos" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
               Planos
             </a>
-            <Link to="/admin/login" className="hover:text-white transition-colors whitespace-nowrap">
-              Acessar Painel
+            <Link to="/admin/login" className="hover:text-white hover:underline underline-offset-4 transition-colors whitespace-nowrap shrink-0">
+              Entrar
             </Link>
           </nav>
 
@@ -176,23 +177,30 @@ export default function Landing() {
         {mobileNavOpen && (
           <div className="md:hidden border-t border-white/10 bg-[#101010] px-4 py-4 space-y-3">
             <a
-              href="#recursos"
+              href="#problema"
               onClick={() => setMobileNavOpen(false)}
               className="block py-2 text-sm text-zinc-300 hover:text-white"
             >
-              Recursos
+              O Problema
             </a>
             <a
-              href="#segmentos"
+              href="#como-lucrar"
               onClick={() => setMobileNavOpen(false)}
               className="block py-2 text-sm text-zinc-300 hover:text-white"
             >
-              16 Segmentos
+              Retenção, Marketing &amp; Caixa
+            </a>
+            <a
+              href="#simulador"
+              onClick={() => setMobileNavOpen(false)}
+              className="block py-2 text-sm text-zinc-300 hover:text-white"
+            >
+              Simulador de Retorno
             </a>
             <a
               href="#planos"
               onClick={() => setMobileNavOpen(false)}
-              className="block py-2 text-sm text-zinc-300 hover:text-white"
+              className="block py-2 text-sm text-[#D4AF37] font-semibold"
             >
               Planos
             </a>
@@ -217,244 +225,138 @@ export default function Landing() {
 
       {/* Hero Section */}
       <section className="relative overflow-hidden border-b border-white/10">
-        <div className="absolute inset-0">
-          <img
-            src={heroStudioImg}
-            alt="Recepção premium de estúdio usando DoisemePRO"
-            className="w-full h-full object-cover object-center opacity-55"
-          />
-          <div
-            className="absolute inset-0"
-            style={{
-              background:
-                'linear-gradient(95deg, rgba(10,10,10,0.96) 0%, rgba(10,10,10,0.84) 48%, rgba(10,10,10,0.52) 100%)'
-            }}
-          />
-        </div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-12 sm:py-16 lg:py-24">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-stretch">
+            <div className="lg:col-span-7 min-w-0 flex flex-col justify-center space-y-6">
+              <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs sm:text-sm text-[#D4AF37] font-semibold">
+                <span>Retenção e Recorrência</span>
+                <span className="text-zinc-600" aria-hidden="true">·</span>
+                <span className="text-zinc-300 font-normal">Controle Financeiro na Palma da Mão</span>
+                <span className="text-zinc-600" aria-hidden="true">·</span>
+                <span className="text-zinc-300 font-normal">Marketing no WhatsApp</span>
+              </div>
 
-        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 py-20 sm:py-28 lg:py-32">
-          <div className="max-w-2xl space-y-6">
-            <p className="text-xs sm:text-sm font-semibold uppercase tracking-[0.2em] text-[#D4AF37]">
-              Plataforma de Gestão &amp; Agendamento Multi-Nicho
-            </p>
-            <h1
-              className="font-serif font-bold text-white leading-[1.08] tracking-tight"
-              style={{ fontSize: 'clamp(2.25rem, 4.8vw, 4rem)' }}
-            >
-              Agenda, caixa e clientes sob medida para o seu negócio.
-            </h1>
-            <p className="text-base sm:text-lg text-zinc-300 leading-relaxed max-w-xl">
-              Do atendimento individual à gestão completa da sua equipe. Site de agendamento exclusivo,
-              comissões automáticas e prontuários adaptados ao seu segmento em menos de 2 minutos.
-            </p>
-
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-2">
-              <Link
-                to="/cadastro"
-                onClick={() => trackSalesChannelClick('propria', 'hero_primary')}
-                className="inline-flex items-center justify-center gap-2 bg-[#D4AF37] text-black font-bold text-base px-6 py-3.5 rounded-xl hover:bg-[#e3c04f] transition-colors whitespace-nowrap"
+              <h1
+                className="font-serif font-bold text-white leading-[1.08] tracking-tight text-balance"
+                style={{ fontSize: 'clamp(2.1rem, 4.5vw, 3.75rem)' }}
               >
-                Começar 7 dias grátis
-                <ArrowRight className="w-5 h-5" />
-              </Link>
-              <a
-                href="#planos"
-                className="inline-flex items-center justify-center gap-2 border border-white/20 bg-black/40 text-white font-semibold text-base px-6 py-3.5 rounded-xl hover:bg-white/10 transition-colors whitespace-nowrap"
-              >
-                Ver planos e valores
-              </a>
-            </div>
+                Pare de perder clientes que somem e tenha o controle financeiro do seu negócio na palma da mão.
+              </h1>
 
-            <div className="pt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs sm:text-sm text-zinc-400">
-              <span>7 dias grátis sem cartão</span>
-              <span className="text-zinc-600">·</span>
-              <span>16 segmentos pré-configurados</span>
-              <span className="text-zinc-600">·</span>
-              <span>PIX ou Cartão via Mercado Pago</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Features Overview */}
-      <section id="recursos" className="max-w-7xl mx-auto px-4 sm:px-6 py-20 sm:py-24 border-b border-white/10">
-        <div className="max-w-2xl mb-14 space-y-3">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#D4AF37]">
-            Tudo em um só painel
-          </p>
-          <h2 className="font-serif text-3xl sm:text-4xl font-bold text-white tracking-tight">
-            Feito para eliminar planilhas e horários perdidos.
-          </h2>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 space-y-3">
-            <Globe className="w-6 h-6 text-[#D4AF37]" />
-            <h3 className="text-lg font-bold text-white">Link Exclusivo de Reserva</h3>
-            <p className="text-sm text-zinc-400 leading-relaxed">
-              Seu cliente agenda pelo celular em segundos escolhendo profissional, serviço e horário livre em tempo real.
-            </p>
-          </div>
-
-          <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 space-y-3">
-            <Calendar className="w-6 h-6 text-[#D4AF37]" />
-            <h3 className="text-lg font-bold text-white">Agenda &amp; Bloqueios</h3>
-            <p className="text-sm text-zinc-400 leading-relaxed">
-              Controle diário por profissional, bloqueio de folgas, confirmações e prevenção contra conflitos de horário.
-            </p>
-          </div>
-
-          <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 space-y-3">
-            <TrendingUp className="w-6 h-6 text-[#D4AF37]" />
-            <h3 className="text-lg font-bold text-white">Caixa &amp; Comissões</h3>
-            <p className="text-sm text-zinc-400 leading-relaxed">
-              Faturamento líquido, registro de despesas e cálculo automático da comissão de cada membro da equipe.
-            </p>
-          </div>
-
-          <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 space-y-3">
-            <Users className="w-6 h-6 text-[#D4AF37]" />
-            <h3 className="text-lg font-bold text-white">Fichas por Nicho</h3>
-            <p className="text-sm text-zinc-400 leading-relaxed">
-              Anamnese estética, fotos antes/depois, pets, veículos, avaliações físicas ou histórico de estilo integrados.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      {/* Interactive 16-Niche Showcase */}
-      <section id="segmentos" className="max-w-7xl mx-auto px-4 sm:px-6 py-20 sm:py-24 border-b border-white/10">
-        <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-6 mb-12">
-          <div className="max-w-2xl space-y-3">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#D4AF37]">
-              Sistema Camaleão
-            </p>
-            <h2 className="font-serif text-3xl sm:text-4xl font-bold text-white tracking-tight">
-              Escolha seu segmento e veja o sistema se adaptar.
-            </h2>
-          </div>
-          <p className="text-sm text-zinc-400 max-w-md">
-            Termos, cores, ícones e catálogo inicial são configurados automaticamente ao criar sua conta.
-          </p>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-          {/* Niche selector list */}
-          <div className="lg:col-span-7 grid grid-cols-2 sm:grid-cols-4 gap-2.5">
-            {segmentList.map((seg) => {
-              const active = seg.id === activeSegment.id;
-              return (
-                <button
-                  key={seg.id}
-                  type="button"
-                  onClick={() => setSelectedSegmentId(seg.id)}
-                  className={`flex flex-col items-start gap-2 p-3.5 rounded-xl border text-left transition-all ${
-                    active
-                      ? 'bg-[#D4AF37]/15 border-[#D4AF37] text-white'
-                      : 'bg-[#141414] border-white/10 text-zinc-300 hover:border-white/25 hover:text-white'
-                  }`}
-                >
-                  <SegmentIcon
-                    iconName={seg.icon}
-                    className="w-5 h-5"
-                    style={{ color: active ? '#D4AF37' : seg.defaultColors.primary }}
-                  />
-                  <span className="text-xs font-semibold leading-snug line-clamp-2">
-                    {seg.name}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Live Niche Preview */}
-          <div className="lg:col-span-5 bg-[#141414] border border-white/10 rounded-2xl p-6 sm:p-7 space-y-6">
-            <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-5">
-              <div className="flex items-center gap-3.5">
-                <div
-                  className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0 border border-white/10"
-                  style={{ backgroundColor: `${activeSegment.defaultColors.primary}1F` }}
-                >
-                  <SegmentIcon
-                    iconName={activeSegment.icon}
-                    className="w-6 h-6"
-                    style={{ color: activeSegment.defaultColors.primary }}
-                  />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-white">{activeSegment.name}</h3>
-                  <p className="text-xs text-zinc-400 mt-0.5">{activeSegment.layoutTheme.tagline}</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <span className="text-[11px] uppercase tracking-wider text-zinc-500 block">
-                  Estabelecimento
-                </span>
-                <span className="font-semibold text-white">{activeSegment.terms.business}</span>
-              </div>
-              <div>
-                <span className="text-[11px] uppercase tracking-wider text-zinc-500 block">
-                  Atendente
-                </span>
-                <span className="font-semibold text-white">{activeSegment.terms.professional}</span>
-              </div>
-              <div>
-                <span className="text-[11px] uppercase tracking-wider text-zinc-500 block">
-                  Público
-                </span>
-                <span className="font-semibold text-white">{activeSegment.terms.clientPlural}</span>
-              </div>
-              <div>
-                <span className="text-[11px] uppercase tracking-wider text-zinc-500 block">
-                  Catálogo
-                </span>
-                <span className="font-semibold text-white">{activeSegment.terms.servicePlural}</span>
-              </div>
-            </div>
-
-            <div className="space-y-2.5 pt-2 border-t border-white/10">
-              <p className="text-xs uppercase tracking-wider text-zinc-400 font-semibold">
-                Exemplos carregados no cadastro
+              <p className="text-base sm:text-lg text-zinc-300 leading-relaxed max-w-2xl">
+                O <strong className="text-white">DoisemePRO</strong> resgata clientes inativos com remarketing no WhatsApp, atrai novos agendamentos 24h por dia e mostra quanto sobra de lucro líquido no celular — custando menos que <strong className="text-white">2 atendimentos por mês</strong>.
               </p>
-              <div className="divide-y divide-white/5">
-                {activeSegment.suggestedServices.slice(0, 3).map((srv) => (
-                  <div key={srv.name} className="py-2 flex items-center justify-between text-sm gap-4">
-                    <span className="text-zinc-200 truncate">{srv.name}</span>
-                    <span className="text-[#D4AF37] font-semibold tabular-nums shrink-0">
-                      {srv.price > 0 ? `R$ ${formatBRL(srv.price)}` : 'Sob consulta'}
-                    </span>
-                  </div>
-                ))}
+
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
+                <Link
+                  to="/cadastro"
+                  onClick={() => trackSalesChannelClick('propria', 'hero_primary')}
+                  className="inline-flex items-center justify-center gap-2 bg-[#D4AF37] text-black font-bold text-base px-6 py-3.5 rounded-xl hover:bg-[#e3c04f] transition-colors whitespace-nowrap"
+                >
+                  Começar 7 dias grátis
+                  <ArrowRight className="w-5 h-5" />
+                </Link>
+                <a
+                  href="#simulador"
+                  className="inline-flex items-center justify-center gap-2 border border-white/20 bg-white/[0.03] text-white font-semibold text-sm sm:text-base px-6 py-3.5 rounded-xl hover:bg-white/10 transition-colors whitespace-nowrap"
+                >
+                  Simular meu retorno financeiro
+                </a>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs sm:text-sm text-zinc-400">
+                <span>7 dias grátis sem cartão</span>
+                <span className="text-zinc-600" aria-hidden="true">·</span>
+                <span>Sem fidelidade no mensal</span>
+                <span className="text-zinc-600" aria-hidden="true">·</span>
+                <span>Funciona direto no celular</span>
               </div>
             </div>
 
-            <Link
-              to={`/cadastro?nicho=${activeSegment.id}`}
-              className="w-full inline-flex items-center justify-center gap-2 bg-white text-black font-bold text-sm py-3 rounded-xl hover:bg-zinc-200 transition-colors"
-            >
-              <Sparkles className="w-4 h-4" />
-              Criar painel para {activeSegment.terms.business}
-            </Link>
+            {/* Right Visual Anchor */}
+            <div className="lg:col-span-5 relative min-h-[300px] sm:min-h-[360px] lg:min-h-[480px] rounded-2xl overflow-hidden border border-white/10 bg-[#141414]">
+              <img
+                src={ownerControlImg}
+                alt="Empreendedora acompanhando retorno de clientes e controle financeiro na palma da mão"
+                referrerPolicy="no-referrer"
+                className="w-full h-full object-cover object-center"
+              />
+              <div
+                className="absolute inset-0 flex flex-col justify-end p-6 sm:p-8"
+                style={{
+                  background:
+                    'linear-gradient(180deg, rgba(10,10,10,0.06) 0%, rgba(10,10,10,0.65) 56%, rgba(10,10,10,0.96) 100%)'
+                }}
+              >
+                <p className="text-xs uppercase tracking-[0.14em] text-[#D4AF37] font-semibold">
+                  Caixa organizado + agenda cheia
+                </p>
+                <p className="text-lg sm:text-xl font-bold text-white mt-1.5 leading-snug">
+                  Seu cliente agenda sozinho 24h enquanto o radar de retorno traz quem sumiu de volta.
+                </p>
+                <p className="text-xs sm:text-sm text-zinc-300 mt-2">
+                  Veja entradas, despesas, comissões e lucro líquido real no seu celular em segundos.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* 4-Column Quantified Outcomes Strip Below Hero */}
+          <div className="mt-10 pt-8 border-t border-white/10 grid grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="min-w-0">
+              <p className="text-2xl sm:text-3xl font-bold text-[#D4AF37] tabular-nums">2 atendimentos</p>
+              <p className="text-xs sm:text-sm text-zinc-400 mt-1">
+                Recuperados no mês já pagam o Plano Completo — todo o resto é lucro líquido
+              </p>
+            </div>
+            <div className="min-w-0">
+              <p className="text-2xl sm:text-3xl font-bold text-white tabular-nums">15 · 20 · 30d</p>
+              <p className="text-xs sm:text-sm text-zinc-400 mt-1">
+                Radar de retorno que avisa quem sumiu para chamar com remarketing no WhatsApp
+              </p>
+            </div>
+            <div className="min-w-0">
+              <p className="text-2xl sm:text-3xl font-bold text-emerald-400 tabular-nums">Caixa na mão</p>
+              <p className="text-xs sm:text-sm text-zinc-400 mt-1">
+                Faturamento, despesas, comissões e lucro líquido atualizados em tempo real
+              </p>
+            </div>
+            <div className="min-w-0">
+              <p className="text-2xl sm:text-3xl font-bold text-white tabular-nums">24h / dia</p>
+              <p className="text-xs sm:text-sm text-zinc-400 mt-1">
+                Link de agendamento e campanhas atraindo novos clientes mesmo fora do horário
+              </p>
+            </div>
           </div>
         </div>
       </section>
+
+      {/* Section 01: Pain Diagnosis */}
+      <SalesPainDiagnosisSection />
+
+      {/* Section 02: 4 Profit Engines */}
+      <SalesGrowthPillarsSection />
+
+      {/* Section 03: Interactive ROI Simulator */}
+      <SalesRoiCalculatorSection
+        planMonthlyPrice={featuredAnnualMonthly}
+        planName="Plano Completo (no anual)"
+        ctaHref="#planos"
+        ctaLabel="Ver planos e começar 7 dias grátis"
+      />
 
       {/* Pricing Section */}
       <section id="planos" className="max-w-7xl mx-auto px-4 sm:px-6 py-20 sm:py-24">
         <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-12">
-          <div className="space-y-3">
+          <div className="space-y-3 max-w-2xl">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-[#D4AF37]">
-              Planos Transparentes
+              Investimento que se paga nos primeiros dias
             </p>
-            <h2 className="font-serif text-3xl sm:text-4xl font-bold text-white tracking-tight">
+            <h2 className="font-serif text-3xl sm:text-4xl font-bold text-white tracking-tight text-balance">
               Teste grátis por 7 dias. Economize até 33% no plano anual.
             </h2>
           </div>
 
-          {/* Monthly / Annual Toggle */}
           <div className="grid grid-cols-2 sm:inline-flex w-full sm:w-auto bg-[#141414] border border-white/10 rounded-xl p-1 gap-1 self-start md:self-auto">
             <button
               type="button"
@@ -506,6 +408,7 @@ export default function Landing() {
             const displayPrice =
               billingCycle === 'annual' ? plan.annualPrice / 12 : plan.monthlyPrice;
             const annualSavings = Math.max(0, plan.monthlyPrice * 12 - plan.annualPrice);
+            const dailyCost = displayPrice / 30;
             return (
               <div
                 key={plan.id}
@@ -526,7 +429,7 @@ export default function Landing() {
                       </span>
                     )}
                   </div>
-                  <p className="text-sm text-zinc-400">{plan.subtitle}</p>
+                  <p className="text-sm text-zinc-300">{plan.subtitle}</p>
 
                   <div className="pt-2 pb-4 border-b border-white/10">
                     {billingCycle === 'annual' && (
@@ -543,16 +446,16 @@ export default function Landing() {
                     </div>
                     {billingCycle === 'annual' ? (
                       <p className="text-xs text-[#D4AF37] mt-1 tabular-nums">
-                        R$ {formatBRL(plan.annualPrice)}/ano · Economize R$ {formatBRL(annualSavings)}
+                        Apenas R$ {formatBRL(dailyCost)}/dia · R$ {formatBRL(plan.annualPrice)}/ano (Economize R$ {formatBRL(annualSavings)})
                       </p>
                     ) : (
-                      <p className="text-xs text-zinc-500 mt-1">
-                        Pagamento mensal via PIX ou Cartão
+                      <p className="text-xs text-zinc-400 mt-1 tabular-nums">
+                        Menos de R$ {formatBRL(dailyCost)}/dia · Pagamento mensal via PIX ou Cartão
                       </p>
                     )}
                   </div>
 
-                  <ul className="space-y-3 text-sm text-zinc-300">
+                  <ul className="space-y-3 text-sm text-zinc-200">
                     {plan.features.map((feat) => (
                       <li key={feat} className="flex items-start gap-2.5">
                         <Check className="w-4 h-4 text-[#D4AF37] shrink-0 mt-0.5" />
@@ -565,7 +468,7 @@ export default function Landing() {
                 <Link
                   to={`/cadastro?plano=${plan.id}`}
                   onClick={() => trackSalesChannelClick('propria', `${plan.id}_${billingCycle}`)}
-                  className={`mt-8 w-full inline-flex items-center justify-center gap-2 py-3 px-4 rounded-xl font-bold text-sm transition-colors ${
+                  className={`mt-8 w-full inline-flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl font-bold text-sm transition-colors ${
                     plan.highlighted
                       ? 'bg-[#D4AF37] text-black hover:bg-[#e3c04f]'
                       : 'bg-white text-black hover:bg-zinc-200'
@@ -579,24 +482,27 @@ export default function Landing() {
           })}
         </div>
 
-        <div className="mt-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs sm:text-sm text-zinc-400">
+        <div className="mt-10 flex flex-wrap items-center justify-center gap-x-6 gap-y-2 text-xs sm:text-sm text-zinc-400 text-center">
+          <span className="inline-flex items-center gap-2">
+            <ShieldCheck className="w-4 h-4 text-[#D4AF37]" />
+            7 dias grátis sem cadastrar cartão de crédito
+          </span>
+          <span className="text-zinc-600 hidden sm:inline" aria-hidden="true">·</span>
           <span className="inline-flex items-center gap-2">
             <CreditCard className="w-4 h-4 text-[#D4AF37]" />
-            Liberação automática imediata via Mercado Pago e PIX
+            Liberação automática via Mercado Pago e PIX · Cancele quando quiser
           </span>
-          <span className="text-zinc-600 hidden sm:inline">·</span>
-          <span>Cancele quando quiser sem fidelidade</span>
         </div>
       </section>
 
-      {/* Footer */}
+      {/* Quiet Footer */}
       <footer className="border-t border-white/10 bg-[#070707]">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-zinc-400">
           <div className="flex items-center gap-2">
             <span className="font-serif font-bold tracking-wider uppercase text-white">Doiseme</span>
             <span className="text-xs font-extrabold text-[#D4AF37]">PRO</span>
-            <span className="text-zinc-600">·</span>
-            <span className="text-xs text-zinc-500">Gestão Multi-Nicho</span>
+            <span className="text-zinc-600" aria-hidden="true">·</span>
+            <span className="text-xs text-zinc-500">Retenção de Clientes &amp; Controle Financeiro</span>
           </div>
 
           <div className="flex flex-wrap items-center gap-5 sm:gap-6 text-xs sm:text-sm">
