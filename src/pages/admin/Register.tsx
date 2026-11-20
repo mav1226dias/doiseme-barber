@@ -196,8 +196,9 @@ export default function Register() {
         if (data.user) {
           localStorage.setItem('user', JSON.stringify(data.user));
         }
+        window.dispatchEvent(new Event('storage'));
         toast.success(`Bem-vindo ao DoisemePRO! Seus ${data.trialDays || 7} dias grátis começaram.`);
-        navigate('/admin');
+        navigate('/admin/onboarding');
       } catch {
         setError("Seu navegador bloqueou o armazenamento da sessão. Use o botão 'Abrir em Nova Aba' para acessar o painel.");
       }

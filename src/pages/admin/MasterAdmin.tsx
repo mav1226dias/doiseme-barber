@@ -3,7 +3,7 @@ import {
   Shield, Users, Server, Database, Activity, Lock, Plus, Globe, Mail, Key, Trash2,
   ShieldCheck, ShieldAlert, Calendar, ExternalLink, Unlock, CheckCircle2, XCircle, Sparkles,
   Cloud, Copy, RefreshCw, ChevronDown, ChevronUp, AlertTriangle, MessageCircle, Save, CreditCard, Clock, Bot,
-  TrendingUp, DollarSign, Filter, Phone, SlidersHorizontal, Search, X, Send, Handshake, Eye, MousePointerClick
+  TrendingUp, DollarSign, Filter, Phone, SlidersHorizontal, Search, X, Send, Handshake, Eye, MousePointerClick, Download, Store
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
@@ -159,6 +159,14 @@ export default function MasterAdmin() {
   const [showAllPayments, setShowAllPayments] = useState(false);
   const [shopToDelete, setShopToDelete] = useState<any | null>(null);
   const [deletingShopId, setDeletingShopId] = useState<string | null>(null);
+
+  // Feature Flag: liberação da Loja Virtual por estabelecimento específico (ou global)
+  const [virtualStoreEnabledForAll, setVirtualStoreEnabledForAll] = useState(false);
+  const [virtualStoreEnabledShopIds, setVirtualStoreEnabledShopIds] = useState<string[]>([]);
+  const [selectedStoreShopId, setSelectedStoreShopId] = useState<string>('');
+  const [togglingStoreShopId, setTogglingStoreShopId] = useState<string | null>(null);
+  const [loadingFeatureFlags, setLoadingFeatureFlags] = useState(true);
+  const [savingVirtualStoreFlag, setSavingVirtualStoreFlag] = useState(false);
 
   // Evolution API v2 (Parte 6 — oculta temporariamente até ativação da VPS)
   const showEvolutionSetup = false;
@@ -514,6 +522,107 @@ export default function MasterAdmin() {
     }
   };
 
+  const fetchFeatureFlags = async () => {
+    const token = localStorage.getItem('token');
+    setLoadingFeatureFlags(true);
+    try {
+      const res = await fetch('/api/admin/master/feature-flags', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setVirtualStoreEnabledForAll(Boolean(data.virtualStoreEnabledForAll));
+        setVirtualStoreEnabledShopIds(Array.isArray(data.enabledShopIds) ? data.enabledShopIds : []);
+      }
+    } catch (e) {
+      console.error('Failed to load master feature flags:', e);
+    } finally {
+      setLoadingFeatureFlags(false);
+    }
+  };
+
+  const handleToggleShopVirtualStore = async (shopId: string, shopName: string, currentlyEnabled: boolean) => {
+    const token = localStorage.getItem('token');
+    const nextEnabled = !currentlyEnabled;
+    setTogglingStoreShopId(shopId);
+    try {
+      const res = await fetch(`/api/admin/master/shops/${shopId}/virtual-store`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ enabled: nextEnabled })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Não foi possível alterar a Loja Virtual para este estabelecimento.');
+        return;
+      }
+      const nextIds = Array.isArray(data.enabledShopIds)
+        ? data.enabledShopIds
+        : nextEnabled
+          ? Array.from(new Set([...virtualStoreEnabledShopIds, shopId]))
+          : virtualStoreEnabledShopIds.filter((id) => id !== shopId);
+      setVirtualStoreEnabledShopIds(nextIds);
+      setShops((prev) =>
+        prev.map((s) => (s.id === shopId ? { ...s, virtual_store_enabled: nextEnabled } : s))
+      );
+      if (nextEnabled && selectedStoreShopId === shopId) {
+        setSelectedStoreShopId('');
+      }
+      toast.success(
+        nextEnabled
+          ? `Loja Virtual liberada para "${shopName}"!`
+          : `Loja Virtual desativada para "${shopName}".`
+      );
+    } catch {
+      toast.error('Erro de conexão ao atualizar Loja Virtual do estabelecimento.');
+    } finally {
+      setTogglingStoreShopId(null);
+    }
+  };
+
+  const handleToggleVirtualStoreForAll = async () => {
+    const token = localStorage.getItem('token');
+    const nextValue = !virtualStoreEnabledForAll;
+    setSavingVirtualStoreFlag(true);
+    try {
+      const res = await fetch('/api/admin/master/feature-flags', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ virtualStoreEnabledForAll: nextValue })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || 'Não foi possível alterar a liberação da Loja Virtual.');
+        return;
+      }
+      const savedValue = Boolean(data.virtualStoreEnabledForAll);
+      setVirtualStoreEnabledForAll(savedValue);
+      if (Array.isArray(data.enabledShopIds)) {
+        setVirtualStoreEnabledShopIds(data.enabledShopIds);
+      }
+      window.dispatchEvent(
+        new CustomEvent('doiseme:feature-flags-updated', {
+          detail: { virtualStoreEnabledForAll: savedValue }
+        })
+      );
+      toast.success(
+        savedValue
+          ? 'Loja Virtual liberada globalmente para todos os estabelecimentos!'
+          : 'Liberação global desativada (apenas estabelecimentos liberados individualmente terão acesso).'
+      );
+    } catch {
+      toast.error('Erro de conexão ao salvar configuração da Loja Virtual.');
+    } finally {
+      setSavingVirtualStoreFlag(false);
+    }
+  };
+
   const fetchEvolutionConfig = async () => {
     const token = localStorage.getItem('token');
     try {
@@ -680,6 +789,7 @@ export default function MasterAdmin() {
     fetchSupportWhatsapp();
     fetchBillingConfigAndPayments();
     fetchSalesChannels();
+    fetchFeatureFlags();
     if (showEvolutionSetup) {
       fetchEvolutionConfig();
     }
@@ -1302,6 +1412,143 @@ export default function MasterAdmin() {
       {/* TAB 1: OVERVIEW (ANALYTICS DASHBOARD + SHOPS TABLE) */}
       {activeTab === 'overview' && (
         <>
+          {/* Liberação da Loja Virtual por Estabelecimento */}
+          {(() => {
+            const clientShops = shops.filter((s) => s.id !== 'shop-1');
+            const unlockedShops = clientShops.filter((s) => virtualStoreEnabledShopIds.includes(s.id));
+            const lockedShops = clientShops.filter((s) => !virtualStoreEnabledShopIds.includes(s.id));
+            const selectedShopObj = lockedShops.find((s) => s.id === selectedStoreShopId) || null;
+
+            return (
+              <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-gray-200 dark:border-zinc-800 p-4 sm:p-5 space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  <div className="flex items-start gap-3.5 min-w-0">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
+                      virtualStoreEnabledForAll || unlockedShops.length > 0
+                        ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                        : 'bg-[#D4AF37]/15 text-[#9A7410] dark:text-[#D4AF37]'
+                    }`}>
+                      <Store className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h2 className="text-sm font-bold text-gray-900 dark:text-white">
+                          Liberação da Loja Virtual por Estabelecimento
+                        </h2>
+                        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${
+                          virtualStoreEnabledForAll
+                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                            : unlockedShops.length > 0
+                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                              : 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                        }`}>
+                          {loadingFeatureFlags
+                            ? 'Verificando...'
+                            : virtualStoreEnabledForAll
+                              ? 'Liberada para todos'
+                              : unlockedShops.length > 0
+                                ? `${unlockedShops.length} ${unlockedShops.length === 1 ? 'estabelecimento liberado' : 'estabelecimentos liberados'}`
+                                : 'Somente Admin Master'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-500 dark:text-zinc-400 mt-1">
+                        Escolha abaixo estabelecimentos específicos para liberar as abas da Loja Virtual (ou use o botão na linha de cada loja na tabela).
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Atalho rápido: selecionar estabelecimento específico e liberar */}
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <select
+                      aria-label="Selecionar estabelecimento para liberar Loja Virtual"
+                      value={selectedStoreShopId}
+                      onChange={(e) => setSelectedStoreShopId(e.target.value)}
+                      disabled={loadingFeatureFlags || lockedShops.length === 0}
+                      className="min-h-[40px] max-w-[260px] bg-gray-50 dark:bg-zinc-800 border border-gray-200 dark:border-zinc-700 rounded-xl px-3 py-2 text-xs font-medium text-gray-900 dark:text-gray-100 outline-none focus:border-[#D4AF37] disabled:opacity-50"
+                    >
+                      <option value="">
+                        {lockedShops.length === 0
+                          ? 'Todos estabelecimentos já liberados'
+                          : 'Selecione um estabelecimento...'}
+                      </option>
+                      {lockedShops.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} (/b/{s.slug})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={!selectedShopObj || togglingStoreShopId !== null}
+                      onClick={() => {
+                        if (!selectedShopObj) return;
+                        handleToggleShopVirtualStore(selectedShopObj.id, selectedShopObj.name, false);
+                      }}
+                      className="min-h-[40px] inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-black dark:bg-[#D4AF37] text-white dark:text-black text-xs font-bold hover:opacity-90 disabled:opacity-40 transition-opacity whitespace-nowrap"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      {togglingStoreShopId && togglingStoreShopId === selectedStoreShopId ? 'Liberando...' : 'Liberar'}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Lista de estabelecimentos liberados individualmente + opção opcional global */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-gray-100 dark:border-zinc-800/80">
+                  <div className="flex flex-wrap items-center gap-2 min-w-0">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400 dark:text-zinc-500">
+                      Liberados individualmente:
+                    </span>
+                    {unlockedShops.length === 0 ? (
+                      <span className="text-xs text-gray-500 dark:text-zinc-400">
+                        Nenhum estabelecimento selecionado ainda.
+                      </span>
+                    ) : (
+                      unlockedShops.map((s) => (
+                        <span
+                          key={s.id}
+                          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/60 text-xs font-semibold text-emerald-800 dark:text-emerald-300"
+                        >
+                          <span>{s.name}</span>
+                          <button
+                            type="button"
+                            disabled={togglingStoreShopId === s.id}
+                            onClick={() => handleToggleShopVirtualStore(s.id, s.name, true)}
+                            aria-label={`Remover acesso da Loja Virtual de ${s.name}`}
+                            title={`Remover liberação de ${s.name}`}
+                            className="p-0.5 rounded hover:bg-emerald-200/70 dark:hover:bg-emerald-900/80 transition-colors disabled:opacity-50"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))
+                    )}
+                  </div>
+
+                  <label className="inline-flex items-center gap-2.5 text-xs font-semibold text-gray-600 dark:text-zinc-300 cursor-pointer shrink-0 select-none">
+                    <span>Liberar para todos</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={virtualStoreEnabledForAll}
+                      aria-label="Liberar Loja Virtual para todos os estabelecimentos"
+                      disabled={loadingFeatureFlags || savingVirtualStoreFlag}
+                      onClick={handleToggleVirtualStoreForAll}
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-[#D4AF37] disabled:opacity-50 ${
+                        virtualStoreEnabledForAll ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-zinc-700'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
+                          virtualStoreEnabledForAll ? 'translate-x-5' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                  </label>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Master Revenue Dashboard Filters */}
           <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-gray-200 dark:border-zinc-800 p-4 sm:p-5 space-y-4">
             <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
@@ -2410,6 +2657,41 @@ export default function MasterAdmin() {
                             </>
                           )}
                         </button>
+
+                        {shop.id === 'shop-1' ? (
+                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#9A7410] dark:text-[#D4AF37] mt-0.5">
+                            <Store className="w-3 h-3" /> Loja Virtual (Master)
+                          </span>
+                        ) : (
+                          (() => {
+                            const isShopStoreEnabled = virtualStoreEnabledShopIds.includes(shop.id);
+                            const isStoreBusy = togglingStoreShopId === shop.id;
+                            return (
+                              <button
+                                type="button"
+                                disabled={isStoreBusy}
+                                onClick={() => handleToggleShopVirtualStore(shop.id, shop.name, isShopStoreEnabled)}
+                                title={
+                                  isShopStoreEnabled
+                                    ? 'Clique para remover o acesso à Loja Virtual deste estabelecimento'
+                                    : 'Clique para liberar a Loja Virtual para este estabelecimento'
+                                }
+                                className={`inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors whitespace-nowrap w-fit disabled:opacity-50 ${
+                                  isShopStoreEnabled
+                                    ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 dark:hover:bg-emerald-950/70'
+                                    : 'bg-gray-50 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 border-gray-200 dark:border-zinc-700 hover:border-[#D4AF37] hover:text-gray-900 dark:hover:text-white'
+                                }`}
+                              >
+                                <Store className="w-3 h-3" />
+                                {isStoreBusy
+                                  ? 'Salvando...'
+                                  : isShopStoreEnabled
+                                    ? 'Loja Virtual: Liberada'
+                                    : 'Liberar Loja Virtual'}
+                              </button>
+                            );
+                          })()
+                        )}
                       </div>
                     </td>
 
@@ -2869,6 +3151,52 @@ export default function MasterAdmin() {
                 </div>
               );
             })}
+          </div>
+
+          {/* Product Cover Asset Card for Kiwify / Platforms */}
+          <div className="bg-white dark:bg-zinc-900 border border-gray-200 dark:border-zinc-800 rounded-2xl p-5 sm:p-6 flex flex-col md:flex-row md:items-center gap-5">
+            <img
+              src="/assets/doisemepro_kiwify_300x250.png"
+              alt="Capa oficial DoisemePRO 300x250"
+              referrerPolicy="no-referrer"
+              className="w-[180px] h-[150px] object-cover rounded-xl border border-gray-200 dark:border-zinc-700 shrink-0"
+            />
+            <div className="flex-1 space-y-3 min-w-0">
+              <div>
+                <h3 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white">
+                  Capa do Produto para Kiwify &amp; Plataformas
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-zinc-400 mt-0.5">
+                  300 x 250 px · PNG · Tamanho exato recomendado pela Kiwify (também disponível em HD 1200x896 para Eduzz/Hotmart).
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <a
+                  href="/assets/doisemepro_kiwify_300x250.png"
+                  download="doisemepro-capa-kiwify-300x250.png"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-black dark:bg-[#D4AF37] text-white dark:text-black hover:opacity-90 transition-opacity whitespace-nowrap"
+                >
+                  <Download className="w-4 h-4" />
+                  Baixar Capa 300x250 (Kiwify)
+                </a>
+                <a
+                  href="/assets/doisemepro_produto_hd.jpg"
+                  download="doisemepro-capa-hd.jpg"
+                  className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:border-[#D4AF37] transition-colors whitespace-nowrap"
+                >
+                  <Download className="w-4 h-4" />
+                  Baixar Versão HD (1200x896)
+                </a>
+                <button
+                  type="button"
+                  onClick={() => handleCopyText(`${window.location.origin}/assets/doisemepro_kiwify_300x250.png`, 'Link da imagem 300x250')}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold border border-gray-200 dark:border-zinc-700 text-gray-700 dark:text-gray-200 hover:border-[#D4AF37] transition-colors whitespace-nowrap"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  Copiar Link Direto
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

@@ -19,7 +19,10 @@ import {
   CreditCard,
   Crown,
   ArrowRight,
-  Check
+  Check,
+  Palette,
+  Layers,
+  Package
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTheme } from '../context/ThemeContext';
@@ -27,6 +30,8 @@ import RealTimeNotifications from '../components/RealTimeNotifications';
 import { getSegment } from '../lib/segments';
 import { SegmentIcon } from '../components/SegmentIcon';
 import { clearSessionStorage, getSessionAuth, getHomePathForRole } from '../lib/auth';
+import { shouldShowTrialModal } from '../lib/onboarding';
+import { useBusinessConfig } from '../hooks/useBusinessConfig';
 
 export default function AdminLayout() {
   const navigate = useNavigate();
@@ -39,12 +44,22 @@ export default function AdminLayout() {
   const [isMaster, setIsMaster] = useState(initialSession.role === 'master');
   const [userRole, setUserRole] = useState<'admin' | 'master' | 'barber'>(initialSession.role || 'admin');
   const [isImpersonating, setIsImpersonating] = useState(initialSession.isImpersonating);
-  const [shopSegment, setShopSegment] = useState('barbershop');
+  const { businessType, refreshBusinessConfig } = useBusinessConfig();
+  const [shopSegment, setShopSegment] = useState(businessType || 'barbershop');
   const [shopName, setShopName] = useState('');
   const [shopExpiresAt, setShopExpiresAt] = useState<string | null>(null);
   const [shopPlanId, setShopPlanId] = useState<string | null>(null);
   const [showTrialModal, setShowTrialModal] = useState(false);
   const [trialDaysRemaining, setTrialDaysRemaining] = useState<number>(7);
+  const [virtualStoreEnabledForAll, setVirtualStoreEnabledForAll] = useState(false);
+  const [canAccessVirtualStore, setCanAccessVirtualStore] = useState(initialSession.role === 'master');
+  const [shopInfoLoaded, setShopInfoLoaded] = useState(false);
+
+  useEffect(() => {
+    if (businessType) {
+      setShopSegment(businessType);
+    }
+  }, [businessType]);
 
   useEffect(() => {
     setMounted(true);
@@ -62,7 +77,10 @@ export default function AdminLayout() {
     const barberAllowedPaths = ['/admin/agenda', '/admin/clients', '/admin/comissoes'];
     if (resolvedRole === 'barber' && !barberAllowedPaths.includes(window.location.pathname)) {
       navigate('/admin/agenda', { replace: true });
-    } else if (resolvedRole !== 'master' && window.location.pathname.startsWith('/admin/master')) {
+    } else if (
+      resolvedRole !== 'master' &&
+      window.location.pathname.startsWith('/admin/master')
+    ) {
       navigate(getHomePathForRole(resolvedRole), { replace: true });
     }
 
@@ -89,11 +107,24 @@ export default function AdminLayout() {
         if (data?.segment) setShopSegment(data.segment);
         if (data?.name) setShopName(data.name);
         if (data?.plan_id) setShopPlanId(String(data.plan_id));
+        const enabledForAll = Boolean(data?.virtual_store_enabled_for_all);
+        const canAccessStore =
+          resolvedRole === 'master' ||
+          Boolean(data?.can_access_virtual_store);
+        setVirtualStoreEnabledForAll(enabledForAll);
+        setCanAccessVirtualStore(canAccessStore);
+        setShopInfoLoaded(true);
+        if (
+          resolvedRole !== 'master' &&
+          !canAccessStore &&
+          window.location.pathname.startsWith('/admin/loja')
+        ) {
+          navigate(getHomePathForRole(resolvedRole), { replace: true });
+        }
+        refreshBusinessConfig();
         if (data?.expires_at) {
           setShopExpiresAt(data.expires_at);
           const isMasterUser = resolvedRole === 'master';
-          const msLeft = new Date(data.expires_at).getTime() - Date.now();
-          const daysLeft = Math.max(0, Math.ceil(msLeft / (1000 * 60 * 60 * 24)));
           if (
             !isMasterUser &&
             resolvedRole !== 'barber' &&
@@ -101,20 +132,51 @@ export default function AdminLayout() {
             window.location.pathname !== '/admin/assinatura'
           ) {
             navigate('/admin/assinatura', { replace: true });
-          } else if (
-            !isMasterUser &&
-            resolvedRole === 'admin' &&
-            String(data.plan_id || 'trial') === 'trial' &&
-            msLeft >= 0 &&
-            window.location.pathname !== '/admin/assinatura'
-          ) {
-            setTrialDaysRemaining(daysLeft);
-            setShowTrialModal(true);
+          } else {
+            const trialSessionKey = `doiseme_trial_modal_seen_${session.barbershopId || data.id || 'default'}`;
+            let alreadyShown = false;
+            try {
+              alreadyShown = sessionStorage.getItem(trialSessionKey) === '1';
+            } catch {
+              alreadyShown = false;
+            }
+            const decision = shouldShowTrialModal({
+              role: resolvedRole,
+              isMaster: isMasterUser,
+              isImpersonating: session.isImpersonating,
+              planId: data.plan_id,
+              expiresAt: data.expires_at,
+              pathname: window.location.pathname,
+              alreadyShownInSession: alreadyShown
+            });
+            if (decision.show) {
+              setTrialDaysRemaining(decision.daysRemaining);
+              setShowTrialModal(true);
+              try {
+                sessionStorage.setItem(trialSessionKey, '1');
+              } catch {
+                // ignore storage errors
+              }
+            }
           }
         }
       })
       .catch(err => console.error('[ADMIN_LAYOUT_SHOP_INFO_ERR]', err));
-  }, [navigate]);
+  }, [navigate, refreshBusinessConfig]);
+
+  useEffect(() => {
+    const onFlagsUpdated = (evt: Event) => {
+      const customEvt = evt as CustomEvent<{ virtualStoreEnabledForAll?: boolean }>;
+      if (typeof customEvt.detail?.virtualStoreEnabledForAll === 'boolean') {
+        const nextFlag = customEvt.detail.virtualStoreEnabledForAll;
+        setVirtualStoreEnabledForAll(nextFlag);
+        const session = getSessionAuth();
+        setCanAccessVirtualStore(session.role === 'master' || (session.role === 'admin' && nextFlag));
+      }
+    };
+    window.addEventListener('doiseme:feature-flags-updated', onFlagsUpdated);
+    return () => window.removeEventListener('doiseme:feature-flags-updated', onFlagsUpdated);
+  }, []);
 
   useEffect(() => {
     // Close the mobile menu automatically when clicking a navigation link
@@ -127,6 +189,15 @@ export default function AdminLayout() {
 
     const currentRole = session.role || userRole;
     if (location.pathname.startsWith('/admin/master') && currentRole !== 'master') {
+      navigate(getHomePathForRole(currentRole), { replace: true });
+      return;
+    }
+    if (
+      location.pathname.startsWith('/admin/loja') &&
+      currentRole !== 'master' &&
+      shopInfoLoaded &&
+      !canAccessVirtualStore
+    ) {
       navigate(getHomePathForRole(currentRole), { replace: true });
       return;
     }
@@ -145,7 +216,7 @@ export default function AdminLayout() {
     ) {
       navigate('/admin/assinatura', { replace: true });
     }
-  }, [location.pathname, isMaster, userRole, shopExpiresAt, navigate]);
+  }, [location.pathname, isMaster, userRole, shopExpiresAt, shopInfoLoaded, canAccessVirtualStore, navigate]);
 
   const handleLogout = async () => {
     try {
@@ -238,6 +309,17 @@ export default function AdminLayout() {
         }
       ];
 
+  if (canAccessVirtualStore && userRole !== 'barber') {
+    navSections.push({
+      title: !isMaster || virtualStoreEnabledForAll ? 'Loja Virtual' : 'Loja Virtual (Teste)',
+      items: [
+        { path: '/admin/loja/layout', icon: Palette, label: 'Layout da Loja' },
+        { path: '/admin/loja/categorias', icon: Layers, label: 'Categorias' },
+        { path: '/admin/loja/estoque', icon: Package, label: 'Estoque e Valores' }
+      ]
+    });
+  }
+
   if (isMaster && userRole !== 'barber') {
     navSections.push({
       title: 'Administração',
@@ -253,6 +335,14 @@ export default function AdminLayout() {
     return <Navigate to="/admin/login" replace />;
   }
   if (location.pathname.startsWith('/admin/master') && liveSession.role !== 'master') {
+    return <Navigate to={getHomePathForRole(liveSession.role)} replace />;
+  }
+  if (
+    location.pathname.startsWith('/admin/loja') &&
+    liveSession.role !== 'master' &&
+    shopInfoLoaded &&
+    !canAccessVirtualStore
+  ) {
     return <Navigate to={getHomePathForRole(liveSession.role)} replace />;
   }
   if (liveSession.role === 'barber' && !['/admin/agenda', '/admin/clients', '/admin/comissoes'].includes(location.pathname)) {
@@ -425,8 +515,13 @@ export default function AdminLayout() {
         </div>
         <RealTimeNotifications />
 
-        {/* Pop-up obrigatório para contas em Plano Gratuito (Trial) */}
-        {showTrialModal && shopPlanId === 'trial' && userRole === 'admin' && !isMaster && location.pathname !== '/admin/assinatura' && (
+        {/* Pop-up exibido apenas na primeira tela (/admin) ao entrar no app para contas em Teste Gratuito */}
+        {showTrialModal &&
+          shopPlanId === 'trial' &&
+          userRole === 'admin' &&
+          !isMaster &&
+          !isImpersonating &&
+          (location.pathname === '/admin' || location.pathname === '/admin/') && (
           <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
             <div className="w-full max-w-md bg-white dark:bg-[#141414] border border-gray-200 dark:border-[#D4AF37]/40 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5 relative">
               <button

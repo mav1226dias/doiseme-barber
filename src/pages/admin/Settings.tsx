@@ -10,9 +10,12 @@ import {
   ShieldCheck, 
   CheckCircle2, 
   AlertCircle,
-  MessageCircle
+  MessageCircle,
+  RotateCcw
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { useBusinessConfig } from '../../hooks/useBusinessConfig';
+import { DEFAULT_RETURN_DAYS, MAX_RETURN_DAYS, MIN_RETURN_DAYS } from '../../lib/onboarding';
 
 const DAYS = [
   { key: 'monday', label: 'Segunda-feira' },
@@ -25,10 +28,12 @@ const DAYS = [
 ];
 
 export default function Settings() {
+  const { terms } = useBusinessConfig();
   const [activeTab, setActiveTab] = useState<'hours' | 'security'>('hours');
   
-  // Operating Hours State
+  // Operating Hours & Return Period State
   const [hours, setHours] = useState<any>(null);
+  const [returnDays, setReturnDays] = useState<number>(DEFAULT_RETURN_DAYS);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showHolidayAlert, setShowHolidayAlert] = useState(false);
@@ -66,7 +71,12 @@ export default function Settings() {
         return text ? JSON.parse(text) : null;
       })
       .then(data => {
-        if (data) setHours(data);
+        if (data) {
+          setHours(data);
+          if (typeof data.inactivityReturnDays === 'number') {
+            setReturnDays(data.inactivityReturnDays);
+          }
+        }
         setLoading(false);
       })
       .catch(err => {
@@ -99,6 +109,11 @@ export default function Settings() {
   };
 
   const handleSaveHours = async () => {
+    const parsedDays = Math.round(Number(returnDays));
+    if (!Number.isFinite(parsedDays) || parsedDays < MIN_RETURN_DAYS || parsedDays > MAX_RETURN_DAYS) {
+      toast.error(`Informe um prazo de retorno entre ${MIN_RETURN_DAYS} e ${MAX_RETURN_DAYS} dias.`);
+      return;
+    }
     setSaving(true);
     const token = localStorage.getItem('token');
     try {
@@ -108,15 +123,19 @@ export default function Settings() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${token}`
         },
-        body: JSON.stringify(hours)
+        body: JSON.stringify({
+          ...hours,
+          inactivityReturnDays: parsedDays
+        })
       });
       if (res.ok) {
-        toast.success('Horários salvos com sucesso!');
+        toast.success('Horários e prazo de retorno salvos com sucesso!');
       } else {
-        toast.error('Erro ao salvar horários');
+        const err = await res.json().catch(() => ({}));
+        toast.error(err.error || 'Erro ao salvar configurações');
       }
     } catch (e) {
-      toast.error('Erro de conexão ao salvar horários');
+      toast.error('Erro de conexão ao salvar configurações');
     } finally {
       setSaving(false);
     }
@@ -362,6 +381,54 @@ export default function Settings() {
                   </div>
                 );
               })}
+            </div>
+
+            <div className="mt-8 pt-6 border-t border-gray-100 dark:border-zinc-800 space-y-4">
+              <div className="flex items-start gap-3">
+                <RotateCcw className="w-5 h-5 text-[#D4AF37] shrink-0 mt-0.5" />
+                <div>
+                  <h3 className="text-base font-bold text-gray-900 dark:text-gray-100">
+                    Prazo de retorno de {terms.clientPlural.toLowerCase()}
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    Define após quantos dias sem novo agendamento um(a) {terms.client.toLowerCase()} aparece na lista de recuperação em Marketing &amp; Mensagens (padrão: 20 dias).
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                <label htmlFor="settings-return-days" className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                  Dias sem retorno:
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="settings-return-days"
+                    type="number"
+                    min={MIN_RETURN_DAYS}
+                    max={MAX_RETURN_DAYS}
+                    value={returnDays}
+                    onChange={(e) => setReturnDays(Number(e.target.value))}
+                    className="w-24 bg-gray-50 dark:bg-zinc-950 border border-gray-200 dark:border-zinc-700 rounded-lg px-3 py-2 text-sm font-mono tabular-nums text-gray-900 dark:text-white outline-none focus:border-[#D4AF37]"
+                  />
+                  <span className="text-xs text-gray-500 dark:text-gray-400">dias</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {[15, 20, 30, 45, 60].map((presetDays) => (
+                    <button
+                      key={presetDays}
+                      type="button"
+                      onClick={() => setReturnDays(presetDays)}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors tabular-nums ${
+                        returnDays === presetDays
+                          ? 'bg-black text-white dark:bg-[#D4AF37] dark:text-black'
+                          : 'bg-gray-100 dark:bg-zinc-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-zinc-700'
+                      }`}
+                    >
+                      {presetDays}d
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             <div className="mt-8 flex justify-end">

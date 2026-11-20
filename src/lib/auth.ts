@@ -32,6 +32,16 @@ export function clearSessionStorage() {
   try {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    if (typeof sessionStorage !== 'undefined') {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        if (key && key.startsWith('doiseme_trial_modal_seen_')) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach((key) => sessionStorage.removeItem(key));
+    }
   } catch {
     // ignore storage errors
   }

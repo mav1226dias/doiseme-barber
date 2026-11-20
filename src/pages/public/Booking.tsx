@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { 
   Calendar, 
   Clock, 
@@ -10,7 +10,9 @@ import {
   MessageCircle, 
   ChevronRight,
   ShieldCheck,
-  ChevronLeft
+  ChevronLeft,
+  ShoppingBag,
+  ArrowRight
 } from 'lucide-react';
 import { getSegment, DEFAULT_SEGMENT_ID } from '../../lib/segments';
 import { SegmentIcon } from '../../components/SegmentIcon';
@@ -896,6 +898,46 @@ function isLightColor(hexColor?: string): boolean {
             </div>
           )}
         </div>
+
+        {/* Espaço opcional de acesso à Loja Virtual (abaixo da caixa de agendamento) */}
+        {shop?.virtual_store?.enabled && shop?.virtual_store?.showPublicButton && (
+          <div
+            className="mt-6 p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all"
+            style={{
+              backgroundColor: isBgLight ? 'rgba(255, 255, 255, 0.92)' : 'rgba(18, 18, 20, 0.82)',
+              borderColor: isBgLight ? 'rgba(0, 0, 0, 0.08)' : 'rgba(255, 255, 255, 0.12)',
+              color: textColor
+            }}
+          >
+            <div className="flex items-center gap-3 min-w-0">
+              <div
+                className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0"
+                style={{ backgroundColor: `${primaryColor}18`, color: primaryColor }}
+              >
+                <ShoppingBag className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <div className="text-sm font-bold truncate" style={{ color: textColor }}>
+                  {shop.virtual_store.storeName || shop.name}
+                </div>
+                <div className="text-xs" style={{ color: textColor, opacity: 0.68 }}>
+                  {shop.virtual_store.activeProductsCount > 0
+                    ? `${shop.virtual_store.activeProductsCount} ${shop.virtual_store.activeProductsCount === 1 ? 'produto disponível' : 'produtos disponíveis'}`
+                    : 'Conheça nossos produtos disponíveis'}
+                </div>
+              </div>
+            </div>
+
+            <Link
+              to={`/b/${slug}/loja`}
+              className="min-h-[44px] inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-opacity hover:opacity-90 whitespace-nowrap shrink-0"
+              style={btnStyle}
+            >
+              <span>{shop.virtual_store.buttonLabel || 'Acessar a loja virtual'}</span>
+              <ArrowRight className="w-4 h-4 shrink-0" />
+            </Link>
+          </div>
+        )}
 
         {/* Footer Trust & Protection */}
         <div className="mt-12 text-center text-xs space-y-2 opacity-60" style={{ color: textColor }}>

@@ -11,6 +11,7 @@ import PublicLayout from './layouts/PublicLayout';
 import AdminLayout from './layouts/AdminLayout';
 import Landing from './pages/public/Landing';
 import Booking from './pages/public/Booking';
+import Storefront from './pages/public/Storefront';
 import Terms from './pages/public/Terms';
 import Privacy from './pages/public/Privacy';
 import AffiliatePortal from './pages/public/AffiliatePortal';
@@ -35,6 +36,10 @@ import Profile from './pages/admin/Profile';
 import BookingSite from './pages/admin/BookingSite';
 import MasterAdmin from './pages/admin/MasterAdmin';
 import Subscription from './pages/admin/Subscription';
+import Onboarding from './pages/admin/Onboarding';
+import StoreLayoutConfig from './pages/admin/StoreLayoutConfig';
+import StoreCategories from './pages/admin/StoreCategories';
+import StoreProducts from './pages/admin/StoreProducts';
 import ErrorBoundary from './components/ErrorBoundary';
 import { BusinessConfigProvider } from './context/BusinessConfigContext';
 import { getSessionAuth, getHomePathForRole } from './lib/auth';
@@ -100,6 +105,7 @@ export default function App() {
             <Route path="/b/:slug" element={<PublicLayout />}>
               <Route index element={<Booking />} />
             </Route>
+            <Route path="/b/:slug/loja" element={<Storefront />} />
 
             {/* Auth & Onboarding Routes */}
             <Route path="/cadastro" element={<Register />} />
@@ -111,6 +117,7 @@ export default function App() {
             <Route path="/admin/login" element={<Login />} />
             <Route path="/admin" element={<RequireAuth><AdminLayout /></RequireAuth>}>
               <Route index element={<RequireOwnerOrMaster><Dashboard /></RequireOwnerOrMaster>} />
+              <Route path="onboarding" element={<RequireOwnerOrMaster><Onboarding /></RequireOwnerOrMaster>} />
               <Route path="agenda" element={<Agenda />} />
               <Route path="barbers" element={<RequireOwnerOrMaster><Barbers /></RequireOwnerOrMaster>} />
               <Route path="services" element={<RequireOwnerOrMaster><Services /></RequireOwnerOrMaster>} />
@@ -122,6 +129,10 @@ export default function App() {
               <Route path="notifications" element={<Navigate to="/admin/campaigns" replace />} />
               <Route path="booking-site" element={<Navigate to="/admin/profile" replace />} />
               <Route path="master" element={<RequireMaster><MasterAdmin /></RequireMaster>} />
+              <Route path="loja" element={<RequireOwnerOrMaster><Navigate to="/admin/loja/layout" replace /></RequireOwnerOrMaster>} />
+              <Route path="loja/layout" element={<RequireOwnerOrMaster><StoreLayoutConfig /></RequireOwnerOrMaster>} />
+              <Route path="loja/categorias" element={<RequireOwnerOrMaster><StoreCategories /></RequireOwnerOrMaster>} />
+              <Route path="loja/estoque" element={<RequireOwnerOrMaster><StoreProducts /></RequireOwnerOrMaster>} />
               <Route path="assinatura" element={<RequireOwnerOrMaster><Subscription /></RequireOwnerOrMaster>} />
               <Route path="comissoes" element={<MyCommissions />} />
               <Route path="automacoes" element={<Navigate to="/admin" replace />} />

@@ -149,7 +149,8 @@ export default function KiwifySalesPage({ defaultChannel = 'kiwify' }: { default
 
   const getCheckoutHref = (planId: string, cycle: 'annual' | 'monthly'): { externalUrl: string | null; fallbackTo: string } => {
     const key = `${planId}_${cycle}`;
-    const rawUrl = checkoutLinks[key];
+    const altKey = `${planId}_${cycle === 'annual' ? 'monthly' : 'annual'}`;
+    const rawUrl = checkoutLinks[key] || checkoutLinks[altKey];
     if (rawUrl) {
       try {
         const target = new URL(rawUrl);

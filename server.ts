@@ -14,6 +14,29 @@ import { supabaseAdmin as supabase, hasServiceRoleKey } from './src/db/supabaseA
 import { cloudNicheDb } from './src/db/cloudNicheDb.js';
 import { getSegment } from './src/lib/segments.js';
 import {
+  applyOnboardingPatch,
+  computeOnboardingSnapshot,
+  mergeSettingsPreservingMetadata,
+  resolveReturnDays
+} from './src/lib/onboarding.js';
+import {
+  VIRTUAL_STORE_ENABLED_SHOPS_KEY,
+  VIRTUAL_STORE_PUBLIC_ROLLOUT_KEY,
+  adjustStoreProductStock,
+  canAccessVirtualStorePanel,
+  deleteStoreCategory,
+  deleteStoreProduct,
+  getPublicStoreSummary,
+  getPublicStorefrontPayload,
+  getVirtualStoreFromConfig,
+  parseVirtualStoreEnabledShops,
+  parseVirtualStoreRolloutFlag,
+  updateVirtualStoreLayout,
+  upsertStoreCategory,
+  upsertStoreProduct
+} from './src/lib/virtualStore.js';
+import { buildDemoVirtualStoreConfig } from './src/lib/virtualStoreDemo.js';
+import {
   AffiliateCodeSchema,
   AffiliateLoginSchema,
   AffiliateProfileUpdateSchema,
@@ -598,34 +621,53 @@ async function startServer() {
     sunday: { isClosed: true, open: '09:00', close: '18:00', hasLunchBreak: false, lunchOpen: '12:00', lunchClose: '13:00' }
   };
 
-  const getShopSettings = async (shopId: string) => {
+  const getRawShopConfig = async (shopId: string): Promise<Record<string, any>> => {
     try {
       const { data, error } = await supabase
         .from('shop_settings')
         .select('config')
         .eq('barbershop_id', shopId)
-        .maybeSingle(); 
-      
-      if (error || !data) return DEFAULT_SETTINGS;
+        .maybeSingle();
 
-      let config = {};
+      if (error || !data || !data.config) return {};
       if (typeof data.config === 'string') {
         try {
-          config = JSON.parse(data.config);
-        } catch (e) {
-          console.error("Failed to parse settings JSON:", e);
-          return DEFAULT_SETTINGS;
+          const parsed = JSON.parse(data.config);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch {
+          return {};
         }
-      } else {
-        config = data.config || {};
       }
+      return typeof data.config === 'object' ? { ...data.config } : {};
+    } catch (e) {
+      console.error('Error fetching raw shop config:', e);
+      return {};
+    }
+  };
 
-      // Ensure all days have nested properties (merge with default)
+  const saveRawShopConfig = async (shopId: string, nextConfig: Record<string, any>): Promise<void> => {
+    const { error } = await supabase
+      .from('shop_settings')
+      .upsert(
+        {
+          id: crypto.randomUUID(),
+          barbershop_id: shopId,
+          config: JSON.stringify(nextConfig),
+          updated_at: new Date().toISOString()
+        },
+        { onConflict: 'barbershop_id' }
+      );
+    if (error) throw error;
+  };
+
+  const getShopSettings = async (shopId: string) => {
+    try {
+      const config = await getRawShopConfig(shopId);
       const merged: any = {};
       Object.keys(DEFAULT_SETTINGS).forEach(day => {
-        merged[day] = { 
-          ...(DEFAULT_SETTINGS as any)[day], 
-          ...(config as any)[day] || {} 
+        merged[day] = {
+          ...(DEFAULT_SETTINGS as any)[day],
+          ...((config as any)[day] || {})
         };
       });
       return merged;
@@ -962,6 +1004,70 @@ async function startServer() {
     next();
   };
 
+  // Global & Per-Shop Feature Flag: Virtual Store rollout to specific establishments or all admins
+  const isVirtualStoreEnabledForAllAdmins = async (): Promise<boolean> => {
+    try {
+      const raw = await cloudNicheDb.getPlatformSetting(VIRTUAL_STORE_PUBLIC_ROLLOUT_KEY);
+      return parseVirtualStoreRolloutFlag(raw);
+    } catch {
+      return false;
+    }
+  };
+
+  const getVirtualStoreEnabledShopIds = async (): Promise<string[]> => {
+    try {
+      const raw = await cloudNicheDb.getPlatformSetting(VIRTUAL_STORE_ENABLED_SHOPS_KEY);
+      return parseVirtualStoreEnabledShops(raw);
+    } catch {
+      return [];
+    }
+  };
+
+  const setVirtualStoreEnabledForShop = async (shopId: string, enabled: boolean): Promise<string[]> => {
+    const cleanId = String(shopId || '').trim();
+    const current = await getVirtualStoreEnabledShopIds();
+    const nextSet = new Set(current);
+    if (enabled && cleanId) {
+      nextSet.add(cleanId);
+    } else if (cleanId) {
+      nextSet.delete(cleanId);
+    }
+    const nextList = Array.from(nextSet);
+    await cloudNicheDb.setPlatformSetting(VIRTUAL_STORE_ENABLED_SHOPS_KEY, JSON.stringify(nextList));
+    return nextList;
+  };
+
+  // Virtual Store Access Middleware: always allowed for Master; allowed for Admin owners when their shop is enabled (or global toggle is ON)
+  const requireVirtualStoreAccess = async (req: any, res: any, next: any) => {
+    if (req.user?.role === 'barber') {
+      return res.status(403).json({ error: 'Acesso restrito ao administrador do estabelecimento.' });
+    }
+    const userEmail = req.user?.email?.toLowerCase();
+    const isAuthorizedMaster = Boolean(
+      req.user?.role === 'master' && userEmail && AUTHORIZED_MASTER_EMAILS.includes(userEmail)
+    );
+    if (isAuthorizedMaster) {
+      return next();
+    }
+    const [enabledForAll, enabledShopIds] = await Promise.all([
+      isVirtualStoreEnabledForAllAdmins(),
+      getVirtualStoreEnabledShopIds()
+    ]);
+    if (
+      canAccessVirtualStorePanel({
+        role: req.user?.role,
+        barbershopId: req.user?.barbershopId,
+        enabledForAll,
+        enabledShopIds
+      })
+    ) {
+      return next();
+    }
+    return res.status(403).json({
+      error: 'A função Loja Virtual não está liberada para este estabelecimento.'
+    });
+  };
+
   // Resolve Barber ID for logged-in professional
   const resolveBarberId = async (user: any): Promise<string | null> => {
     if (!user) return null;
@@ -1192,6 +1298,9 @@ async function startServer() {
         } catch (e) {}
       }
 
+      const rawConfig = await getRawShopConfig(shop.id);
+      const virtualStoreSummary = getPublicStoreSummary(rawConfig, shop);
+
       return res.json({
         ...shop,
         primary_color: primaryColor,
@@ -1203,11 +1312,48 @@ async function startServer() {
         text_color: textColor,
         textColor,
         whatsapp: shop.whatsapp || shop.phone,
-        instagram: shop.instagram ? shop.instagram.replace('@', '') : null
+        instagram: shop.instagram ? shop.instagram.replace('@', '') : null,
+        virtual_store: virtualStoreSummary
       });
     } catch (e: any) {
       console.error('[PUBLIC_SHOP_CRASH]', e);
       res.status(500).json(safeErrorResponse(e, 'Erro interno ao buscar barbearia'));
+    }
+  });
+
+  // Public Virtual Storefront by shop slug
+  api.get('/public/shop/:identifier/store', async (req, res) => {
+    try {
+      const identifier = req.params.identifier.trim().toLowerCase();
+      const { data: shop, error } = await supabase
+        .from('barbershops')
+        .select('id, name, slug, is_blocked, logo_url, banner_url, primary_color, secondary_color, whatsapp, phone')
+        .eq('slug', identifier)
+        .single();
+
+      if (error || !shop) {
+        return res.status(404).json({ error: 'Estabelecimento não encontrado' });
+      }
+      if (shop.is_blocked) {
+        return res.status(403).json({
+          error: 'Loja temporariamente indisponível',
+          details: 'Este estabelecimento está pausado no momento.'
+        });
+      }
+
+      const rawConfig = await getRawShopConfig(shop.id);
+      const payload = getPublicStorefrontPayload(rawConfig, shop);
+      if (!payload.layout.enabled) {
+        return res.status(404).json({
+          error: 'Loja virtual não ativada',
+          details: 'A loja virtual deste estabelecimento ainda não está disponível ao público.'
+        });
+      }
+
+      return res.json(payload);
+    } catch (e: any) {
+      console.error('[PUBLIC_STORE_ERR]', e);
+      return res.status(500).json(safeErrorResponse(e, 'Erro ao carregar loja virtual'));
     }
   });
 
@@ -1455,13 +1601,16 @@ async function startServer() {
 
   api.get('/admin/shop-info', authenticateToken, async (req: any, res) => {
     try {
-      const [{ data, error }, plansMap] = await Promise.all([
+      const [{ data, error }, plansMap, rawConfig, virtualStoreEnabledForAll, virtualStoreEnabledShopIds] = await Promise.all([
         supabase
           .from('barbershops')
           .select('*')
           .eq('id', req.user.barbershopId)
           .single(),
-        getShopPlansMap()
+        getShopPlansMap(),
+        getRawShopConfig(req.user.barbershopId),
+        isVirtualStoreEnabledForAllAdmins(),
+        getVirtualStoreEnabledShopIds()
       ]);
       if (error) throw error;
 
@@ -1480,11 +1629,25 @@ async function startServer() {
 
       const resolvedPlanId = resolveShopPlanId(data, plansMap);
       const planMeta = getPlanMeta(resolvedPlanId);
+      const { returnDays, isCustom: isReturnDaysCustom } = resolveReturnDays(rawConfig);
+      const virtualStoreEnabledForShop = virtualStoreEnabledShopIds.includes(String(req.user.barbershopId));
+      const canAccessVirtualStore = canAccessVirtualStorePanel({
+        role: req.user?.role,
+        barbershopId: req.user?.barbershopId,
+        enabledForAll: virtualStoreEnabledForAll,
+        enabledShopIds: virtualStoreEnabledShopIds
+      });
 
       res.json({
         ...data,
         plan_id: resolvedPlanId,
         plan_name: planMeta.name,
+        inactivity_return_days: returnDays,
+        inactivityReturnDays: returnDays,
+        isReturnDaysCustom,
+        virtual_store_enabled_for_all: virtualStoreEnabledForAll,
+        virtual_store_enabled_for_shop: virtualStoreEnabledForShop,
+        can_access_virtual_store: canAccessVirtualStore,
         primary_color: primaryColor,
         primaryColor,
         secondary_color: backgroundColor,
@@ -1494,7 +1657,7 @@ async function startServer() {
         text_color: textColor,
         textColor
       });
-    } catch (e) { res.status(500).json({ error: 'Erro ao buscar dados da barbearia' }); }
+    } catch (e) { res.status(500).json({ error: 'Erro ao buscar dados do estabelecimento' }); }
   });
 
   // Get active barbers for a shop
@@ -2006,32 +2169,33 @@ async function startServer() {
 
   // --- ADMIN AUTH ---
   api.get('/admin/settings', authenticateToken, async (req: any, res) => {
-    const settings = await getShopSettings(req.user.barbershopId);
-    res.json(settings);
+    const [settings, rawConfig] = await Promise.all([
+      getShopSettings(req.user.barbershopId),
+      getRawShopConfig(req.user.barbershopId)
+    ]);
+    const { returnDays, isCustom } = resolveReturnDays(rawConfig);
+    res.json({
+      ...settings,
+      inactivityReturnDays: returnDays,
+      isReturnDaysCustom: isCustom
+    });
   });
 
   api.post('/admin/settings', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     const shopId = req.user.barbershopId;
-    const config = {
-      ...(typeof req.body === 'object' && req.body ? req.body : {}),
-      _scheduleConfirmed: true
-    };
-    
     try {
-      const { error } = await supabase
-        .from('shop_settings')
-        .upsert({
-          id: crypto.randomUUID(),
-          barbershop_id: shopId,
-          config: JSON.stringify(config),
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'barbershop_id' });
-        
-      if (error) throw error;
-      res.json({ success: true });
-    } catch (error) {
+      const existingRaw = await getRawShopConfig(shopId);
+      const nextConfig = mergeSettingsPreservingMetadata(
+        { ...DEFAULT_SETTINGS, ...existingRaw },
+        req.body,
+        true
+      );
+      await saveRawShopConfig(shopId, nextConfig);
+      const { returnDays, isCustom } = resolveReturnDays(nextConfig);
+      res.json({ success: true, inactivityReturnDays: returnDays, isReturnDaysCustom: isCustom });
+    } catch (error: any) {
       console.error(error);
-      res.status(500).json({ error: 'Erro ao salvar configurações' });
+      res.status(400).json({ error: error?.message || 'Erro ao salvar configurações' });
     }
   });
 
@@ -2269,11 +2433,27 @@ async function startServer() {
 
       await setShopPlan(shopId, 'trial');
 
-      // Initialize default business hours
+      // Initialize default business hours and fresh onboarding metadata (preserving default 20-day return period)
+      const initialSettingsConfig = {
+        ...DEFAULT_SETTINGS,
+        _onboarding: {
+          status: 'not_started',
+          currentStep: null,
+          completedSteps: [],
+          skippedSteps: [],
+          soloOperation: false,
+          nicheConfirmed: false,
+          publicLinkReviewed: false,
+          returnPeriodReviewed: false,
+          startedAt: null,
+          completedAt: null,
+          updatedAt: new Date().toISOString()
+        }
+      };
       const { error: settingsErr } = await supabase.from('shop_settings').insert({
         id: crypto.randomUUID(),
         barbershop_id: shopId,
-        config: DEFAULT_SETTINGS
+        config: JSON.stringify(initialSettingsConfig)
       });
       if (settingsErr) {
         console.warn('[REGISTER_SETTINGS_WARN]', settingsErr.message);
@@ -3076,76 +3256,112 @@ async function startServer() {
     }
   });
 
-  // Onboarding First-Steps Checklist (Owner / Master only)
-  api.get('/admin/onboarding-checklist', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+  const loadShopOnboardingData = async (shopId: string) => {
+    const [shopRes, rawConfig, servicesRes, barbersRes, shopPhotosMap] = await Promise.all([
+      supabase.from('barbershops').select('*').eq('id', shopId).maybeSingle(),
+      getRawShopConfig(shopId),
+      supabase.from('services').select('*').eq('barbershop_id', shopId).order('name', { ascending: true }),
+      supabase.from('barbers').select('*').eq('barbershop_id', shopId).order('name', { ascending: true }),
+      cloudNicheDb.getEntityPhotosMap([shopId])
+    ]);
+
+    const shop: any = shopRes.data || {};
+    const servicesList = (servicesRes.data || []).map((s: any) => ({
+      id: s.id,
+      name: s.name,
+      durationMinutes: Number(s.duration_minutes || 30),
+      price: Number(s.price || 0),
+      active: Boolean(s.active)
+    }));
+    const professionalsList = (barbersRes.data || []).map((b: any) => ({
+      id: b.id,
+      name: b.name,
+      active: Boolean(b.active)
+    }));
+
+    const activeServicesCount = servicesList.filter((s) => s.active).length;
+    const activeProfessionalsCount = professionalsList.filter((b) => b.active).length;
+
+    const hours: Record<string, any> = {};
+    Object.keys(DEFAULT_SETTINGS).forEach((day) => {
+      hours[day] = {
+        ...(DEFAULT_SETTINGS as any)[day],
+        ...(rawConfig[day] || {})
+      };
+    });
+
+    const snapshot = computeOnboardingSnapshot({
+      shop,
+      rawConfig,
+      activeServicesCount,
+      activeProfessionalsCount,
+      hasShopPhoto: Boolean(shopPhotosMap[shopId])
+    });
+
+    return {
+      snapshot,
+      shop: {
+        id: shop.id || shopId,
+        name: shop.name || '',
+        slug: shop.slug || '',
+        segment: snapshot.segmentId,
+        whatsapp: shop.whatsapp || shop.phone || '',
+        address: shop.address || '',
+        logoUrl: shopPhotosMap[shopId] || shop.logo_url || null
+      },
+      services: servicesList,
+      professionals: professionalsList,
+      hours
+    };
+  };
+
+  // Guided Onboarding State (Owner / Master only)
+  api.get('/admin/onboarding', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const payload = await loadShopOnboardingData(req.user.barbershopId);
+      res.json(payload);
+    } catch (error: any) {
+      console.error('[ONBOARDING_GET_ERR]', error);
+      res.status(500).json({ error: 'Erro ao carregar o onboarding do estabelecimento' });
+    }
+  });
+
+  api.patch('/admin/onboarding', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const shopId = req.user.barbershopId;
-      const [shopRes, settingsRes, servicesRes, barbersRes, shopPhotosMap] = await Promise.all([
-        supabase.from('barbershops').select('*').eq('id', shopId).maybeSingle(),
-        supabase.from('shop_settings').select('config').eq('barbershop_id', shopId).maybeSingle(),
-        supabase.from('services').select('id', { count: 'exact', head: true }).eq('barbershop_id', shopId).eq('active', true),
-        supabase.from('barbers').select('id', { count: 'exact', head: true }).eq('barbershop_id', shopId).eq('active', true),
-        cloudNicheDb.getEntityPhotosMap([shopId])
-      ]);
+      const existingRaw = await getRawShopConfig(shopId);
+      const nextConfig = applyOnboardingPatch(
+        { ...DEFAULT_SETTINGS, ...existingRaw },
+        req.body || {}
+      );
+      await saveRawShopConfig(shopId, nextConfig);
+      const payload = await loadShopOnboardingData(shopId);
+      res.json({ success: true, ...payload });
+    } catch (error: any) {
+      console.error('[ONBOARDING_PATCH_ERR]', error);
+      res.status(400).json({ error: error?.message || 'Erro ao salvar progresso do onboarding' });
+    }
+  });
 
-      let parsedConfig: any = {};
-      if (settingsRes.data?.config) {
-        if (typeof settingsRes.data.config === 'string') {
-          try { parsedConfig = JSON.parse(settingsRes.data.config); } catch { parsedConfig = {}; }
-        } else {
-          parsedConfig = settingsRes.data.config;
-        }
-      }
-
-      const servicesCount = servicesRes.count || 0;
-      const barbersCount = barbersRes.count || 0;
-      const shop: any = shopRes.data || {};
-      const hasSchedule = Boolean(parsedConfig._scheduleConfirmed);
-      const hasServices = servicesCount > 0;
-      const hasBarbers = barbersCount > 0;
-      const hasSharedProfile = Boolean(parsedConfig._shareConfirmed || shop.whatsapp || shop.logo_url || shopPhotosMap[shopId] || shop.address);
-
-      const steps = [
-        {
-          id: 'schedule',
-          title: 'Configure seus horários',
-          description: 'Defina dias abertos, abertura, fechamento e intervalo de almoço.',
-          completed: hasSchedule,
-          path: '/admin/settings',
-          cta: 'Definir Horários'
-        },
-        {
-          id: 'services',
-          title: 'Cadastre seus serviços',
-          description: 'Adicione procedimentos, valores e duração correta de cada atendimento.',
-          completed: hasServices,
-          path: '/admin/services',
-          cta: 'Ver Serviços'
-        },
-        {
-          id: 'barbers',
-          title: 'Configure sua equipe',
-          description: 'Adicione profissionais, comissões e acessos individuais se desejar.',
-          completed: hasBarbers,
-          path: '/admin/barbers',
-          cta: 'Gerenciar Equipe'
-        },
-        {
-          id: 'share',
-          title: 'Compartilhe seu link e QR Code',
-          description: 'Personalize sua vitrine e envie seu link público para os clientes agendarem.',
-          completed: hasSharedProfile,
-          path: '/admin/profile',
-          cta: 'Meu Site & QR Code'
-        }
-      ];
-
+  // Onboarding First-Steps & Pending Setup Checklist (Owner / Master only)
+  api.get('/admin/onboarding-checklist', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
+    try {
+      const { snapshot } = await loadShopOnboardingData(req.user.barbershopId);
       res.json({
-        shopSlug: shop.slug || '',
-        shopName: shop.name || '',
-        completedCount: steps.filter(s => s.completed).length,
-        totalCount: steps.length,
-        steps
+        shopSlug: snapshot.shopSlug,
+        shopName: snapshot.shopName,
+        segmentId: snapshot.segmentId,
+        segmentName: snapshot.segmentName,
+        returnDays: snapshot.returnDays,
+        completedCount: snapshot.completedCount,
+        totalCount: snapshot.totalCount,
+        progressPercent: snapshot.progressPercent,
+        recommendedStep: snapshot.recommendedStep,
+        shouldPromptOnboarding: snapshot.shouldPromptOnboarding,
+        onboardingStatus: snapshot.state.status,
+        readiness: snapshot.readiness,
+        steps: snapshot.steps,
+        pendingSteps: snapshot.pendingSteps
       });
     } catch (error: any) {
       console.error('[ONBOARDING_CHECKLIST_ERR]', error);
@@ -3156,37 +3372,280 @@ async function startServer() {
   api.post('/admin/onboarding-confirm-share', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const shopId = req.user.barbershopId;
-      const currentSettings = await getShopSettings(shopId);
-      const { data: rawRow } = await supabase
-        .from('shop_settings')
-        .select('config')
-        .eq('barbershop_id', shopId)
-        .maybeSingle();
-
-      let rawObj: any = { ...currentSettings };
-      if (rawRow?.config) {
-        try {
-          rawObj = typeof rawRow.config === 'string' ? JSON.parse(rawRow.config) : rawRow.config;
-        } catch {
-          rawObj = { ...currentSettings };
-        }
-      }
-
-      const nextConfig = { ...rawObj, _shareConfirmed: true };
-      await supabase
-        .from('shop_settings')
-        .upsert({
-          id: crypto.randomUUID(),
-          barbershop_id: shopId,
-          config: JSON.stringify(nextConfig),
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'barbershop_id' });
-
+      const existingRaw = await getRawShopConfig(shopId);
+      const nextConfig = applyOnboardingPatch(
+        { ...DEFAULT_SETTINGS, ...existingRaw },
+        { publicLinkReviewed: true, completeStep: 'public_link' }
+      );
+      await saveRawShopConfig(shopId, nextConfig);
       res.json({ success: true });
     } catch (error: any) {
       res.status(500).json({ error: 'Erro ao confirmar etapa' });
     }
   });
+
+  // =========================================================================
+  // LOJA VIRTUAL (Fase de Teste — Exclusivo Admin Master, separado do Painel Master)
+  // =========================================================================
+  const loadShopForVirtualStore = async (shopId: string) => {
+    const [{ data: shop }, rawConfig] = await Promise.all([
+      supabase
+        .from('barbershops')
+        .select('id, name, slug, logo_url, banner_url, primary_color, secondary_color, whatsapp, phone')
+        .eq('id', shopId)
+        .maybeSingle(),
+      getRawShopConfig(shopId)
+    ]);
+    return { shop: shop || { id: shopId, name: '', slug: '' }, rawConfig };
+  };
+
+  // Master Feature Flags (liberação da Loja Virtual por estabelecimento específico ou global)
+  api.get('/admin/master/feature-flags', authenticateToken, requireMaster, async (_req: any, res) => {
+    try {
+      const [virtualStoreEnabledForAll, enabledShopIds] = await Promise.all([
+        isVirtualStoreEnabledForAllAdmins(),
+        getVirtualStoreEnabledShopIds()
+      ]);
+      return res.json({ virtualStoreEnabledForAll, enabledShopIds });
+    } catch (error: any) {
+      console.error('[MASTER_FEATURE_FLAGS_GET_ERR]', error);
+      return res.status(500).json({ error: 'Erro ao consultar configurações de recursos.' });
+    }
+  });
+
+  api.patch('/admin/master/feature-flags', authenticateToken, requireMaster, async (req: any, res) => {
+    try {
+      const nextEnabled = Boolean(req.body?.virtualStoreEnabledForAll);
+      await cloudNicheDb.setPlatformSetting(
+        VIRTUAL_STORE_PUBLIC_ROLLOUT_KEY,
+        nextEnabled ? 'true' : 'false'
+      );
+      const enabledShopIds = await getVirtualStoreEnabledShopIds();
+      return res.json({
+        success: true,
+        virtualStoreEnabledForAll: nextEnabled,
+        enabledShopIds
+      });
+    } catch (error: any) {
+      console.error('[MASTER_FEATURE_FLAGS_PATCH_ERR]', error);
+      return res.status(500).json({ error: 'Erro ao salvar configuração de liberação da loja virtual.' });
+    }
+  });
+
+  api.patch('/admin/master/shops/:id/virtual-store', authenticateToken, requireMaster, async (req: any, res) => {
+    try {
+      const shopId = String(req.params.id || '').trim();
+      if (!shopId) {
+        return res.status(400).json({ error: 'ID do estabelecimento inválido.' });
+      }
+      const nextEnabled = Boolean(req.body?.enabled);
+      const enabledShopIds = await setVirtualStoreEnabledForShop(shopId, nextEnabled);
+      return res.json({
+        success: true,
+        shopId,
+        enabled: nextEnabled,
+        enabledShopIds
+      });
+    } catch (error: any) {
+      console.error('[MASTER_SHOP_VIRTUAL_STORE_ERR]', error);
+      return res.status(500).json({ error: 'Erro ao atualizar liberação da loja virtual para o estabelecimento.' });
+    }
+  });
+
+  api.get('/admin/store', authenticateToken, requireVirtualStoreAccess, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { shop, rawConfig } = await loadShopForVirtualStore(shopId);
+      const store = getVirtualStoreFromConfig(rawConfig, shop);
+      return res.json({
+        shop: {
+          id: shop.id,
+          name: shop.name || '',
+          slug: shop.slug || '',
+          whatsapp: (shop as any).whatsapp || (shop as any).phone || '',
+          logoUrl: (shop as any).logo_url || null
+        },
+        ...store
+      });
+    } catch (error: any) {
+      console.error('[ADMIN_STORE_GET_ERR]', error);
+      return res.status(500).json({ error: 'Erro ao carregar dados da loja virtual.' });
+    }
+  });
+
+  api.put('/admin/store/layout', authenticateToken, requireVirtualStoreAccess, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { shop, rawConfig } = await loadShopForVirtualStore(shopId);
+      const nextConfig = updateVirtualStoreLayout(
+        { ...DEFAULT_SETTINGS, ...rawConfig },
+        req.body || {},
+        shop
+      );
+      await saveRawShopConfig(shopId, nextConfig);
+      const store = getVirtualStoreFromConfig(nextConfig, shop);
+      return res.json({ success: true, layout: store.layout, updatedAt: store.updatedAt });
+    } catch (error: any) {
+      console.error('[ADMIN_STORE_LAYOUT_ERR]', error);
+      return res.status(400).json({ error: error?.message || 'Erro ao salvar layout da loja virtual.' });
+    }
+  });
+
+  api.post('/admin/store/categories', authenticateToken, requireVirtualStoreAccess, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { shop, rawConfig } = await loadShopForVirtualStore(shopId);
+      const { nextConfig, category } = upsertStoreCategory(
+        { ...DEFAULT_SETTINGS, ...rawConfig },
+        req.body || {},
+        null,
+        shop
+      );
+      await saveRawShopConfig(shopId, nextConfig);
+      const store = getVirtualStoreFromConfig(nextConfig, shop);
+      return res.status(201).json({ success: true, category, categories: store.categories });
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Erro ao cadastrar categoria.' });
+    }
+  });
+
+  api.patch('/admin/store/categories/:id', authenticateToken, requireVirtualStoreAccess, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { shop, rawConfig } = await loadShopForVirtualStore(shopId);
+      const { nextConfig, category } = upsertStoreCategory(
+        { ...DEFAULT_SETTINGS, ...rawConfig },
+        req.body || {},
+        req.params.id,
+        shop
+      );
+      await saveRawShopConfig(shopId, nextConfig);
+      const store = getVirtualStoreFromConfig(nextConfig, shop);
+      return res.json({ success: true, category, categories: store.categories });
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Erro ao atualizar categoria.' });
+    }
+  });
+
+  api.delete('/admin/store/categories/:id', authenticateToken, requireVirtualStoreAccess, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { shop, rawConfig } = await loadShopForVirtualStore(shopId);
+      const nextConfig = deleteStoreCategory(
+        { ...DEFAULT_SETTINGS, ...rawConfig },
+        req.params.id,
+        shop
+      );
+      await saveRawShopConfig(shopId, nextConfig);
+      const store = getVirtualStoreFromConfig(nextConfig, shop);
+      return res.json({ success: true, categories: store.categories, products: store.products });
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Erro ao excluir categoria.' });
+    }
+  });
+
+  api.post('/admin/store/products', authenticateToken, requireVirtualStoreAccess, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { shop, rawConfig } = await loadShopForVirtualStore(shopId);
+      const { nextConfig, product } = upsertStoreProduct(
+        { ...DEFAULT_SETTINGS, ...rawConfig },
+        req.body || {},
+        null,
+        shop
+      );
+      await saveRawShopConfig(shopId, nextConfig);
+      const store = getVirtualStoreFromConfig(nextConfig, shop);
+      return res.status(201).json({ success: true, product, products: store.products });
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Erro ao cadastrar produto.' });
+    }
+  });
+
+  api.patch('/admin/store/products/:id', authenticateToken, requireVirtualStoreAccess, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { shop, rawConfig } = await loadShopForVirtualStore(shopId);
+      const body = req.body || {};
+
+      if (body.stockDelta !== undefined && body.name === undefined) {
+        const { nextConfig, product } = adjustStoreProductStock(
+          { ...DEFAULT_SETTINGS, ...rawConfig },
+          req.params.id,
+          Number(body.stockDelta),
+          shop
+        );
+        await saveRawShopConfig(shopId, nextConfig);
+        const store = getVirtualStoreFromConfig(nextConfig, shop);
+        return res.json({ success: true, product, products: store.products });
+      }
+
+      const { nextConfig, product } = upsertStoreProduct(
+        { ...DEFAULT_SETTINGS, ...rawConfig },
+        body,
+        req.params.id,
+        shop
+      );
+      await saveRawShopConfig(shopId, nextConfig);
+      const store = getVirtualStoreFromConfig(nextConfig, shop);
+      return res.json({ success: true, product, products: store.products });
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Erro ao atualizar produto.' });
+    }
+  });
+
+  api.delete('/admin/store/products/:id', authenticateToken, requireVirtualStoreAccess, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { shop, rawConfig } = await loadShopForVirtualStore(shopId);
+      const nextConfig = deleteStoreProduct(
+        { ...DEFAULT_SETTINGS, ...rawConfig },
+        req.params.id,
+        shop
+      );
+      await saveRawShopConfig(shopId, nextConfig);
+      const store = getVirtualStoreFromConfig(nextConfig, shop);
+      return res.json({ success: true, products: store.products });
+    } catch (error: any) {
+      return res.status(400).json({ error: error?.message || 'Erro ao excluir produto.' });
+    }
+  });
+
+  api.post('/admin/store/seed-demo', authenticateToken, requireMaster, async (req: any, res) => {
+    try {
+      const shopId = req.user.barbershopId;
+      const { shop, rawConfig } = await loadShopForVirtualStore(shopId);
+      const nextConfig = buildDemoVirtualStoreConfig({ ...DEFAULT_SETTINGS, ...rawConfig }, shop);
+      await saveRawShopConfig(shopId, nextConfig);
+      const store = getVirtualStoreFromConfig(nextConfig, shop);
+      return res.json({
+        success: true,
+        categories: store.categories,
+        products: store.products,
+        layout: store.layout
+      });
+    } catch (error: any) {
+      console.error('[ADMIN_STORE_SEED_DEMO_ERR]', error);
+      return res.status(500).json({ error: 'Erro ao carregar catálogo de exemplo.' });
+    }
+  });
+
+  // Popula catálogo de teste (6 categorias + 35 produtos) uma única vez na loja principal do Master (shop-1) se ainda estiver vazia
+  (async () => {
+    try {
+      const { shop, rawConfig } = await loadShopForVirtualStore('shop-1');
+      if (!shop?.id) return;
+      const rawStore = rawConfig?._virtualStore;
+      const current = getVirtualStoreFromConfig(rawConfig, shop);
+      if (!rawStore?._demoSeeded && current.categories.length === 0 && current.products.length === 0) {
+        const nextConfig = buildDemoVirtualStoreConfig({ ...DEFAULT_SETTINGS, ...rawConfig }, shop);
+        await saveRawShopConfig('shop-1', nextConfig);
+        console.log('[VIRTUAL_STORE_DEMO] Catálogo de exemplo (6 categorias, 35 produtos) populado para shop-1.');
+      }
+    } catch (err) {
+      console.warn('[VIRTUAL_STORE_DEMO_WARN]', err);
+    }
+  })();
 
   // Client Packages (Owner / Master only)
   api.get('/admin/packages', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
@@ -4234,13 +4693,15 @@ async function startServer() {
     }
   });
 
-  // Inactive Clients (no appointments in last 20 days - Owner / Master only)
+  // Inactive Clients (configurable return window, preserving 20-day default for existing shops)
   api.get('/admin/inactive-clients', authenticateToken, requireOwnerOrMaster, async (req: any, res) => {
     try {
       const barbershopId = req.user.barbershopId;
-      const twentyDaysAgo = new Date();
-      twentyDaysAgo.setDate(twentyDaysAgo.getDate() - 20);
-      const isoThreshold = twentyDaysAgo.toISOString().split('T')[0];
+      const rawConfig = await getRawShopConfig(barbershopId);
+      const { returnDays } = resolveReturnDays(rawConfig);
+      const thresholdDate = new Date();
+      thresholdDate.setDate(thresholdDate.getDate() - returnDays);
+      const isoThreshold = thresholdDate.toISOString().split('T')[0];
 
       // Get all appointments
       const { data: allAppointments, error: apptErr } = await supabase
@@ -4279,9 +4740,9 @@ async function startServer() {
         }
       });
 
-      // Filter those whose last date is older than 20 days
+      // Filter those whose last date is older than configured return window (default 20 days)
       const inactive = Array.from(clientMap.values()).filter(c => c.lastDate < isoThreshold);
-      
+      res.setHeader('X-Return-Days', String(returnDays));
       res.json(inactive);
     } catch (error) {
       console.error(error);
@@ -5535,14 +5996,15 @@ async function startServer() {
     }
   });
 
-  // List all shops (Master only) — enriched with plan, permission, admin contact & payment totals
+  // List all shops (Master only) — enriched with plan, permission, admin contact, virtual store access & payment totals
   api.get('/admin/master/shops', authenticateToken, requireMaster, async (req, res) => {
     try {
-      const [{ data: shopsRows, error }, { data: usersRows }, plansMap, payments] = await Promise.all([
+      const [{ data: shopsRows, error }, { data: usersRows }, plansMap, payments, virtualStoreEnabledShopIds] = await Promise.all([
         supabase.from('barbershops').select('*').order('created_at', { ascending: false }),
         supabase.from('users').select('id, barbershop_id, name, email, role, created_at').order('created_at', { ascending: true }),
         getShopPlansMap(),
-        cloudNicheDb.getAllSaasPayments()
+        cloudNicheDb.getAllSaasPayments(),
+        getVirtualStoreEnabledShopIds()
       ]);
 
       if (error) throw error;
@@ -5566,6 +6028,8 @@ async function startServer() {
         paidByShop.set(p.barbershop_id, prev);
       }
 
+      const enabledStoreSet = new Set(virtualStoreEnabledShopIds);
+
       const enriched = (shopsRows || []).map((shop: any) => {
         const shopUsers = usersByShop.get(shop.id) || [];
         const adminUser =
@@ -5587,7 +6051,8 @@ async function startServer() {
           admin_email: adminUser?.email || null,
           contact_whatsapp: shop.whatsapp || shop.phone || '',
           total_paid: Number(payStats.totalPaid.toFixed(2)),
-          last_payment_at: payStats.lastPaymentAt
+          last_payment_at: payStats.lastPaymentAt,
+          virtual_store_enabled: shop.id === 'shop-1' || enabledStoreSet.has(shop.id)
         };
       });
 
@@ -6453,14 +6918,25 @@ async function startServer() {
   const isValidSalesChannel = (val: string): val is SalesPlatformChannel =>
     (SALES_PLATFORM_CHANNELS as readonly string[]).includes(val);
 
+  const DEFAULT_KIWIFY_CHECKOUT_LINKS: Record<string, string> = {
+    premium_annual: 'https://pay.kiwify.com.br/AdbQKln',
+    premium_monthly: 'https://pay.kiwify.com.br/AdbQKln',
+    profissional_annual: 'https://pay.kiwify.com.br/dCQubUk',
+    profissional_monthly: 'https://pay.kiwify.com.br/dCQubUk',
+    essencial_annual: 'https://pay.kiwify.com.br/m2FrUaz',
+    essencial_monthly: 'https://pay.kiwify.com.br/m2FrUaz'
+  };
+
   const getKiwifyCheckoutLinks = async (): Promise<Record<string, string>> => {
     const raw = await cloudNicheDb.getPlatformSetting('kiwify_checkout_links');
-    if (!raw) return {};
+    if (!raw) return { ...DEFAULT_KIWIFY_CHECKOUT_LINKS };
     try {
       const parsed = JSON.parse(raw);
-      return typeof parsed === 'object' && parsed ? parsed : {};
+      return typeof parsed === 'object' && parsed
+        ? { ...DEFAULT_KIWIFY_CHECKOUT_LINKS, ...parsed }
+        : { ...DEFAULT_KIWIFY_CHECKOUT_LINKS };
     } catch {
-      return {};
+      return { ...DEFAULT_KIWIFY_CHECKOUT_LINKS };
     }
   };
 
@@ -6480,9 +6956,7 @@ async function startServer() {
         map = {};
       }
     }
-    if (Object.keys(legacyKiwify).length > 0) {
-      map.kiwify = { ...legacyKiwify, ...(map.kiwify || {}) };
-    }
+    map.kiwify = { ...DEFAULT_KIWIFY_CHECKOUT_LINKS, ...legacyKiwify, ...(map.kiwify || {}) };
     return map;
   };
 
@@ -7609,6 +8083,9 @@ async function startServer() {
           }
         }
         await cloudNicheDb.setPlatformSetting('kiwify_checkout_links', JSON.stringify(cleanedKiwify));
+        const currentAll = await getPlatformSalesLinksMap();
+        currentAll.kiwify = cleanedKiwify;
+        await cloudNicheDb.setPlatformSetting('platform_sales_links', JSON.stringify(currentAll));
       }
 
       const [updatedToken, updatedProfile, updatedLinks, updatedKiwifyLinks] = await Promise.all([

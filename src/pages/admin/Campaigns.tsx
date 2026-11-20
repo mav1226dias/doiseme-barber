@@ -5,8 +5,11 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import ConfirmModal from '../../components/ConfirmModal';
+import { useBusinessConfig } from '../../hooks/useBusinessConfig';
+import { DEFAULT_RETURN_DAYS } from '../../lib/onboarding';
 
 export default function Campaigns() {
+  const { terms } = useBusinessConfig();
   const [activeTab, setActiveTab] = useState<'campaigns' | 'notifications'>('campaigns');
   
   // Campaigns State
@@ -26,6 +29,7 @@ export default function Campaigns() {
   // Notifications State
   const [notifications, setNotifications] = useState<any[]>([]);
   const [inactiveClients, setInactiveClients] = useState<any[]>([]);
+  const [returnDays, setReturnDays] = useState<number>(DEFAULT_RETURN_DAYS);
   const [loadingInactive, setLoadingInactive] = useState(false);
 
   const fetchCampaignsAndClients = async () => {
@@ -70,6 +74,10 @@ export default function Campaigns() {
       headers: { 'Authorization': `Bearer ${token}` }
     })
       .then(async res => {
+        const headerDays = Number(res.headers.get('X-Return-Days'));
+        if (Number.isFinite(headerDays) && headerDays >= 1) {
+          setReturnDays(headerDays);
+        }
         const text = await res.text();
         return text ? JSON.parse(text) : [];
       })
@@ -414,15 +422,15 @@ export default function Campaigns() {
             </div>
           </div>
 
-          {/* Automação: Clientes inativos há mais de 20 dias */}
+          {/* Automação: Clientes inativos conforme prazo de retorno configurável */}
           <div className="space-y-4">
             <h2 className="text-lg font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
               <AlertCircle className="w-5 h-5 text-red-500" />
-              Recuperação de Clientes Inativos ({`> 20 dias`})
+              Recuperação de {terms.clientPlural} Inativos ({`> ${returnDays} dias`})
             </h2>
             <div className="bg-white dark:bg-zinc-900 rounded-2xl border border-gray-200 dark:border-zinc-800 shadow-sm p-6">
               {loadingInactive ? (
-                <p className="text-gray-500 text-sm animate-pulse">Buscando clientes inativos...</p>
+                <p className="text-gray-500 text-sm animate-pulse">Buscando {terms.clientPlural.toLowerCase()} inativos...</p>
               ) : inactiveClients.length > 0 ? (
                 <div className="space-y-3">
                   {inactiveClients.map((client, idx) => {
@@ -453,7 +461,7 @@ export default function Campaigns() {
                 </div>
               ) : (
                 <div className="text-center py-6 text-gray-500 text-sm">
-                  Nenhum cliente está inativo há mais de 20 dias no momento.
+                  Nenhum registro em {terms.clientPlural.toLowerCase()} está inativo há mais de {returnDays} dias no momento.
                 </div>
               )}
             </div>
